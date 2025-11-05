@@ -25,8 +25,9 @@ type ServiceEntry struct {
 //The mapping of tasks to IP addresses
 //TODO: create a process to load this from a database if necessary
 
-var serviceRegistry = make(map[string]ServiceEntry)
+var serviceRegistry = make(map[string][]ServiceEntry)
 var registryMutex sync.RWMutex
+var roundRobinIndex = make(map[string]int)
 
 func main() {
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", ListenPort))
@@ -84,10 +85,28 @@ func handleRegistration(conn *net.UDPConn, addr *net.UDPAddr, message string) {
 	registryMutex.Lock()
 	defer registryMutex.Unlock()
 
-	// Update the service entry with the current time
-	serviceRegistry[taskName] = ServiceEntry{
-		IP:            ipAddress,
-		LastHeartbeat: time.Now(),
+	found := false
+	for i := range serviceRegistry[taskName] {
+		if serviceRegistry[taskName][i].IP == ipAddress {
+			// Found existing entry, just update the heartbeat
+			serviceRegistry[taskName][i].LastHeartbeat = time.Now()
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// New registration, append to the slice
+		newEntry := ServiceEntry{
+			IP:            ipAddress,
+			LastHeartbeat: time.Now(),
+		}
+		serviceRegistry[taskName] = append(serviceRegistry[taskName], newEntry)
+	}
+
+	// Reset the round-robin index if the slice was previously empty
+	if len(serviceRegistry[taskName]) == 1 && roundRobinIndex[taskName] != 0 {
+		roundRobinIndex[taskName] = 0
 	}
 
 	fmt.Printf("Registered/Heartbeat: Task=%s, IP=%s\n", taskName, ipAddress)
@@ -104,24 +123,40 @@ func handleQuery(conn *net.UDPConn, addr *net.UDPAddr, taskName string) {
 
 	fmt.Printf("Received QUERY for task: %s from %s\n", taskName, addr)
 
-	entry, found := serviceRegistry[taskName]
-
+	services, found := serviceRegistry[taskName]
 	var response string
 
-	if found {
-		// Check if the service is still active based on the heartbeat
+	if found && len(services) > 0 {
+		//Round Robin
+
+		index := roundRobinIndex[taskName]
+		if index >= len(services) {
+			index = 0
+		}
+		entry := services[index]
+
 		if time.Since(entry.LastHeartbeat) < HeartbeatTimeout {
 			response = entry.IP
-			fmt.Printf("Success: Returning IP %s\n", response)
+			fmt.Printf("Success (RR Index %d): Returning IP %s\n", index, response)
+
+			// modify the roundRobinIndex map safely.
+			registryMutex.RUnlock()
+			registryMutex.Lock()
+			roundRobinIndex[taskName] = (index + 1) % len(services)
+			registryMutex.Unlock()
+			registryMutex.RLock()
+
 		} else {
-			response = "Service inactive (Heartbeat timeout)"
-			fmt.Printf("Inactive: Service found, but heartbeated out.\n")
+
+			response = "Service inactive (Heartbeat timeout) at selected index"
+			fmt.Printf("Inactive: Service found but selected provider timed out.\n")
 		}
+		// --- End Round-Robin Logic ---
+
 	} else {
 		response = "Service not found"
-		fmt.Printf("Not Found: Service is not registered.\n")
+		fmt.Printf("Not Found: Service is not registered or has no providers.\n")
 	}
-
 	// Send the response back to the client
 	conn.WriteToUDP([]byte(response), addr)
 }
@@ -139,11 +174,29 @@ func cleanupInactiveServices() {
 		removedCount := 0
 		now := time.Now()
 
-		for taskName, entry := range serviceRegistry {
-			if now.Sub(entry.LastHeartbeat) > HeartbeatTimeout {
-				// Service has timed out, delete it
+		for taskName, entries := range serviceRegistry {
+
+			// Build a new list of active entries
+			var activeEntries []ServiceEntry
+			for _, entry := range entries {
+				if now.Sub(entry.LastHeartbeat) < HeartbeatTimeout {
+					activeEntries = append(activeEntries, entry)
+				} else {
+					removedCount++
+				}
+			}
+
+			if len(activeEntries) == 0 {
+				//Remove task entry
 				delete(serviceRegistry, taskName)
-				removedCount++
+				delete(roundRobinIndex, taskName)
+			} else {
+				// Update t with active services only
+				serviceRegistry[taskName] = activeEntries
+				// Update Round Robin
+				if roundRobinIndex[taskName] >= len(activeEntries) {
+					roundRobinIndex[taskName] = 0
+				}
 			}
 		}
 

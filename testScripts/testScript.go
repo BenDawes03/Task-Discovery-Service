@@ -28,7 +28,7 @@ func main() {
 	// 1. Establish TCP connection to the Proxy
 	conn, err := net.DialTimeout("tcp", ProxyAddress, Timeout)
 	if err != nil {
-		fmt.Printf("❌ Error connecting to proxy: %v\n", err)
+		fmt.Printf("Error connecting to proxy: %v\n", err)
 		// Suggest running the proxy if connection fails
 		fmt.Println("   Ensure your 'client_proxy.go' is running on port 8054.")
 		os.Exit(1)
@@ -41,7 +41,7 @@ func main() {
 	// 2. Send the task name request over the TCP stream
 	_, err = conn.Write([]byte(taskName))
 	if err != nil {
-		fmt.Printf("❌ Error sending request: %v\n", err)
+		fmt.Printf("Error sending request: %v\n", err)
 		return
 	}
 
@@ -49,7 +49,7 @@ func main() {
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
 	if err != nil {
-		fmt.Printf("❌ Error reading response from proxy: %v\n", err)
+		fmt.Printf("Error reading response from proxy: %v\n", err)
 		return
 	}
 
@@ -59,10 +59,10 @@ func main() {
 	fmt.Println("\n--- Lookup Result ---")
 	if strings.HasPrefix(response, "ERROR:") || strings.Contains(response, "Service") {
 		// Output server-level errors (e.g., Service not found)
-		fmt.Printf("🔴 Lookup Failed: %s\n", response)
+		fmt.Printf("Lookup Failed: %s\n", response)
 	} else {
 		// Output successful IP address
-		fmt.Printf("✅ SUCCESS! Target IP for '%s': %s\n", taskName, response)
+		fmt.Printf("SUCCESS! Target IP for '%s': %s\n", taskName, response)
 	}
 	fmt.Println("---------------------\n")
 }
