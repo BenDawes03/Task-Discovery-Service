@@ -18,7 +18,7 @@ const (
 )
 
 type ServiceEntry struct {
-	IP            string
+	Address       string
 	LastHeartbeat time.Time
 }
 
@@ -72,7 +72,7 @@ func handleRequest(conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
 
 func handleRegistration(conn *net.UDPConn, addr *net.UDPAddr, message string) {
 	// Expected format: "REGISTER:<task_name>:<ip_address>"
-	parts := strings.Split(message, ":")
+	parts := strings.SplitN(message, ":", 3)
 	if len(parts) != 3 {
 		fmt.Printf("Registration format error from %s: %s\n", addr, message)
 		return
@@ -87,7 +87,7 @@ func handleRegistration(conn *net.UDPConn, addr *net.UDPAddr, message string) {
 
 	found := false
 	for i := range serviceRegistry[taskName] {
-		if serviceRegistry[taskName][i].IP == ipAddress {
+		if serviceRegistry[taskName][i].Address == ipAddress {
 			// Found existing entry, just update the heartbeat
 			serviceRegistry[taskName][i].LastHeartbeat = time.Now()
 			found = true
@@ -98,7 +98,7 @@ func handleRegistration(conn *net.UDPConn, addr *net.UDPAddr, message string) {
 	if !found {
 		// New registration, append to the slice
 		newEntry := ServiceEntry{
-			IP:            ipAddress,
+			Address:       ipAddress,
 			LastHeartbeat: time.Now(),
 		}
 		serviceRegistry[taskName] = append(serviceRegistry[taskName], newEntry)
@@ -136,7 +136,7 @@ func handleQuery(conn *net.UDPConn, addr *net.UDPAddr, taskName string) {
 		entry := services[index]
 
 		if time.Since(entry.LastHeartbeat) < HeartbeatTimeout {
-			response = entry.IP
+			response = entry.Address
 			fmt.Printf("Success (RR Index %d): Returning IP %s\n", index, response)
 
 			// modify the roundRobinIndex map safely.
@@ -203,7 +203,7 @@ func cleanupInactiveServices() {
 		registryMutex.Unlock()
 
 		if removedCount > 0 {
-			fmt.Printf("🧹 Cleanup Routine: Removed %d inactive services.\n", removedCount)
+			fmt.Printf("Cleanup Routine: Removed %d inactive services.\n", removedCount)
 		}
 	}
 }

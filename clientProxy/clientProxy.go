@@ -22,6 +22,8 @@ const (
 	HeartbeatInterval = 15 * time.Second
 )
 
+var ServiceAddress = fmt.Sprintf("%s:%d", ServiceIP, LocalListenPort)
+
 func main() {
 	// Start the background heartbeat for this proxy service itself (if needed)
 	go startHeartbeat()
@@ -124,12 +126,12 @@ func startHeartbeat() {
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
 	for {
-		registerTask(ServiceTask, ServiceIP)
+		registerTask(ServiceTask, ServiceAddress)
 		<-ticker.C
 	}
 }
 
-func registerTask(taskName, ipAddress string) {
+func registerTask(taskName, address string) {
 	serverAddr, err := net.ResolveUDPAddr("udp", DiscoveryServerAddress)
 	if err != nil {
 		fmt.Printf("[Heartbeat] Error resolving address: %s\n", err)
@@ -145,7 +147,7 @@ func registerTask(taskName, ipAddress string) {
 
 	conn.SetDeadline(time.Now().Add(DiscoveryTimeout))
 
-	registrationMessage := fmt.Sprintf("REGISTER:%s:%s", taskName, ipAddress)
+	registrationMessage := fmt.Sprintf("REGISTER:%s:%s", taskName, address)
 	_, err = conn.Write([]byte(registrationMessage))
 
 	if err != nil {
