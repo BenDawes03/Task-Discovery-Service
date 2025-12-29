@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -121,6 +122,86 @@ func writeUDP(conn *net.UDPConn, addr *net.UDPAddr, msg string) {
 	if err != nil {
 		logger.Printf("write udp to %s: %v", addr.String(), err)
 		atomic.AddUint64(&errorCount, 1)
+	}
+}
+
+// RunProxyTCP starts a simple TCP proxy that listens on listenAddr (e.g. ":5100")
+// and forwards each incoming line to the configured serverAddr over TCP. It
+// respects ctx cancellation and will exit when ctx is done.
+func RunProxyTCP(ctx context.Context, listenAddr string) error {
+	serverAddr := os.Getenv("TDS_SERVER_ADDR")
+	if serverAddr == "" {
+		serverAddr = "127.0.0.1:5000"
+	}
+
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen tcp: %w", err)
+	}
+	defer ln.Close()
+	logger.Printf("listening tcp %s, forwarding to %s", listenAddr, serverAddr)
+
+	// close listener when context is done so Accept returns
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				logger.Println("shutting down tcp proxy")
+				return nil
+			default:
+				logger.Printf("tcp accept error: %v", err)
+				atomic.AddUint64(&errorCount, 1)
+				continue
+			}
+		}
+		go handleTCPProxyConn(conn, serverAddr)
+	}
+}
+
+func handleTCPProxyConn(conn net.Conn, serverAddr string) {
+	defer conn.Close()
+	remote := conn.RemoteAddr().String()
+	r := bufio.NewReader(conn)
+	w := bufio.NewWriter(conn)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		logger.Printf("proxy %s (from %s)", line, remote)
+		// forward to server over TCP
+		sconn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
+		if err != nil {
+			fmt.Fprintf(w, "ERR %v\n", err)
+			w.Flush()
+			atomic.AddUint64(&errorCount, 1)
+			continue
+		}
+		// send command
+		fmt.Fprintf(sconn, "%s\n", line)
+		// read response (single line)
+		sr := bufio.NewReader(sconn)
+		resp, err := sr.ReadString('\n')
+		sconn.Close()
+		if err != nil {
+			fmt.Fprintf(w, "ERR %v\n", err)
+			w.Flush()
+			atomic.AddUint64(&errorCount, 1)
+			continue
+		}
+		fmt.Fprint(w, resp)
+		w.Flush()
+		atomic.AddUint64(&queryCount, 1)
 	}
 }
 

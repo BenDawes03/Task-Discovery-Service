@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"tds/pkg/client"
 )
 
@@ -18,11 +20,29 @@ func main() {
 		listen = ":5100"
 	}
 
+	// Ask which transport to run (interactive). Default is UDP.
+	transportMode := "udp"
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Select transport mode (udp/tcp) [udp]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input != "" {
+			transportMode = strings.ToLower(input)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		// run proxy and report any error
-		done <- client.RunProxy(ctx, listen)
+		if transportMode == "tcp" {
+			done <- client.RunProxyTCP(ctx, listen)
+		} else {
+			done <- client.RunProxy(ctx, listen)
+		}
 	}()
 
 	// simple interactive loop

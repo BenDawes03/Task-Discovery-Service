@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rivo/tview"
@@ -80,15 +82,40 @@ func main() {
 	// initialize registry
 	reg = registry.NewMemoryRegistry()
 
-	// Start UDP transport in background
-	fmt.Fprintln(os.Stderr, "starting server")
-	go func() {
-		if err := transport.StartUDPServer(reg, ListenPort, logEvent); err != nil {
-			fmt.Fprintln(os.Stderr, "udp server error:", err)
-			os.Exit(1)
+	// Ask which transport to run (interactive). Default is UDP.
+	transportMode := "udp"
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Fprint(os.Stderr, "Select transport mode (udp/tcp) [udp]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input != "" {
+			transportMode = strings.ToLower(input)
 		}
-	}()
+	} else {
+		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport")
+	}
+
+	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	switch transportMode {
+	case "tcp":
+		go func() {
+			if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
+				fmt.Fprintln(os.Stderr, "tcp server error:", err)
+				os.Exit(1)
+			}
+		}()
+	default:
+		go func() {
+			if err := transport.StartUDPServer(reg, ListenPort, logEvent); err != nil {
+				fmt.Fprintln(os.Stderr, "udp server error:", err)
+				os.Exit(1)
+			}
+		}()
+	}
 	fmt.Fprintln(os.Stderr, "Server correctly started")
+	// Broadcast server info on boot (fire-and-forget)
+	go transport.BroadcastServerInfo(ListenPort, HeartbeatTimeout, serverStartTime)
 	// Periodic cleanup
 	ticker := time.NewTicker(CleanupInterval)
 	go func() {
