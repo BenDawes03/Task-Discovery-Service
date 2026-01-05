@@ -77,24 +77,72 @@ func showTaskDetails(task string) {
 	})
 }
 
+// askTerminalOptions collects interactive options from the terminal before
+// starting any server output. It returns the chosen transport mode ("udp"|"tcp"),
+// whether to run the TUI, and whether the TUI was forced via args.
+func askTerminalOptions() (string, bool, bool) {
+	transportMode := "udp"
+	runTUI := false
+	forceUI := false
+
+	// Check for --force-ui flag early so we can skip prompting.
+	for _, a := range os.Args[1:] {
+		if a == "--force-ui" || a == "-ui" {
+			forceUI = true
+			break
+		}
+	}
+
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		switch strings.ToLower(input) {
+		case "", "1":
+			transportMode = "udp"
+		case "2":
+			transportMode = "tcp"
+		case "udp":
+			transportMode = "udp"
+		case "tcp":
+			transportMode = "tcp"
+		default:
+			fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
+			transportMode = "udp"
+		}
+
+		// Prompt whether to start the TUI unless forced
+		if forceUI {
+			runTUI = true
+			fmt.Fprintln(os.Stderr, "--force-ui detected; TUI will be started.")
+		} else {
+			fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
+			choice, _ := reader.ReadString('\n')
+			choice = strings.TrimSpace(strings.ToLower(choice))
+			if choice == "n" || choice == "no" {
+				runTUI = false
+				fmt.Fprintln(os.Stderr, "User declined TUI. Server will continue running without the UI.")
+			} else {
+				runTUI = true
+			}
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport and no TUI")
+		transportMode = "udp"
+		runTUI = false
+	}
+
+	return transportMode, runTUI, forceUI
+}
+
 func main() {
 
 	// initialize registry
 	reg = registry.NewMemoryRegistry()
 
-	// Ask which transport to run (interactive). Default is UDP.
-	transportMode := "udp"
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Fprint(os.Stderr, "Select transport mode (udp/tcp) [udp]: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input != "" {
-			transportMode = strings.ToLower(input)
-		}
-	} else {
-		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport")
-	}
+	// Gather terminal options before starting any server output.
+	transportMode, runTUI, forceUI := askTerminalOptions()
 
 	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	switch transportMode {
@@ -127,7 +175,6 @@ func main() {
 			updateDashboardData()
 		}
 	}()
-	fmt.Fprintln(os.Stderr, "Check 1")
 	// Periodic UI refresh
 	uiTicker := time.NewTicker(2 * time.Second)
 	go func() {
@@ -135,7 +182,6 @@ func main() {
 			updateDashboardData()
 		}
 	}()
-	fmt.Fprintln(os.Stderr, "Check 2")
 	// Build layout
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
@@ -150,26 +196,13 @@ func main() {
 	taskList.SetBorder(true).SetTitle("Tasks")
 	detailTable.SetBorder(true).SetTitle("Details")
 	logView.SetBorder(true).SetTitle("Log")
-	fmt.Fprintln(os.Stderr, "Check 3")
 	// Start initial data refresh
 	updateDashboardData()
-	fmt.Fprintln(os.Stderr, "Check 4")
-	// Allow forcing the UI even if TTY checks fail.
-	forceUI := false
-	for _, a := range os.Args[1:] {
-		if a == "--force-ui" || a == "-ui" {
-			forceUI = true
-			break
-		}
-	}
-	fmt.Fprintln(os.Stderr, "Check 5")
-	// If none of stdin/stdout/stderr are interactive terminals and not forced,
-	// inform the user and keep the background services running (so UDP transport works).
-	if !forceUI && !(term.IsTerminal(int(os.Stdin.Fd())) || term.IsTerminal(int(os.Stdout.Fd())) || term.IsTerminal(int(os.Stderr.Fd()))) {
-		fmt.Fprintln(os.Stderr, "No interactive terminal detected. Run this program in a real terminal to see the TUI (e.g. 'go run ./cmd/server'). Server will continue running without the UI.")
+	// Decide whether to run the TUI based on earlier prompts.
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
 		select {}
 	}
-	fmt.Fprintln(os.Stderr, "Interactive terminal detected. Starting TUI...")
 
 	// Start TUI
 	fmt.Fprintln(os.Stderr, "Starting TUI (force-ui=", forceUI, ") ...")
