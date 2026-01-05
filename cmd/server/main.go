@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/term"
 
 	"tds/pkg/registry"
+	"tds/pkg/store/postgres"
 	"tds/pkg/transport"
 )
 
@@ -44,6 +46,9 @@ func logEvent(message string) {
 }
 
 func updateDashboardData() {
+	if reg == nil {
+		return // Registry not yet initialized
+	}
 	servicesMap := reg.ListServices()
 	go app.QueueUpdateDraw(func() {
 		taskList.Clear()
@@ -82,55 +87,68 @@ func showTaskDetails(task string) {
 // whether to run the TUI, and whether the TUI was forced via args.
 func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
-	runTUI := false
+	runTUI := true // Default to TUI if interactive
 	forceUI := false
+	skipPrompts := false
 
-	// Check for --force-ui flag early so we can skip prompting.
-	for _, a := range os.Args[1:] {
-		if a == "--force-ui" || a == "-ui" {
+	// Parse command-line flags
+	for i, a := range os.Args[1:] {
+		switch a {
+		case "--force-ui", "-ui":
 			forceUI = true
-			break
+			runTUI = true
+			skipPrompts = true
+		case "--no-tui":
+			runTUI = false
+			skipPrompts = true
+		case "--tcp":
+			transportMode = "tcp"
+		case "--udp":
+			transportMode = "udp"
+		case "--store-url":
+			// Skip next arg (it's the URL value)
+			i++
 		}
+		_ = i
 	}
 
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		switch strings.ToLower(input) {
-		case "", "1":
-			transportMode = "udp"
-		case "2":
-			transportMode = "tcp"
-		case "udp":
-			transportMode = "udp"
-		case "tcp":
-			transportMode = "tcp"
-		default:
-			fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
-			transportMode = "udp"
+	// If not in interactive terminal or prompts skipped, return early
+	if skipPrompts || !term.IsTerminal(int(os.Stdin.Fd())) {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport and no TUI")
+			runTUI = false
 		}
+		return transportMode, runTUI, forceUI
+	}
 
-		// Prompt whether to start the TUI unless forced
-		if forceUI {
-			runTUI = true
-			fmt.Fprintln(os.Stderr, "--force-ui detected; TUI will be started.")
-		} else {
-			fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
-			choice, _ := reader.ReadString('\n')
-			choice = strings.TrimSpace(strings.ToLower(choice))
-			if choice == "n" || choice == "no" {
-				runTUI = false
-				fmt.Fprintln(os.Stderr, "User declined TUI. Server will continue running without the UI.")
-			} else {
-				runTUI = true
-			}
-		}
-	} else {
-		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport and no TUI")
+	// Interactive prompts
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	switch strings.ToLower(input) {
+	case "", "1":
 		transportMode = "udp"
+	case "2":
+		transportMode = "tcp"
+	case "udp":
+		transportMode = "udp"
+	case "tcp":
+		transportMode = "tcp"
+	default:
+		fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
+		transportMode = "udp"
+	}
+
+	// Prompt whether to start the TUI
+	fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(strings.ToLower(choice))
+	if choice == "n" || choice == "no" {
 		runTUI = false
+		fmt.Fprintln(os.Stderr, "User declined TUI. Server will continue running without the UI.")
+	} else {
+		runTUI = true
 	}
 
 	return transportMode, runTUI, forceUI
@@ -138,11 +156,56 @@ func askTerminalOptions() (string, bool, bool) {
 
 func main() {
 
-	// initialize registry
-	reg = registry.NewMemoryRegistry()
-
 	// Gather terminal options before starting any server output.
-	transportMode, runTUI, forceUI := askTerminalOptions()
+	transportMode, runTUI, _ := askTerminalOptions()
+
+	// Check for --store-url or DATABASE_URL for persistence.
+	storeURL := os.Getenv("DATABASE_URL")
+
+	// Check for --store-url flag
+	for i, a := range os.Args[1:] {
+		if a == "--store-url" && i+1 < len(os.Args)-1 {
+			storeURL = os.Args[i+2]
+			break
+		}
+	}
+
+	if storeURL != "" {
+		// Initialize store-backed registry
+		s, err := postgres.NewPostgresStore(storeURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to initialize postgres store: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Run migrations
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := s.Migrate(ctx); err != nil {
+			cancel()
+			fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
+			s.Close()
+			os.Exit(1)
+		}
+		cancel()
+
+		storeReg := registry.NewStoreBackedRegistry(s)
+
+		// Warm the in-memory cache from the database on startup
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		if err := storeReg.WarmCacheFromDB(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "cache warmed from database")
+		}
+		cancel()
+
+		reg = storeReg
+		fmt.Fprintln(os.Stderr, "using postgres persistent store with in-memory cache")
+	} else {
+		// Fall back to in-memory registry
+		reg = registry.NewMemoryRegistry()
+		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
+	}
 
 	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	switch transportMode {
@@ -164,24 +227,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Server correctly started")
 	// Broadcast server info on boot (fire-and-forget)
 	go transport.BroadcastServerInfo(ListenPort, HeartbeatTimeout, serverStartTime)
-	// Periodic cleanup
-	ticker := time.NewTicker(CleanupInterval)
-	go func() {
-		for range ticker.C {
-			removed := reg.Cleanup(HeartbeatTimeout)
-			if removed > 0 {
-				logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
-			}
-			updateDashboardData()
-		}
-	}()
-	// Periodic UI refresh
-	uiTicker := time.NewTicker(2 * time.Second)
-	go func() {
-		for range uiTicker.C {
-			updateDashboardData()
-		}
-	}()
+
 	// Build layout
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
@@ -196,16 +242,57 @@ func main() {
 	taskList.SetBorder(true).SetTitle("Tasks")
 	detailTable.SetBorder(true).SetTitle("Details")
 	logView.SetBorder(true).SetTitle("Log")
-	// Start initial data refresh
-	updateDashboardData()
+
 	// Decide whether to run the TUI based on earlier prompts.
 	if !runTUI {
 		fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
+		// For headless mode, just run cleanup, no UI refresh needed
+		ticker := time.NewTicker(CleanupInterval)
+		go func() {
+			for range ticker.C {
+				removed := reg.Cleanup(HeartbeatTimeout)
+				if removed > 0 {
+					logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
+				}
+			}
+		}()
 		select {}
 	}
 
+	// TUI mode: start tickers and UI refresh
+	// Periodic cleanup
+	ticker := time.NewTicker(CleanupInterval)
+	go func() {
+		for range ticker.C {
+			removed := reg.Cleanup(HeartbeatTimeout)
+			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
+			
+			// Warm cache from DB to ensure UI reflects deleted entries
+			if storeReg, ok := reg.(*registry.StoreBackedRegistry); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = storeReg.WarmCacheFromDB(ctx)
+				cancel()
+			}
+			
+			updateDashboardData()
+		}
+	}()
+
+	// Periodic UI refresh
+	uiTicker := time.NewTicker(2 * time.Second)
+	go func() {
+		for range uiTicker.C {
+			updateDashboardData()
+		}
+	}()
+
+	// Start initial data refresh AFTER UI is ready
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		updateDashboardData()
+	}()
+
 	// Start TUI
-	fmt.Fprintln(os.Stderr, "Starting TUI (force-ui=", forceUI, ") ...")
 	if err := app.SetRoot(flex, true).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tview run error:", err)
 		os.Exit(1)

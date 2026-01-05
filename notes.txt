@@ -1,0 +1,6 @@
+Current TODO:
+- Current mode is either database or in-memory: implement caching
+- round-Robin is currently a mapping in memory. Should too many services be active the round robin will be a very large structure
+- Implement TLS for secure communication 
+- gateway service for internal and external services
+- peer to peer mode
