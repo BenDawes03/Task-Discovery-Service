@@ -1,0 +1,637 @@
+# TDS - Task Discovery Service
+
+A distributed task-to-IP registry service with support for both centralized and peer-to-peer (P2P) modes. TDS enables dynamic service discovery for microservices, load balancers, and distributed systems.
+
+## Features
+
+- **Dual Architecture**: Choose between centralized or decentralized operation modes
+- **Centralized Mode**: Traditional client-server architecture with UDP/TCP transport and TUI monitoring
+- **P2P Mode**: Decentralized distributed hash table (DHT) for fault-tolerant task discovery
+- **Client Proxy**: Gateway between clients and the registry (supports both modes)
+- **Round-Robin Load Balancing**: Automatic distribution of queries across multiple service instances
+- **Heartbeat & Cleanup**: Automatic removal of stale service registrations
+- **Interactive Monitoring**: Real-time TUI dashboard and command interface
+
+## Architecture Overview
+
+TDS supports two distinct operational modes, each optimized for different use cases:
+
+### Centralized Mode
+
+The traditional client-server architecture provides simplicity and strong consistency:
+
+```
+┌─────────┐      ┌──────────────┐      ┌────────────────┐
+│ Client  │─────►│ Client Proxy │─────►│  TDS Server    │
+└─────────┘ UDP  └──────────────┘ UDP  │   (UDP/TCP)    │
+                                        └────────┬───────┘
+                                                 │
+                                                 ▼
+                                        ┌────────────────┐
+                                        │   Registry     │
+                                        │  (In-Memory)   │
+                                        └────────────────┘
+```
+
+**Key Characteristics:**
+- Single authoritative server with complete view of all services
+- Strong consistency - all clients see the same state immediately
+- Built-in TUI (Terminal User Interface) for real-time monitoring
+- UDP broadcast for server discovery
+- Automatic cleanup of stale registrations (configurable timeout)
+- Round-robin load balancing across multiple service instances
+- Low latency (~1-2ms on local networks)
+- Simple to deploy and debug
+
+**When to Use Centralized Mode:**
+- Development and testing environments
+- Small to medium deployments (< 10k services)
+- When strong consistency is required
+- Environments with reliable central infrastructure
+- When you need real-time monitoring via TUI
+
+### P2P Mode (Distributed Hash Table)
+
+Decentralized architecture using a DHT for scalability and fault tolerance:
+
+```
+┌─────────┐      ┌──────────────────┐
+│ Client  │─────►│ Client Proxy A   │◄──┐
+└─────────┘ UDP  │ + DHT Node       │   │
+                 └──────────────────┘   │ TCP
+                          │             │ (Peer
+                          ▼             │ Gossip)
+                 ┌──────────────────┐   │
+                 │ Client Proxy B   │◄──┤
+                 │ + DHT Node       │   │
+                 └──────────────────┘   │
+                          │             │
+                          ▼             │
+                 ┌──────────────────┐   │
+                 │ Client Proxy C   │◄──┘
+                 │ + DHT Node       │
+                 └──────────────────┘
+
+         DHT Ring (Consistent Hashing):
+    Node A (ID: 0x1a3f...) ─┐
+                            │
+    Node C (ID: 0xf4e2...) ─┼─ Hash Ring
+                            │
+    Node B (ID: 0x7b9c...) ─┘
+```
+
+**Key Characteristics:**
+- No central server - nodes form a self-organizing ring
+- SHA256-based consistent hashing for task-to-node mapping
+- Each node stores tasks it's responsible for (closest node ID)
+- Automatic peer discovery via bootstrap nodes
+- JSON-based inter-node protocol over TCP
+- Eventual consistency - updates propagate through the network
+- Scales horizontally - add nodes to increase capacity
+- Fault tolerant - survives individual node failures
+
+**DHT Consistent Hashing:**
+```
+Task: "web-api" → SHA256 → 0x3a7f... → Stored on Node B (closest ID)
+Node: "192.168.1.10:6000" → SHA256 → 0x7b9c... → Position in ring
+```
+
+**When to Use P2P Mode:**
+- Large-scale distributed systems (> 10k services)
+- Edge computing and IoT networks
+- Environments requiring high availability
+- No reliable central infrastructure
+- Geographic distribution across data centers
+- When you need automatic failover without coordination
+
+## Components
+
+### Server (`cmd/server`) - Centralized Mode Only
+The centralized TDS server with an interactive terminal UI:
+- **Registry Management**: Stores task-to-address mappings in memory
+- **Round-Robin Selection**: Distributes queries across multiple service instances
+- **Heartbeat Processing**: Updates LastHeartbeat timestamp for registered services
+- **Automatic Cleanup**: Removes stale registrations after configurable timeout (default: 60s)
+- **UDP Broadcast**: Announces server presence on startup for discovery
+- **TUI Dashboard**: Real-time visualization of:
+  - All registered services and their addresses
+  - Query statistics and distribution
+  - Last heartbeat times
+  - Interactive commands (stats, help, quit)
+- **Dual Transport**: Supports both UDP and TCP connections
+
+### Client Proxy (`cmd/client_proxy`)
+Intelligent gateway that routes requests based on operational mode:
+
+**Centralized Mode:**
+- Discovers TDS server via UDP broadcast or static address
+- Forwards REGISTER/QUERY/HEARTBEAT to server
+- Maintains connection health checks
+- Simple pass-through proxy
+
+**P2P Mode (with `-p2p` flag):**
+- Embeds a full DHT node implementation
+- Performs consistent hashing to find responsible node
+- Routes requests to correct peer via TCP
+- Handles network topology changes
+- Participates in peer discovery and maintenance
+- Stores tasks for which it's responsible
+
+**Interactive Commands:**
+- `stats`: Display registration and query statistics
+- `dht`: Show DHT ring information (P2P mode only)
+- `peers`: List known peer nodes (P2P mode only)
+- `help`: Show available commands
+- `quit`: Graceful shutdown
+
+### Client Library (`pkg/client`)
+Simple Go client library for TDS integration:
+```go
+client := client.NewClient("localhost:5100")
+
+// Register a service
+err := client.Register("api-service", "192.168.1.50:8080")
+
+// Query for a service
+addr, err := client.Query("api-service")
+
+// Send heartbeat
+err := client.Heartbeat("api-service", "192.168.1.50:8080")
+```
+
+Supports both UDP and TCP transports with automatic timeout handling.
+
+### DHT Package (`pkg/dht`)
+Distributed hash table implementation for P2P mode:
+- **Consistent Hashing**: SHA256-based node and task IDs
+- **Ring Maintenance**: Automatic peer addition/removal
+- **Task Storage**: Local storage for responsible tasks
+- **Peer Discovery**: Join network via bootstrap nodes
+- **Closest Node Lookup**: Binary search for task responsibility
+- **JSON Protocol**: Inter-node communication messages:
+  - `PING/PONG`: Health checks and keepalive
+  - `JOIN`: Network join requests
+  - `PEERLIST`: Peer information exchange
+  - `STORE`: Task registration propagation
+  - `FIND`: Task query routing
+  - `FOUND/NOTFOUND`: Query responses
+  - `REDIRECT`: Forward to responsible node
+
+### Registry Package (`pkg/registry`)
+Core registry abstraction layer:
+- **Interface**: `Registry` interface for pluggable implementations
+- **MemoryRegistry**: In-memory implementation with mutex protection
+- **ServiceEntry**: Metadata for registered services (address, heartbeat, query count)
+- **Round-Robin**: Per-task round-robin index tracking
+- **Statistics**: Total queries, service counts
+
+### Transport Package (`pkg/transport`)
+Network communication layer:
+- **UDP Server**: Connectionless transport for low-latency operations
+- **TCP Server**: Reliable transport for DHT peer communication
+- **Protocol Parsing**: Message parsing and validation
+- **Broadcast**: UDP broadcast for server discovery (Windows/Unix compatible)
+
+## Quick Start
+
+### Centralized Mode
+
+**1. Start the server:**
+```bash
+go run ./cmd/server
+```
+
+**2. Start the client proxy (in another terminal):**
+```bash
+go run ./cmd/client_proxy
+# Select UDP or TCP when prompted
+```
+
+**3. Test with the client:**
+```bash
+# Register a service
+go run ./cmd/test_client REGISTER my-api 192.168.1.50:8080
+
+# Query the service
+go run ./cmd/test_client QUERY my-api
+# Returns: 192.168.1.50:8080
+```
+
+### P2P Mode
+
+**1. Start first P2P node (creates the network):**
+```bash
+go run ./cmd/client_proxy -p2p -p2p-port :6000
+```
+
+**2. Start second node (joins via bootstrap):**
+```bash
+TDS_PROXY_LISTEN=:5101 go run ./cmd/client_proxy -p2p -p2p-port :6001 -bootstrap localhost:6000
+```
+
+**3. Start third node (can bootstrap from any existing node):**
+```bash
+TDS_PROXY_LISTEN=:5102 go run ./cmd/client_proxy -p2p -p2p-port :6002 -bootstrap localhost:6000,localhost:6001
+```
+
+**4. Test distributed registration and query:**
+```bash
+# Register on node A (client proxy listens on 5100)
+go run ./cmd/test_client -server localhost:5100 REGISTER web-service 10.0.0.5:8080
+
+# Query from node B (automatically finds data via DHT routing)
+go run ./cmd/test_client -server localhost:5101 QUERY web-service
+# Returns: 10.0.0.5:8080
+
+# Query from node C (also finds data regardless of registration point)
+go run ./cmd/test_client -server localhost:5102 QUERY web-service
+# Returns: 10.0.0.5:8080
+```
+
+**How P2P Lookup Works:**
+1. Task name "web-service" is hashed → `0x3a7f...`
+2. DHT finds closest node ID to `0x3a7f...` (e.g., Node B at `0x7b9c...`)
+3. Request is routed to Node B (even if you queried from Node A or C)
+4. Node B returns the stored address
+
+### Using the Demo Scripts
+
+Automated test scripts are provided in [test_scripts](test_scripts):
+
+**P2P Network Demo:**
+```powershell
+# Start a 5-node P2P network automatically
+.\test_scripts\demo_p2p.ps1
+
+# Or start nodes individually
+.\test_scripts\node_1_start.ps1  # Bootstrap node
+.\test_scripts\node_2_start.ps1  # Joins node 1
+.\test_scripts\node_3_start.ps1  # Joins nodes 1,2
+# ... etc
+
+# Test the full network
+.\test_scripts\test_p2p_network.ps1
+```
+
+## Building
+
+```bash
+# Build all components
+go build ./...
+
+# Build specific components
+go build -o server.exe ./cmd/server
+go build -o client_proxy.exe ./cmd/client_proxy
+go build -o test_client.exe ./cmd/test_client
+
+# Build with race detector (useful for debugging concurrency issues)
+go build -race -o client_proxy_race.exe ./cmd/client_proxy
+```
+
+## Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests from tests/ directory
+go test ./tests/...
+
+# Run with verbose output
+go test -v ./tests/...
+
+# Run with race detector
+go test -race ./...
+
+# Run specific test
+go test ./tests -run TestDHTCreation
+```
+
+## Configuration
+
+### Environment Variables
+
+- **`TDS_SERVER_ADDR`**: Server address for client proxy to connect to (default: `127.0.0.1:5000`)
+  - Used in centralized mode only
+  - Example: `export TDS_SERVER_ADDR=10.0.1.5:5000`
+
+- **`TDS_PROXY_LISTEN`**: Address for client proxy to listen on (default: `:5100`)
+  - Used in both centralized and P2P modes
+  - Example: `export TDS_PROXY_LISTEN=:5200`
+
+### Command-Line Flags (client_proxy)
+
+- **`-p2p`**: Enable peer-to-peer mode (default: `false`)
+  - When disabled, operates in centralized mode
+
+- **`-p2p-port <port>`**: DHT peer communication port (default: `:6000`)
+  - Only used in P2P mode
+  - Each node must use a unique port
+  - Example: `-p2p-port :6001`
+
+- **`-bootstrap <addresses>`**: Comma-separated bootstrap node addresses
+  - Required for P2P mode (except for the first/bootstrap node)
+  - Example: `-bootstrap localhost:6000,192.168.1.10:6000`
+
+### Server Configuration (cmd/server/main.go)
+
+Centralized server settings:
+- **`ListenPort`**: Server UDP/TCP port (default: `5000`)
+- **`HeartbeatTimeout`**: Time before removing stale entries (default: `60s`)
+- **`CleanupInterval`**: Cleanup task frequency (default: `10s`)
+- **`BroadcastInterval`**: Server discovery broadcast frequency (default: `5s`)
+
+## Protocol
+
+### Client ↔ Proxy/Server (UDP)
+
+Simple text-based protocol for client operations:
+
+**REGISTER** - Register a service
+```
+Request:  REGISTER <task> <address>
+Response: OK | ERR <message>
+
+Example:
+  → REGISTER web-api 192.168.1.50:8080
+  ← OK
+```
+
+**QUERY** - Query for a service
+```
+Request:  QUERY <task>
+Response: <address> | NOTFOUND | ERR <message>
+
+Example:
+  → QUERY web-api
+  ← 192.168.1.50:8080
+```
+
+**HEARTBEAT** - Keep registration alive
+```
+Request:  HEARTBEAT <task> <address>
+Response: OK | ERR <message>
+
+Example:
+  → HEARTBEAT web-api 192.168.1.50:8080
+  ← OK
+```
+
+### Proxy ↔ Server (Centralized Mode - UDP/TCP)
+
+Same protocol as Client ↔ Proxy, forwarded transparently.
+
+### DHT Inter-Node Protocol (P2P Mode - JSON over TCP)
+
+Nodes communicate using JSON-encoded messages for structured data exchange:
+
+```json
+{
+  "type": "PING|PONG|JOIN|PEERLIST|STORE|FIND|FOUND|NOTFOUND|REDIRECT",
+  "sender": "192.168.1.10:6000",
+  "payload": { ... }
+}
+```
+
+**Message Types:**
+
+- **PING/PONG**: Health checks and keepalive
+  ```json
+  {"type": "PING", "sender": "192.168.1.10:6000"}
+  {"type": "PONG", "sender": "192.168.1.11:6000"}
+  ```
+
+- **JOIN**: New node joining the network
+  ```json
+  {
+    "type": "JOIN",
+    "sender": "192.168.1.12:6000",
+    "payload": {"nodeID": "0x3a7f...", "address": "192.168.1.12:6000"}
+  }
+  ```
+
+- **PEERLIST**: Share known peers
+  ```json
+  {
+    "type": "PEERLIST",
+    "sender": "192.168.1.10:6000",
+    "payload": {
+      "peers": [
+        {"id": "0x1a3f...", "address": "192.168.1.10:6000"},
+        {"id": "0x7b9c...", "address": "192.168.1.11:6000"}
+      ]
+    }
+  }
+  ```
+
+- **STORE**: Replicate task registration
+  ```json
+  {
+    "type": "STORE",
+    "sender": "192.168.1.10:6000",
+    "payload": {"task": "web-api", "address": "10.0.0.5:8080"}
+  }
+  ```
+
+- **FIND**: Query for task
+  ```json
+  {
+    "type": "FIND",
+    "sender": "192.168.1.10:6000",
+    "payload": {"task": "web-api"}
+  }
+  ```
+
+- **FOUND**: Task found response
+  ```json
+  {
+    "type": "FOUND",
+    "sender": "192.168.1.11:6000",
+    "payload": {"task": "web-api", "addresses": ["10.0.0.5:8080", "10.0.0.6:8080"]}
+  }
+  ```
+
+- **NOTFOUND**: Task not found
+  ```json
+  {
+    "type": "NOTFOUND",
+    "sender": "192.168.1.11:6000",
+    "payload": {"task": "web-api"}
+  }
+  ```
+
+- **REDIRECT**: Forward to responsible node
+  ```json
+  {
+    "type": "REDIRECT",
+    "sender": "192.168.1.10:6000",
+    "payload": {"node": "192.168.1.11:6000", "nodeID": "0x7b9c..."}
+  }
+  ```
+
+## Use Cases
+
+### Microservices Discovery
+Register microservices and allow other services to discover them dynamically:
+```bash
+# Service startup registers itself
+REGISTER user-service 10.0.1.5:8080
+REGISTER user-service 10.0.1.6:8080  # second instance
+
+# API gateway queries for available instances
+QUERY user-service  # returns 10.0.1.5:8080 (round-robin)
+QUERY user-service  # returns 10.0.1.6:8080
+```
+
+### Load Balancer Backend Pool
+Use TDS as a simple service registry for load balancers:
+```bash
+REGISTER web-backend 10.0.2.10:80
+REGISTER web-backend 10.0.2.11:80
+REGISTER web-backend 10.0.2.12:80
+
+# Load balancer queries to get next backend
+QUERY web-backend  # automatically rotates through instances
+```
+
+### Edge Computing / IoT
+P2P mode is ideal for edge networks where centralized servers are impractical:
+- Nodes automatically discover each other
+- No single point of failure
+- Tasks distributed across edge nodes
+
+## Performance
+
+### Centralized Mode
+- **Latency**: ~1-2ms for local network queries
+- **Throughput**: ~10k+ queries/sec on single server
+- **Scalability**: Vertical (single server bottleneck)
+- **Consistency**: Strong (immediate)
+- **Network Overhead**: Minimal (direct client→server)
+- **Best For**: Small to medium deployments, development, testing
+
+### P2P Mode
+- **Latency**: ~5-10ms (includes DHT lookup and potential multi-hop)
+- **Throughput**: Scales linearly with node count
+- **Scalability**: Horizontal (add more nodes)
+- **Consistency**: Eventual (propagation delay)
+- **Network Overhead**: Medium (peer gossip, DHT maintenance)
+- **Best For**: Large-scale deployments, high availability requirements
+
+## Comparison: Centralized vs P2P
+
+| Feature | Centralized Mode | P2P Mode (DHT) |
+|---------|------------------|----------------|
+| **Setup Complexity** | Low - single server | Medium - bootstrap coordination |
+| **Deployment** | 1 server + N proxies | N peer nodes |
+| **Scalability** | Limited (single server) | High (horizontal) |
+| **Single Point of Failure** | Yes | No |
+| **Consistency** | Strong | Eventual |
+| **Latency** | Very Low (1-2ms) | Low (5-10ms) |
+| **Network Overhead** | Minimal | Medium (gossip) |
+| **Discovery** | UDP broadcast | Bootstrap nodes |
+| **Monitoring** | Built-in TUI | Distributed (per-node) |
+| **Debugging** | Easy (centralized logs) | Complex (distributed traces) |
+| **Fault Tolerance** | Restart server | Automatic (ring rebalance) |
+| **Load Distribution** | Server decides | Hash-based automatic |
+| **Best For** | Dev/test, small scale | Production, large scale |
+
+## Limitations & Considerations
+
+### Current Limitations
+- **No authentication/authorization**: Trusts all clients and nodes
+- **No encryption**: All communication in plaintext (UDP/TCP)
+- **No persistent storage**: All data in-memory only (lost on restart)
+- **P2P eventual consistency**: Updates take time to propagate
+- **No data replication**: Single copy of each task registration (P2P mode)
+- **Limited network partition handling**: Split-brain scenarios not fully resolved
+
+### Centralized Mode Specific
+- **Single point of failure**: Server restart loses all registrations
+- **Vertical scaling limits**: One server handles all load
+- **No geographic distribution**: All data in one location
+
+### P2P Mode Specific
+- **Bootstrap dependency**: Need at least one reachable bootstrap node
+- **Network churn overhead**: Frequent node joins/leaves impact performance
+- **Debugging complexity**: Distributed logs and traces
+- **Consistency delays**: Registration may not be immediately queryable
+
+## Monitoring & Operations
+
+### Centralized Mode - TUI Dashboard
+
+The server includes a real-time terminal interface:
+- **Services View**: All registered tasks and their addresses
+- **Statistics**: Total registrations, queries, query distribution
+- **Heartbeat Monitoring**: Last seen timestamp for each service
+- **Interactive Commands**: Type commands directly in the TUI
+  - `stats` - Show detailed statistics
+  - `help` - List all commands
+  - `quit` - Graceful shutdown
+
+### P2P Mode - Interactive Console
+
+Each client proxy node provides a command console:
+- `stats` - Registration and query counters
+- `dht` - DHT ring information:
+  - Current node ID and position
+  - Number of peers in ring
+  - Tasks stored locally
+  - Ring size and distribution
+- `peers` - List of known peer nodes with IDs and addresses
+- `help` - Available commands
+- `quit` - Graceful shutdown
+
+### Troubleshooting
+
+**Centralized Mode:**
+- **Server not found**: Check UDP broadcast works on your network, or set `TDS_SERVER_ADDR` manually
+- **Services timing out**: Increase `HeartbeatTimeout` or implement automatic heartbeat in clients
+- **High latency**: Check network between client→proxy→server
+
+**P2P Mode:**
+- **Node can't join**: Verify bootstrap node(s) are reachable via TCP on p2p-port
+- **Tasks not found after registration**: Wait for DHT propagation (typically < 1 second)
+- **High error rate**: Check inter-node network latency, ensure 3+ nodes in ring
+- **Ring instability**: Reduce node churn, implement retry logic for transient failures
+
+## Future Enhancements
+
+### Planned Features
+- [ ] **TLS/Encryption**: Secure communication for production use
+- [ ] **Authentication & Authorization**: Token-based access control
+- [ ] **Persistent Storage**: PostgreSQL backend implementation (started in `pkg/store/postgres`)
+- [ ] **Data Replication**: Store tasks on multiple nodes (P2P mode)
+- [ ] **DHT Stabilization**: Improved handling of node churn
+- [ ] **NAT Traversal**: STUN/TURN for P2P across NAT boundaries
+- [ ] **Web Dashboard**: HTTP API and web UI for monitoring
+- [ ] **Metrics & Tracing**: Prometheus metrics, OpenTelemetry integration
+- [ ] **Health Checks**: Active probing of registered services
+- [ ] **Service Metadata**: Tags, versions, weights for advanced routing
+- [ ] **Geographic Awareness**: Prefer nearby services in queries
+
+### Under Consideration
+- Hybrid mode (centralized discovery + P2P failover)
+- Raft consensus for strong consistency in P2P
+- gRPC protocol option alongside UDP
+- Client SDK for multiple languages (Python, JavaScript, etc.)
+
+## Documentation
+
+### Project Files
+- [README.md](README.md) - This file (comprehensive guide)
+- [P2P_MODE.md](P2P_MODE.md) - Original P2P mode specification
+- [P2P_IMPLEMENTATION_SUMMARY.md](P2P_IMPLEMENTATION_SUMMARY.md) - Implementation details
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick command reference
+- [notes.txt](notes.txt) - Development notes and TODOs
+
+### Key Source Files
+- [cmd/server/main.go](cmd/server/main.go) - Centralized server with TUI
+- [cmd/client_proxy/main.go](cmd/client_proxy/main.go) - Proxy with dual mode support
+- [pkg/dht/distributed_hash_table.go](pkg/dht/distributed_hash_table.go) - DHT implementation
+- [pkg/registry/memory.go](pkg/registry/memory.go) - In-memory registry
+- [pkg/transport/udp_server.go](pkg/transport/udp_server.go) - UDP transport layer
+- [tests/distributed_hash_table_test.go](tests/distributed_hash_table_test.go) - DHT tests
+
+
