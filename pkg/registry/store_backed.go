@@ -11,26 +11,30 @@ import (
 )
 
 // StoreBackedRegistry implements Registry by delegating to a Store backend for persistence
-// while maintaining an in-memory cache for performance.
+// while maintaining an in-memory LFU cache for performance.
 type StoreBackedRegistry struct {
 	store           store.Store
-	memCache        *MemoryRegistry // In-memory cache
+	memCache        *MemoryRegistry // In-memory LFU cache (top X most queried)
 	cacheMutex      sync.RWMutex
 	lastCacheSync   time.Time
 	cacheSyncPeriod time.Duration // How often to sync cache from DB
+	cacheMaxSize    int           // Maximum number of task entries to cache (0 = unlimited)
 }
 
-// NewStoreBackedRegistry creates a new Registry backed by a Store with in-memory caching.
-func NewStoreBackedRegistry(s store.Store) *StoreBackedRegistry {
+// NewStoreBackedRegistry creates a new Registry backed by a Store with in-memory LFU caching.
+// cacheMaxSize: maximum number of tasks to keep in cache (0 = unlimited, loads all from DB)
+func NewStoreBackedRegistry(s store.Store, cacheMaxSize int) *StoreBackedRegistry {
 	return &StoreBackedRegistry{
 		store:           s,
 		memCache:        NewMemoryRegistry(),
 		cacheSyncPeriod: 30 * time.Second,
 		lastCacheSync:   time.Now(),
+		cacheMaxSize:    cacheMaxSize,
 	}
 }
 
-// WarmCacheFromDB loads all entries from the database into the in-memory cache.
+// WarmCacheFromDB loads the top X most queried entries from the database into the in-memory cache.
+// If cacheMaxSize is 0, loads all entries (backward compatible behavior).
 func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	services, err := sr.store.ListServices(ctx)
 	if err != nil {
@@ -41,12 +45,57 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	sr.memCache = NewMemoryRegistry() // Reset cache
 	sr.cacheMutex.Unlock()
 
-	// Populate the cache with all services from the database
-	for task, entries := range services {
-		for _, e := range entries {
-			// Register in cache (this updates LastHeartbeat to now, which is fine for initial load)
-			sr.memCache.Register(task, e.Address)
+	// If no limit, load everything (backward compatible)
+	if sr.cacheMaxSize <= 0 {
+		for task, entries := range services {
+			for _, e := range entries {
+				sr.memCache.Register(task, e.Address)
+			}
 		}
+	} else {
+		// LFU: Select top X tasks by total query count
+		type taskStats struct {
+			task       string
+			totalCount int64
+			entries    []store.ServiceEntry
+		}
+
+		taskList := make([]taskStats, 0, len(services))
+		for task, entries := range services {
+			totalCount := int64(0)
+			for _, e := range entries {
+				totalCount += e.QueryCount
+			}
+			taskList = append(taskList, taskStats{
+				task:       task,
+				totalCount: totalCount,
+				entries:    entries,
+			})
+		}
+
+		// Sort by query count descending (most queried first)
+		for i := 0; i < len(taskList); i++ {
+			for j := i + 1; j < len(taskList); j++ {
+				if taskList[j].totalCount > taskList[i].totalCount {
+					taskList[i], taskList[j] = taskList[j], taskList[i]
+				}
+			}
+		}
+
+		// Take top cacheMaxSize tasks
+		limit := sr.cacheMaxSize
+		if limit > len(taskList) {
+			limit = len(taskList)
+		}
+
+		for i := 0; i < limit; i++ {
+			ts := taskList[i]
+			for _, e := range ts.entries {
+				sr.memCache.Register(ts.task, e.Address)
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d/%d tasks (max=%d)\n", limit, len(taskList), sr.cacheMaxSize)
 	}
 
 	sr.cacheMutex.Lock()
@@ -77,27 +126,35 @@ func (sr *StoreBackedRegistry) Register(task, addr string) {
 	}
 }
 
-// GetService retrieves a service from the cache and increments its query count in both cache and DB.
+// GetService retrieves a service from the cache first (fast path).
+// On cache miss, fetches from DB and potentially evicts least-used from cache.
 func (sr *StoreBackedRegistry) GetService(task string) (string, error) {
-	// Read from in-memory cache (fast path)
+	// Try cache first (fast path)
 	addr, err := sr.memCache.GetService(task)
+	if err == nil {
+		// Cache hit - also update query count in DB asynchronously
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = sr.store.GetService(ctx, task)
+		}()
+		return addr, nil
+	}
+
+	// Cache miss - fetch from database
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	entry, err := sr.store.GetService(ctx, task)
 	if err != nil {
 		return "", err
 	}
 
-	// Also update in the persistent store asynchronously
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	// Add to cache (will be included in next sync if frequently used)
+	sr.memCache.Register(task, entry.Address)
+	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', fetched from DB: %s\n", task, entry.Address)
 
-		// Fetch the entry from DB to increment query count
-		_, err := sr.store.GetService(ctx, task)
-		if err == nil {
-			// Query count was already incremented by GetService in the store
-		}
-	}()
-
-	return addr, nil
+	return entry.Address, nil
 }
 
 // Cleanup removes stale entries from both cache and store.

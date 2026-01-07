@@ -21,6 +21,7 @@ const (
 	ListenPort       = 5000
 	HeartbeatTimeout = 60 * time.Second
 	CleanupInterval  = 10 * time.Second
+	CacheMaxSize     = 100 // Maximum number of tasks to keep in cache (0 = unlimited)
 )
 
 var (
@@ -188,19 +189,23 @@ func main() {
 		}
 		cancel()
 
-		storeReg := registry.NewStoreBackedRegistry(s)
+		storeReg := registry.NewStoreBackedRegistry(s, CacheMaxSize)
 
 		// Warm the in-memory cache from the database on startup
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		if err := storeReg.WarmCacheFromDB(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
 		} else {
-			fmt.Fprintln(os.Stderr, "cache warmed from database")
+			if CacheMaxSize > 0 {
+				fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", CacheMaxSize)
+			} else {
+				fmt.Fprintln(os.Stderr, "cache warmed from database (unlimited)")
+			}
 		}
 		cancel()
 
 		reg = storeReg
-		fmt.Fprintln(os.Stderr, "using postgres persistent store with in-memory cache")
+		fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", CacheMaxSize)
 	} else {
 		// Fall back to in-memory registry
 		reg = registry.NewMemoryRegistry()
@@ -266,14 +271,14 @@ func main() {
 		for range ticker.C {
 			removed := reg.Cleanup(HeartbeatTimeout)
 			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
-			
+
 			// Warm cache from DB to ensure UI reflects deleted entries
 			if storeReg, ok := reg.(*registry.StoreBackedRegistry); ok {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = storeReg.WarmCacheFromDB(ctx)
 				cancel()
 			}
-			
+
 			updateDashboardData()
 		}
 	}()
