@@ -1,6 +1,11 @@
 # Test P2P Network with 5 Client Proxies
 # This script starts 5 client proxies in P2P mode and fills them with registrations
 
+# Navigate to project root
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptDir
+Set-Location $projectRoot
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "P2P Network Test - 5 Node Cluster" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -20,8 +25,8 @@ $StartupScripts = @()
 
 # Build the executables first
 Write-Host "[BUILD] Building executables..." -ForegroundColor Yellow
-go build -o client_proxy.exe ./cmd/client_proxy
-go build -o client_demo.exe ./cmd/client_demo
+go build -o cmd\client_proxy\client_proxy.exe ./cmd/client_proxy
+go build -o cmd\client_demo\client_demo.exe ./cmd/client_demo
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Build failed!" -ForegroundColor Red
     exit 1
@@ -42,9 +47,9 @@ function Start-ClientProxy {
     $startupScript = @"
 `$env:TDS_PROXY_LISTEN = ":$ProxyPort"
 if ("$Bootstrap" -eq "") {
-    .\client_proxy.exe -p2p -p2p-port :$P2PPort
+    .\cmd\client_proxy\client_proxy.exe -p2p -p2p-port :$P2PPort
 } else {
-    .\client_proxy.exe -p2p -p2p-port :$P2PPort -bootstrap $Bootstrap
+    .\cmd\client_proxy\client_proxy.exe -p2p -p2p-port :$P2PPort -bootstrap $Bootstrap
 }
 "@
     

@@ -5,6 +5,14 @@
 Write-Host "=== TDS P2P Mode Demo ===" -ForegroundColor Cyan
 Write-Host ""
 
+# Change to project root (parent of test_scripts)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptDir
+Set-Location $projectRoot
+
+Write-Host "Project root: $projectRoot" -ForegroundColor Gray
+Write-Host ""
+
 # Build the project first
 Write-Host "Building project..." -ForegroundColor Yellow
 go build -o client_proxy.exe ./cmd/client_proxy
