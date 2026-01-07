@@ -1,30 +1,33 @@
 package dht
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
 
 var netLogger = log.New(os.Stdout, "[dht] ", log.LstdFlags)
 
+// DHT configuration constants
+const (
+	ReplicationFactor = 3 // Number of nodes to replicate data on (k-closest)
+)
+
 // Message types for DHT communication
 const (
-	MsgPing        = "PING"
-	MsgPong        = "PONG"
-	MsgJoin        = "JOIN"
-	MsgPeerList    = "PEERLIST"
-	MsgStore       = "STORE"
-	MsgFind        = "FIND"
-	MsgFoundData   = "FOUND"
-	MsgNotFound    = "NOTFOUND"
+	MsgPing      = "PING"
+	MsgPong      = "PONG"
+	MsgJoin      = "JOIN"
+	MsgPeerList  = "PEERLIST"
+	MsgStore     = "STORE"
+	MsgFind      = "FIND"
+	MsgFoundData = "FOUND"
+	MsgNotFound  = "NOTFOUND"
 )
 
 // Message represents a DHT protocol message
@@ -84,24 +87,24 @@ func (dn *DHTNetwork) Start() error {
 		return fmt.Errorf("dht listen: %w", err)
 	}
 	dn.listener = ln
-	
-	netLogger.Printf("DHT listening on %s (node ID: %s)", 
+
+	netLogger.Printf("DHT listening on %s (node ID: %s)",
 		dn.dht.listenAddr, NodeIDToString(dn.dht.self.ID))
-	
+
 	// start accepting connections
 	dn.wg.Add(1)
 	go dn.acceptLoop()
-	
+
 	// join the network if we have bootstrap nodes
 	if len(dn.bootstraps) > 0 {
 		dn.wg.Add(1)
 		go dn.joinNetwork()
 	}
-	
+
 	// periodic peer maintenance
 	dn.wg.Add(1)
 	go dn.maintenanceLoop()
-	
+
 	return nil
 }
 
@@ -118,7 +121,7 @@ func (dn *DHTNetwork) Stop() error {
 // acceptLoop accepts incoming connections
 func (dn *DHTNetwork) acceptLoop() {
 	defer dn.wg.Done()
-	
+
 	for {
 		conn, err := dn.listener.Accept()
 		if err != nil {
@@ -138,14 +141,14 @@ func (dn *DHTNetwork) acceptLoop() {
 func (dn *DHTNetwork) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
-	
+
 	decoder := json.NewDecoder(conn)
 	var msg Message
 	if err := decoder.Decode(&msg); err != nil {
 		netLogger.Printf("decode error: %v", err)
 		return
 	}
-	
+
 	response := dn.handleMessage(&msg)
 	if response != nil {
 		encoder := json.NewEncoder(conn)
@@ -161,14 +164,14 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 	if msg.Sender != "" && msg.Sender != dn.dht.listenAddr {
 		dn.dht.AddPeer(msg.Sender)
 	}
-	
+
 	switch msg.Type {
 	case MsgPing:
 		return &Message{
 			Type:   MsgPong,
 			Sender: dn.dht.listenAddr,
 		}
-		
+
 	case MsgJoin:
 		// someone is joining the network, send them our peer list
 		peers := dn.dht.GetPeers()
@@ -182,44 +185,40 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			Sender:  dn.dht.listenAddr,
 			Payload: payload,
 		}
-		
+
 	case MsgStore:
 		var sp StorePayload
 		if err := json.Unmarshal(msg.Payload, &sp); err != nil {
 			netLogger.Printf("store unmarshal error: %v", err)
 			return nil
 		}
-		
-		// check if we're responsible for this task
-		if dn.dht.IsResponsibleFor(sp.Task) {
+
+		// Check if we're in the k-closest nodes for this task
+		if dn.dht.AmIInKClosest(sp.Task, ReplicationFactor) {
 			dn.dht.StoreTask(sp.Task, sp.Address)
-			netLogger.Printf("stored %s -> %s", sp.Task, sp.Address)
+			netLogger.Printf("stored %s -> %s (in k-closest)", sp.Task, sp.Address)
 			return &Message{
 				Type:   "OK",
 				Sender: dn.dht.listenAddr,
 			}
 		}
-		
-		// not responsible, forward to correct node
-		closest := dn.dht.FindClosestNode(sp.Task)
-		if closest.ID != dn.dht.self.ID {
-			// forward to the responsible node
-			go dn.ForwardStore(closest.Address, sp.Task, sp.Address)
-		}
+
+		// Not in k-closest, reject (no forwarding)
+		netLogger.Printf("rejected store for %s (not in k-closest)", sp.Task)
 		return &Message{
-			Type:   "FORWARDED",
+			Type:   "NOT_RESPONSIBLE",
 			Sender: dn.dht.listenAddr,
 		}
-		
+
 	case MsgFind:
 		var fp FindPayload
 		if err := json.Unmarshal(msg.Payload, &fp); err != nil {
 			netLogger.Printf("find unmarshal error: %v", err)
 			return nil
 		}
-		
-		// check if we're responsible for this task
-		if dn.dht.IsResponsibleFor(fp.Task) {
+
+		// Check if we're in k-closest for this task
+		if dn.dht.AmIInKClosest(fp.Task, ReplicationFactor) {
 			addrs := dn.dht.LookupTask(fp.Task)
 			if len(addrs) > 0 {
 				payload, _ := json.Marshal(FoundPayload{
@@ -237,52 +236,47 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 				Sender: dn.dht.listenAddr,
 			}
 		}
-		
-		// not responsible, return the responsible node address
-		closest := dn.dht.FindClosestNode(fp.Task)
-		payload, _ := json.Marshal(map[string]string{
-			"redirect": closest.Address,
-		})
+
+		// Not in k-closest, return not found (client will try other k-closest nodes)
 		return &Message{
-			Type:    "REDIRECT",
-			Sender:  dn.dht.listenAddr,
-			Payload: payload,
+			Type:   MsgNotFound,
+			Sender: dn.dht.listenAddr,
 		}
 	}
-	
+
 	return nil
 }
 
 // joinNetwork contacts bootstrap nodes to join the DHT
 func (dn *DHTNetwork) joinNetwork() {
 	defer dn.wg.Done()
-	
+
 	// try each bootstrap node
 	for _, bootstrap := range dn.bootstraps {
 		if bootstrap == dn.dht.listenAddr {
 			continue // don't join ourselves
 		}
-		
+
 		netLogger.Printf("joining via bootstrap node %s", bootstrap)
-		
+
 		msg := Message{
 			Type:   MsgJoin,
 			Sender: dn.dht.listenAddr,
 		}
-		
+
 		resp, err := dn.sendMessage(bootstrap, &msg)
 		if err != nil {
 			netLogger.Printf("join error with %s: %v", bootstrap, err)
 			continue
 		}
-		
+
 		if resp.Type == MsgPeerList {
 			var pl PeerListPayload
 			if err := json.Unmarshal(resp.Payload, &pl); err != nil {
 				netLogger.Printf("peer list unmarshal error: %v", err)
 				continue
 			}
-			
+
 			netLogger.Printf("received %d peers from %s", len(pl.Peers), bootstrap)
 			for _, peer := range pl.Peers {
 				if peer != dn.dht.listenAddr {
@@ -290,21 +284,21 @@ func (dn *DHTNetwork) joinNetwork() {
 				}
 			}
 		}
-		
+
 		// add the bootstrap node itself
 		dn.dht.AddPeer(bootstrap)
 	}
-	
+
 	netLogger.Printf("joined network, %d peers known", dn.dht.GetRingSize()-1)
 }
 
 // maintenanceLoop performs periodic DHT maintenance
 func (dn *DHTNetwork) maintenanceLoop() {
 	defer dn.wg.Done()
-	
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-dn.ctx.Done():
@@ -315,7 +309,7 @@ func (dn *DHTNetwork) maintenanceLoop() {
 			for _, peer := range peers {
 				go dn.pingPeer(peer.Address)
 			}
-			
+
 			// cleanup stale data
 			removed := dn.dht.CleanupStaleData()
 			if removed > 0 {
@@ -331,7 +325,7 @@ func (dn *DHTNetwork) pingPeer(addr string) {
 		Type:   MsgPing,
 		Sender: dn.dht.listenAddr,
 	}
-	
+
 	_, err := dn.sendMessage(addr, &msg)
 	if err != nil {
 		// peer is unreachable, remove it
@@ -348,127 +342,120 @@ func (dn *DHTNetwork) sendMessage(addr string, msg *Message) (*Message, error) {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
-	
+
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	
+
 	encoder := json.NewEncoder(conn)
 	if err := encoder.Encode(msg); err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
-	
+
 	decoder := json.NewDecoder(conn)
 	var resp Message
 	if err := decoder.Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
-	
+
 	return &resp, nil
 }
 
-// Store sends a STORE request to the appropriate node
+// Store sends a STORE request to the k-closest nodes (no forwarding)
 func (dn *DHTNetwork) Store(task, address string) error {
-	closest := dn.dht.FindClosestNode(task)
-	
-	// if we're responsible, store locally
-	if closest.ID == dn.dht.self.ID {
-		dn.dht.StoreTask(task, address)
-		netLogger.Printf("stored locally: %s -> %s", task, address)
-		return nil
+	kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
+
+	successCount := 0
+	var lastErr error
+
+	// Store on all k-closest nodes
+	for _, node := range kClosest {
+		if node.ID == dn.dht.self.ID {
+			// Store locally
+			dn.dht.StoreTask(task, address)
+			netLogger.Printf("stored locally (k=%d): %s -> %s", ReplicationFactor, task, address)
+			successCount++
+		} else {
+			// Send to peer
+			payload, _ := json.Marshal(StorePayload{
+				Task:    task,
+				Address: address,
+			})
+
+			msg := Message{
+				Type:    MsgStore,
+				Sender:  dn.dht.listenAddr,
+				Payload: payload,
+			}
+
+			_, err := dn.sendMessage(node.Address, &msg)
+			if err != nil {
+				netLogger.Printf("failed to store on %s: %v", node.Address, err)
+				lastErr = err
+			} else {
+				netLogger.Printf("stored on %s (k=%d): %s -> %s", node.Address, ReplicationFactor, task, address)
+				successCount++
+			}
+		}
 	}
-	
-	// otherwise, send to the responsible node
-	payload, _ := json.Marshal(StorePayload{
-		Task:    task,
-		Address: address,
-	})
-	
-	msg := Message{
-		Type:    MsgStore,
-		Sender:  dn.dht.listenAddr,
-		Payload: payload,
+
+	// Require at least one successful store
+	if successCount == 0 {
+		return fmt.Errorf("failed to store on any node: %w", lastErr)
 	}
-	
-	_, err := dn.sendMessage(closest.Address, &msg)
-	if err != nil {
-		return fmt.Errorf("store to %s: %w", closest.Address, err)
-	}
-	
-	netLogger.Printf("stored on %s: %s -> %s", closest.Address, task, address)
+
+	netLogger.Printf("store complete: %d/%d replicas for %s", successCount, len(kClosest), task)
 	return nil
 }
 
-// Find sends a FIND request to retrieve task addresses
+// Find sends a FIND request to retrieve task addresses from k-closest nodes
 func (dn *DHTNetwork) Find(task string) ([]string, error) {
-	closest := dn.dht.FindClosestNode(task)
-	
-	// if we're responsible, lookup locally
-	if closest.ID == dn.dht.self.ID {
-		addrs := dn.dht.LookupTask(task)
-		netLogger.Printf("found locally: %s -> %d addresses", task, len(addrs))
-		return addrs, nil
+	kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
+
+	// Check locally first if we're in k-closest
+	for _, node := range kClosest {
+		if node.ID == dn.dht.self.ID {
+			addrs := dn.dht.LookupTask(task)
+			if len(addrs) > 0 {
+				netLogger.Printf("found locally: %s -> %d addresses", task, len(addrs))
+				return addrs, nil
+			}
+			break
+		}
 	}
-	
-	// otherwise, query the responsible node
+
+	// Query k-closest peers until we get a result
 	payload, _ := json.Marshal(FindPayload{Task: task})
-	
 	msg := Message{
 		Type:    MsgFind,
 		Sender:  dn.dht.listenAddr,
 		Payload: payload,
 	}
-	
-	maxRedirects := 3
-	targetAddr := closest.Address
-	
-	for i := 0; i < maxRedirects; i++ {
-		resp, err := dn.sendMessage(targetAddr, &msg)
-		if err != nil {
-			return nil, fmt.Errorf("find from %s: %w", targetAddr, err)
+
+	for _, node := range kClosest {
+		if node.ID == dn.dht.self.ID {
+			continue // Already checked locally
 		}
-		
+
+		resp, err := dn.sendMessage(node.Address, &msg)
+		if err != nil {
+			netLogger.Printf("find from %s failed: %v", node.Address, err)
+			continue
+		}
+
 		if resp.Type == MsgFoundData {
 			var fp FoundPayload
 			if err := json.Unmarshal(resp.Payload, &fp); err != nil {
-				return nil, fmt.Errorf("unmarshal found: %w", err)
+				netLogger.Printf("unmarshal found error: %v", err)
+				continue
 			}
-			netLogger.Printf("found on %s: %s -> %d addresses", targetAddr, task, len(fp.Addresses))
-			return fp.Addresses, nil
-		}
-		
-		if resp.Type == MsgNotFound {
-			return nil, nil
-		}
-		
-		if resp.Type == "REDIRECT" {
-			var redirect map[string]string
-			if err := json.Unmarshal(resp.Payload, &redirect); err != nil {
-				return nil, fmt.Errorf("unmarshal redirect: %w", err)
+			if len(fp.Addresses) > 0 {
+				netLogger.Printf("found on %s: %s -> %d addresses", node.Address, task, len(fp.Addresses))
+				return fp.Addresses, nil
 			}
-			targetAddr = redirect["redirect"]
-			continue
 		}
-		
-		return nil, fmt.Errorf("unexpected response: %s", resp.Type)
 	}
-	
-	return nil, fmt.Errorf("too many redirects")
-}
 
-// ForwardStore forwards a store request to another node
-func (dn *DHTNetwork) ForwardStore(targetAddr, task, address string) error {
-	payload, _ := json.Marshal(StorePayload{
-		Task:    task,
-		Address: address,
-	})
-	
-	msg := Message{
-		Type:    MsgStore,
-		Sender:  dn.dht.listenAddr,
-		Payload: payload,
-	}
-	
-	_, err := dn.sendMessage(targetAddr, &msg)
-	return err
+	netLogger.Printf("not found on any k-closest node: %s", task)
+	return nil, nil
 }
 
 // ListenForBroadcasts listens for server broadcasts on the discovery port
@@ -481,17 +468,17 @@ func (dn *DHTNetwork) ListenForBroadcasts(port int) {
 		return
 	}
 	defer conn.Close()
-	
+
 	netLogger.Printf("listening for broadcasts on UDP %d", port)
 	buf := make([]byte, 4096)
-	
+
 	for {
 		select {
 		case <-dn.ctx.Done():
 			return
 		default:
 		}
-		
+
 		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -501,13 +488,13 @@ func (dn *DHTNetwork) ListenForBroadcasts(port int) {
 			netLogger.Printf("read broadcast: %v", err)
 			continue
 		}
-		
+
 		// try to parse as JSON
 		var announcement map[string]interface{}
 		if err := json.Unmarshal(buf[:n], &announcement); err != nil {
 			continue
 		}
-		
+
 		// check if it's a TDS server announcement
 		if typ, ok := announcement["type"].(string); ok && typ == "tds_server" {
 			if addr, ok := announcement["address"].(string); ok {
@@ -519,48 +506,4 @@ func (dn *DHTNetwork) ListenForBroadcasts(port int) {
 			}
 		}
 	}
-}
-
-// SendUDP sends a simple UDP message (for backward compatibility with existing proxy)
-func SendUDP(serverAddr, command string) (string, error) {
-	conn, err := net.DialTimeout("udp", serverAddr, 2*time.Second)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	
-	if _, err := fmt.Fprintf(conn, "%s\n", command); err != nil {
-		return "", err
-	}
-	
-	buf := make([]byte, 2048)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return "", err
-	}
-	
-	return strings.TrimSpace(string(buf[:n])), nil
-}
-
-// DialTCP sends a command over TCP and returns the response
-func DialTCP(serverAddr, command string) (string, error) {
-	conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	
-	fmt.Fprintf(conn, "%s\n", command)
-	
-	r := bufio.NewReader(conn)
-	resp, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	
-	return strings.TrimSpace(resp), nil
 }

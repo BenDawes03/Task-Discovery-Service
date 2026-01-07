@@ -163,19 +163,76 @@ Supports both UDP and TCP transports with automatic timeout handling.
 
 ### DHT Package (`pkg/dht`)
 Distributed hash table implementation for P2P mode:
+
+**Core Features:**
 - **Consistent Hashing**: SHA256-based node and task IDs
+- **K-Replication**: Data replicated on k=3 closest nodes for fault tolerance
 - **Ring Maintenance**: Automatic peer addition/removal
 - **Task Storage**: Local storage for responsible tasks
 - **Peer Discovery**: Join network via bootstrap nodes
-- **Closest Node Lookup**: Binary search for task responsibility
+- **Closest Node Lookup**: XOR distance metric for responsibility calculation
 - **JSON Protocol**: Inter-node communication messages:
   - `PING/PONG`: Health checks and keepalive
   - `JOIN`: Network join requests
   - `PEERLIST`: Peer information exchange
-  - `STORE`: Task registration propagation
-  - `FIND`: Task query routing
+  - `STORE`: Task registration to k-closest nodes
+  - `FIND`: Task query from k-closest nodes
   - `FOUND/NOTFOUND`: Query responses
-  - `REDIRECT`: Forward to responsible node
+
+**Concurrency Model:**
+
+The DHT uses a `sync.RWMutex` to protect shared state (ring, peers, storage). To avoid deadlocks and improve performance, we use the **`*Locked` pattern**:
+
+```go
+// Public methods - thread-safe, take lock
+func (dht *DHT) AmIInKClosest(task string, k int) bool {
+    dht.mutex.RLock()  // Takes lock
+    defer dht.mutex.RUnlock()
+    return dht.amIInKClosestLocked(task, k)
+}
+
+// Private *Locked methods - NOT thread-safe, assume lock held
+func (dht *DHT) amIInKClosestLocked(task string, k int) bool {
+    // No lock - caller must hold lock
+    // Safe to access dht.ring directly
+}
+```
+
+**Why `*Locked` methods?**
+
+1. **Avoid Deadlock**: Go's `sync.RWMutex` doesn't support recursive locking. If a method holding a write lock called another method that tried to take a read lock, it would deadlock.
+
+2. **Performance**: When already holding a lock (e.g., in `CleanupStaleData` iterating over storage), avoid repeated lock/unlock overhead.
+
+3. **Atomicity**: Keep entire operation under one lock for consistent view of data structures.
+
+```go
+// ✅ Safe - one lock for entire operation
+func (dht *DHT) CleanupStaleData() int {
+    dht.mutex.Lock()
+    defer dht.mutex.Unlock()
+    
+    for task := range dht.storage {
+        if !dht.amIInKClosestLocked(task, k) {  // No lock
+            delete(dht.storage, task)
+        }
+    }
+}
+
+// ❌ Would deadlock
+func (dht *DHT) CleanupStaleData() int {
+    dht.mutex.Lock()
+    defer dht.mutex.Unlock()
+    
+    for task := range dht.storage {
+        if !dht.AmIInKClosest(task, k) {  // Tries to RLock() → DEADLOCK!
+            delete(dht.storage, task)
+        }
+    }
+}
+```
+
+This is a standard Go idiom used throughout the standard library (e.g., `container/list`, `container/heap`).
 
 ### Registry Package (`pkg/registry`)
 Core registry abstraction layer:
@@ -598,40 +655,53 @@ Each client proxy node provides a command console:
 
 ## Future Enhancements
 
+### Known Issues & TODOs
+
+#### P2P DHT Data Consistency
+**Problem:** When a node joins the DHT network with incomplete peer knowledge, it may store data on incorrect nodes:
+
+1. **Incomplete Ring Discovery**: A newly joined node may only know about bootstrap nodes initially
+2. **Incorrect Storage Location**: The node calculates k-closest based on incomplete ring, storing data on wrong nodes
+3. **Data Loss During Cleanup**: The `CleanupStaleData()` function currently **deletes** misplaced data instead of transferring it to correct nodes
+4. **Query Failures**: Queries to the correct nodes return NOTFOUND because data is stored elsewhere
+
+**Current Mitigation:**
+- K-closest replication (k=3) provides some redundancy
+- Passive peer discovery via message exchange gradually improves ring knowledge
+- No forwarding prevents infinite loops
+
+**TODO - High Priority:**
+- [ ] **Implement data transfer in CleanupStaleData()**: Transfer misplaced data to correct k-closest nodes instead of deleting
+- [ ] **Add TTL/hop limit**: Prevent potential forwarding storms if forwarding is re-enabled
+- [ ] **Implement visited-list tracking**: Detect and break forwarding loops
+- [ ] **Add stabilization protocol**: Periodic data redistribution when ring membership changes
+- [ ] **Implement anti-entropy**: Background sync to fix inconsistencies between replicas
+
+**Workaround for Production:**
+- Ensure workers send periodic heartbeat/re-registrations
+- Use larger replication factor (k=5 or higher) for critical tasks
+- Pre-seed new nodes with complete peer list before allowing them to store data
+
+---
+
 ### Planned Features
 - [ ] **TLS/Encryption**: Secure communication for production use
 - [ ] **Authentication & Authorization**: Token-based access control
 - [ ] **Persistent Storage**: PostgreSQL backend implementation (started in `pkg/store/postgres`)
-- [ ] **Data Replication**: Store tasks on multiple nodes (P2P mode)
+- [ ] **Data Replication**: Store tasks on multiple nodes (P2P mode) ✅ **Implemented (k=3)**
 - [ ] **DHT Stabilization**: Improved handling of node churn
-- [ ] **NAT Traversal**: STUN/TURN for P2P across NAT boundaries
-- [ ] **Web Dashboard**: HTTP API and web UI for monitoring
-- [ ] **Metrics & Tracing**: Prometheus metrics, OpenTelemetry integration
+
 - [ ] **Health Checks**: Active probing of registered services
 - [ ] **Service Metadata**: Tags, versions, weights for advanced routing
-- [ ] **Geographic Awareness**: Prefer nearby services in queries
+
 
 ### Under Consideration
 - Hybrid mode (centralized discovery + P2P failover)
 - Raft consensus for strong consistency in P2P
-- gRPC protocol option alongside UDP
-- Client SDK for multiple languages (Python, JavaScript, etc.)
+- 
 
 ## Documentation
 
 ### Project Files
 - [README.md](README.md) - This file (comprehensive guide)
-- [P2P_MODE.md](P2P_MODE.md) - Original P2P mode specification
-- [P2P_IMPLEMENTATION_SUMMARY.md](P2P_IMPLEMENTATION_SUMMARY.md) - Implementation details
-- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick command reference
-- [notes.txt](notes.txt) - Development notes and TODOs
-
-### Key Source Files
-- [cmd/server/main.go](cmd/server/main.go) - Centralized server with TUI
-- [cmd/client_proxy/main.go](cmd/client_proxy/main.go) - Proxy with dual mode support
-- [pkg/dht/distributed_hash_table.go](pkg/dht/distributed_hash_table.go) - DHT implementation
-- [pkg/registry/memory.go](pkg/registry/memory.go) - In-memory registry
-- [pkg/transport/udp_server.go](pkg/transport/udp_server.go) - UDP transport layer
-- [tests/distributed_hash_table_test.go](tests/distributed_hash_table_test.go) - DHT tests
-
 
