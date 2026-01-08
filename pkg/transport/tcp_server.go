@@ -2,8 +2,11 @@ package transport
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"tds/pkg/registry"
 )
@@ -79,5 +82,78 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 		default:
 			conn.Write([]byte("ERR\n"))
 		}
+	}
+}
+
+// StartTCPServerTLS starts a TLS-enabled TCP server with mutual authentication.
+// Requires server certificate/key and CA cert to verify client certificates.
+func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clientCAFile string, onEvent func(string)) error {
+	// Load server certificate
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load server cert: %w", err)
+	}
+
+	// Load CA cert to verify client certificates
+	caCert, err := os.ReadFile(clientCAFile)
+	if err != nil {
+		return fmt.Errorf("load client CA cert: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return fmt.Errorf("failed to parse client CA certificate")
+	}
+
+	// Configure TLS with mutual authentication
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert, // Require client certificates
+		ClientCAs:    caCertPool,
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	ln, err := tls.Listen("tcp", addr, config)
+	if err != nil {
+		return fmt.Errorf("listen tls: %w", err)
+	}
+	defer ln.Close()
+
+	if onEvent != nil {
+		onEvent(fmt.Sprintf("TLS server started on %s (mutual auth enabled)", addr))
+	}
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			fmt.Printf("tls accept error: %v\n", err)
+			continue
+		}
+
+		// Verify TLS connection and extract client certificate info
+		tlsConn, ok := conn.(*tls.Conn)
+		if ok {
+			if err := tlsConn.Handshake(); err != nil {
+				fmt.Printf("tls handshake error: %v\n", err)
+				conn.Close()
+				continue
+			}
+			state := tlsConn.ConnectionState()
+			if len(state.PeerCertificates) > 0 {
+				clientCert := state.PeerCertificates[0]
+				if onEvent != nil {
+					onEvent(fmt.Sprintf("TLS client authenticated: %s (CN=%s)",
+						conn.RemoteAddr(), clientCert.Subject.CommonName))
+				}
+			}
+		}
+
+		go handleTCPConn(conn, reg, onEvent)
 	}
 }

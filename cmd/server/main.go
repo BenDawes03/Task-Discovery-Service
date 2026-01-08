@@ -29,6 +29,12 @@ var (
 	heartbeatTimeout time.Duration
 	cleanupInterval  time.Duration
 
+	// TLS configuration
+	enableTLS   bool
+	tlsCertFile string
+	tlsKeyFile  string
+	tlsClientCA string
+
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -163,6 +169,10 @@ func main() {
 	// Parse command-line flags
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
+	flag.BoolVar(&enableTLS, "tls", false, "Enable TLS with mutual authentication (requires TCP mode)")
+	flag.StringVar(&tlsCertFile, "tls-cert", "certs/server.crt", "Server TLS certificate file")
+	flag.StringVar(&tlsKeyFile, "tls-key", "certs/server.key", "Server TLS private key file")
+	flag.StringVar(&tlsClientCA, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
 	flag.Parse()
 
 	// Gather terminal options before starting any server output.
@@ -220,13 +230,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
 	}
 
-	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	// Validate TLS configuration
+	if enableTLS {
+		if transportMode != "tcp" {
+			fmt.Fprintln(os.Stderr, "ERROR: TLS requires TCP mode. Use --tcp with --tls")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "starting server (mode=tcp, tls=enabled, mutual-auth=enabled)\n")
+	} else {
+		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	}
+
 	switch transportMode {
 	case "tcp":
 		go func() {
-			if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
-				fmt.Fprintln(os.Stderr, "tcp server error:", err)
-				os.Exit(1)
+			if enableTLS {
+				if err := transport.StartTCPServerTLS(reg, ListenPort, tlsCertFile, tlsKeyFile, tlsClientCA, logEvent); err != nil {
+					fmt.Fprintln(os.Stderr, "tls server error:", err)
+					os.Exit(1)
+				}
+			} else {
+				if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
+					fmt.Fprintln(os.Stderr, "tcp server error:", err)
+					os.Exit(1)
+				}
 			}
 		}()
 	default:

@@ -2,6 +2,8 @@ package client
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"os"
@@ -107,4 +109,111 @@ func QueryTCP(serverAddr, task string) (string, error) {
 		return "", fmt.Errorf("server error")
 	}
 	return resp, nil
+}
+
+// RegisterTLS performs a TCP register with TLS and mutual authentication.
+// Requires client certificate, key, and CA cert to verify server.
+func RegisterTLS(serverAddr, task, address, certFile, keyFile, caFile string) error {
+	config, err := loadTLSConfig(certFile, keyFile, caFile)
+	if err != nil {
+		return err
+	}
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", serverAddr, config)
+	if err != nil {
+		return fmt.Errorf("tls dial: %w", err)
+	}
+	defer conn.Close()
+
+	// Verify TLS handshake
+	if err := conn.Handshake(); err != nil {
+		return fmt.Errorf("tls handshake: %w", err)
+	}
+
+	// Verify server certificate
+	state := conn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return fmt.Errorf("server provided no certificate")
+	}
+
+	fmt.Fprintf(conn, "REGISTER %s %s\n", task, address)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReader(conn)
+	resp, err := r.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	resp = strings.TrimSpace(resp)
+	if resp == "OK" {
+		return nil
+	}
+	return fmt.Errorf("server error: %s", resp)
+}
+
+// QueryTLS performs a query over TLS with mutual authentication.
+func QueryTLS(serverAddr, task, certFile, keyFile, caFile string) (string, error) {
+	config, err := loadTLSConfig(certFile, keyFile, caFile)
+	if err != nil {
+		return "", err
+	}
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", serverAddr, config)
+	if err != nil {
+		return "", fmt.Errorf("tls dial: %w", err)
+	}
+	defer conn.Close()
+
+	// Verify TLS handshake
+	if err := conn.Handshake(); err != nil {
+		return "", fmt.Errorf("tls handshake: %w", err)
+	}
+
+	fmt.Fprintf(conn, "QUERY %s\n", task)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReader(conn)
+	resp, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	resp = strings.TrimSpace(resp)
+	if resp == "NOTFOUND" {
+		return "", nil
+	}
+	if resp == "ERR" {
+		return "", fmt.Errorf("server error")
+	}
+	return resp, nil
+}
+
+// loadTLSConfig creates a TLS configuration with client certificate and CA verification.
+func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+	// Load client certificate
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load client cert: %w", err)
+	}
+
+	// Load CA cert to verify server
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("load ca cert: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		},
+	}, nil
 }
