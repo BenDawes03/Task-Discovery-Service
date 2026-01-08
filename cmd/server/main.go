@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -18,13 +19,16 @@ import (
 
 // Config
 const (
-	ListenPort       = 5000
-	HeartbeatTimeout = 60 * time.Second
-	CleanupInterval  = 10 * time.Second
-	CacheMaxSize     = 100 // Maximum number of tasks to keep in cache (0 = unlimited)
+	ListenPort      = 5000
+	CleanupInterval = 10 * time.Second
+	CacheMaxSize    = 100 // Maximum number of tasks to keep in cache (0 = unlimited)
 )
 
 var (
+	// Configurable timeouts
+	heartbeatTimeout time.Duration
+	cleanupInterval  time.Duration
+
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -156,6 +160,10 @@ func askTerminalOptions() (string, bool, bool) {
 }
 
 func main() {
+	// Parse command-line flags
+	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
+	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
+	flag.Parse()
 
 	// Gather terminal options before starting any server output.
 	transportMode, runTUI, _ := askTerminalOptions()
@@ -231,7 +239,7 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "Server correctly started")
 	// Broadcast server info on boot (fire-and-forget)
-	go transport.BroadcastServerInfo(ListenPort, HeartbeatTimeout, serverStartTime)
+	go transport.BroadcastServerInfo(ListenPort, heartbeatTimeout, serverStartTime)
 
 	// Build layout
 	flex := tview.NewFlex()
@@ -252,10 +260,10 @@ func main() {
 	if !runTUI {
 		fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
 		// For headless mode, just run cleanup, no UI refresh needed
-		ticker := time.NewTicker(CleanupInterval)
+		ticker := time.NewTicker(cleanupInterval)
 		go func() {
 			for range ticker.C {
-				removed := reg.Cleanup(HeartbeatTimeout)
+				removed := reg.Cleanup(heartbeatTimeout)
 				if removed > 0 {
 					logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
 				}
@@ -266,10 +274,10 @@ func main() {
 
 	// TUI mode: start tickers and UI refresh
 	// Periodic cleanup
-	ticker := time.NewTicker(CleanupInterval)
+	ticker := time.NewTicker(cleanupInterval)
 	go func() {
 		for range ticker.C {
-			removed := reg.Cleanup(HeartbeatTimeout)
+			removed := reg.Cleanup(heartbeatTimeout)
 			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
 
 			// Warm cache from DB to ensure UI reflects deleted entries
