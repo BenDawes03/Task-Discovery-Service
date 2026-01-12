@@ -33,6 +33,13 @@ func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error
 func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
+	
+	// Extract requestor IP for firewall filtering
+	var requestorIP net.IP
+	if tcpAddr, ok := remote.(*net.TCPAddr); ok {
+		requestorIP = tcpAddr.IP
+	}
+	
 	r := bufio.NewReader(conn)
 	for {
 		line, err := r.ReadString('\n')
@@ -62,12 +69,14 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 		case "QUERY":
 			if len(parts) >= 2 {
 				task := parts[1]
-				addrStr, err := reg.GetService(task)
+				addrStr, err := reg.GetServiceForRequestor(task, requestorIP)
 				if onEvent != nil {
 					onEvent(fmt.Sprintf("QUERY %s from %v", task, remote))
 				}
 				if err == registry.ErrNotFound || addrStr == "" {
 					conn.Write([]byte("NOTFOUND\n"))
+				} else if err == registry.ErrNoAllowedService {
+					conn.Write([]byte("FORBIDDEN\n"))
 				} else if err != nil {
 					conn.Write([]byte("ERR\n"))
 				} else {

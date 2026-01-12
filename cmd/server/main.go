@@ -12,6 +12,7 @@ import (
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
+	"tds/pkg/firewall"
 	"tds/pkg/registry"
 	"tds/pkg/store/postgres"
 	"tds/pkg/transport"
@@ -161,22 +162,55 @@ func askTerminalOptions() (string, bool, bool) {
 
 func main() {
 	// Parse command-line flags
+	var firewallRulesPath string
+	var noTUI bool
+	var forceUI bool
+	var useTCP bool
+	var storeURL string
+	
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
+	flag.StringVar(&firewallRulesPath, "firewall-rules", "", "Path to firewall rules file (optional)")
+	flag.BoolVar(&noTUI, "no-tui", false, "Run without interactive TUI")
+	flag.BoolVar(&forceUI, "force-ui", false, "Force TUI mode")
+	flag.BoolVar(&useTCP, "tcp", false, "Use TCP transport instead of UDP")
+	flag.StringVar(&storeURL, "store-url", "", "PostgreSQL connection URL for persistent storage")
 	flag.Parse()
 
-	// Gather terminal options before starting any server output.
-	transportMode, runTUI, _ := askTerminalOptions()
+	// Determine transport mode and TUI settings
+	transportMode := "udp"
+	if useTCP {
+		transportMode = "tcp"
+	}
+	
+	runTUI := !noTUI
+	if forceUI {
+		runTUI = true
+	}
+	
+	// Check if running in interactive terminal
+	if !term.IsTerminal(int(os.Stdin.Fd())) && !forceUI {
+		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
+		runTUI = false
+	}
+
+	// Load firewall rules if specified
+	var fw *firewall.Firewall
+	if firewallRulesPath != "" {
+		var err error
+		fw, err = firewall.LoadFromFile(firewallRulesPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load firewall rules: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
+	} else {
+		fmt.Fprintln(os.Stderr, "no firewall rules specified; all requests will be allowed")
+	}
 
 	// Check for --store-url or DATABASE_URL for persistence.
-	storeURL := os.Getenv("DATABASE_URL")
-
-	// Check for --store-url flag
-	for i, a := range os.Args[1:] {
-		if a == "--store-url" && i+1 < len(os.Args)-1 {
-			storeURL = os.Args[i+2]
-			break
-		}
+	if storeURL == "" {
+		storeURL = os.Getenv("DATABASE_URL")
 	}
 
 	if storeURL != "" {
@@ -198,6 +232,11 @@ func main() {
 		cancel()
 
 		storeReg := registry.NewStoreBackedRegistry(s, CacheMaxSize)
+		
+		// Configure firewall if loaded
+		if fw != nil {
+			storeReg.SetFirewall(fw)
+		}
 
 		// Warm the in-memory cache from the database on startup
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
@@ -216,7 +255,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", CacheMaxSize)
 	} else {
 		// Fall back to in-memory registry
-		reg = registry.NewMemoryRegistry()
+		memReg := registry.NewMemoryRegistry()
+		
+		// Configure firewall if loaded
+		if fw != nil {
+			memReg.SetFirewall(fw)
+		}
+		
+		reg = memReg
 		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
 	}
 

@@ -51,12 +51,16 @@ func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error
 		case "QUERY":
 			if len(parts) >= 2 {
 				task := parts[1]
-				addrStr, err := reg.GetService(task)
+				// Extract requestor IP for firewall filtering
+				requestorIP := remote.IP
+				addrStr, err := reg.GetServiceForRequestor(task, requestorIP)
 				if onEvent != nil {
 					onEvent(fmt.Sprintf("QUERY %s from %v", task, remote))
 				}
 				if err == registry.ErrNotFound || addrStr == "" {
 					conn.WriteToUDP([]byte("NOTFOUND"), remote)
+				} else if err == registry.ErrNoAllowedService {
+					conn.WriteToUDP([]byte("FORBIDDEN"), remote)
 				} else if err != nil {
 					conn.WriteToUDP([]byte("ERR"), remote)
 				} else {

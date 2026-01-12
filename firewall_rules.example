@@ -1,0 +1,18 @@
+# Firewall Rules Example
+# Format: source_ip_or_cidr destination_ip_or_cidr
+# Lines starting with # are comments and are ignored
+# Empty lines are ignored
+
+# Allow client at 192.168.1.10 to reach server at 10.0.0.5
+192.168.1.10 10.0.0.5
+
+# Allow entire client subnet to access server subnet
+192.168.1.0/24 10.0.0.0/24
+
+# Allow specific client to reach multiple servers
+192.168.1.20 10.0.0.10
+192.168.1.20 10.0.0.11
+192.168.1.20 10.0.0.12
+
+# Allow specific subnet to access specific server
+10.1.0.0/16 172.16.0.100

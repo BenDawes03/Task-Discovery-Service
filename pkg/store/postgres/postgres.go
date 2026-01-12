@@ -48,10 +48,10 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 // Register adds or updates a service entry.
 func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store.ServiceEntry) error {
 	query := `
-		INSERT INTO services (task, address, last_heartbeat, query_count, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		INSERT INTO services (task, address, last_heartbeat, query_count, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, TRUE, NOW(), NOW())
 		ON CONFLICT (task, address) DO UPDATE
-		SET last_heartbeat = EXCLUDED.last_heartbeat, updated_at = NOW()
+		SET last_heartbeat = EXCLUDED.last_heartbeat, is_active = TRUE, updated_at = NOW()
 	`
 	_, err := ps.db.ExecContext(ctx, query, task, entry.Address, entry.LastHeartbeat, entry.QueryCount)
 	return err
@@ -59,11 +59,11 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 
 // GetService retrieves a single service by task using round-robin selection and increments query count.
 func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.ServiceEntry, error) {
-	// Retrieve all entries for the task
+	// Retrieve all active entries for the task
 	query := `
 		SELECT address, last_heartbeat, query_count
 		FROM services
-		WHERE task = $1
+		WHERE task = $1 AND is_active = TRUE
 		ORDER BY address ASC
 	`
 	rows, err := ps.db.QueryContext(ctx, query, task)
@@ -113,11 +113,12 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 	return selected, nil
 }
 
-// ListServices returns all services grouped by task.
+// ListServices returns all active services grouped by task.
 func (ps *PostgresStore) ListServices(ctx context.Context) (map[string][]store.ServiceEntry, error) {
 	query := `
 		SELECT task, address, last_heartbeat, query_count
 		FROM services
+		WHERE is_active = TRUE
 		ORDER BY task, address ASC
 	`
 	rows, err := ps.db.QueryContext(ctx, query)
@@ -143,10 +144,16 @@ func (ps *PostgresStore) ListServices(ctx context.Context) (map[string][]store.S
 	return result, nil
 }
 
-// Cleanup removes entries whose LastHeartbeat is older than the timeout.
+// Cleanup marks entries as inactive whose LastHeartbeat is older than the timeout.
+// Records are not deleted from the database to preserve them for logging/audit purposes.
 func (ps *PostgresStore) Cleanup(ctx context.Context, timeout time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-timeout)
-	result, err := ps.db.ExecContext(ctx, "DELETE FROM services WHERE last_heartbeat < $1", cutoff)
+	query := `
+		UPDATE services 
+		SET is_active = FALSE, updated_at = NOW()
+		WHERE last_heartbeat < $1 AND is_active = TRUE
+	`
+	result, err := ps.db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -166,6 +173,7 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 			address TEXT NOT NULL,
 			last_heartbeat TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			query_count BIGINT NOT NULL DEFAULT 0,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			UNIQUE(task, address)
@@ -173,6 +181,7 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 
 		CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);
 		CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);
+		CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);
 	`
 	_, err := ps.db.ExecContext(ctx, query)
 	return err
@@ -181,6 +190,71 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 // Close closes the database connection.
 func (ps *PostgresStore) Close() error {
 	return ps.db.Close()
+}
+
+// ListInactiveServices returns all inactive services for logging/audit purposes.
+// These are services that have been marked inactive by cleanup but preserved in the database.
+func (ps *PostgresStore) ListInactiveServices(ctx context.Context) (map[string][]store.ServiceEntry, error) {
+	query := `
+		SELECT task, address, last_heartbeat, query_count
+		FROM services
+		WHERE is_active = FALSE
+		ORDER BY updated_at DESC, task, address ASC
+	`
+	rows, err := ps.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]store.ServiceEntry)
+	for rows.Next() {
+		var task string
+		var e store.ServiceEntry
+		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount); err != nil {
+			return nil, err
+		}
+		result[task] = append(result[task], e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetServiceHistory returns all services (active and inactive) for a specific task.
+// Useful for debugging and historical analysis.
+func (ps *PostgresStore) GetServiceHistory(ctx context.Context, task string) ([]store.ServiceEntry, error) {
+	query := `
+		SELECT address, last_heartbeat, query_count, is_active
+		FROM services
+		WHERE task = $1
+		ORDER BY is_active DESC, last_heartbeat DESC
+	`
+	rows, err := ps.db.QueryContext(ctx, query, task)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []store.ServiceEntry
+	for rows.Next() {
+		var e store.ServiceEntry
+		var isActive bool
+		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount, &isActive); err != nil {
+			return nil, err
+		}
+		// You could add a field to ServiceEntry to track active status if needed for display
+		entries = append(entries, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return entries, nil
 }
 
 // Ensure PostgresStore implements store.Store.
