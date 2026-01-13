@@ -81,6 +81,11 @@ func logEvent(message string) {
 	if logWriter != nil {
 		logWriter.Write([]byte(logLine))
 	}
+	
+	// Before TUI starts, also print to stderr for visibility
+	if !runningTUI {
+		fmt.Fprint(os.Stderr, logLine)
+	}
 
 	// Queue for TUI update (non-blocking, rate-limited by coordinator)
 	// Filter out high-frequency QUERY operations to prevent TUI spam
@@ -227,7 +232,7 @@ func initLogFile() error {
 	}
 
 	logFile = f
-	logWriter = io.MultiWriter(f, os.Stderr) // Write to both file and stderr
+	logWriter = f // Write to file only (stderr would corrupt TUI)
 	log.SetOutput(logWriter)
 
 	fmt.Fprintf(logWriter, "[%s] ========== Server Started ==========\n", time.Now().Format("2006-01-02 15:04:05"))
@@ -330,6 +335,19 @@ func main() {
 	// Gather terminal options before starting any server output.
 	transportMode, runTUI, _ := askTerminalOptions()
 
+	// If running TUI, redirect stderr to discard to prevent corruption
+	var originalStderr *os.File
+	if runTUI {
+		// Save original stderr for restoration on exit
+		originalStderr = os.Stderr
+		// All further output will go through logEvent() to the TUI
+		os.Stderr = os.NewFile(0, os.DevNull)
+		defer func() {
+			// Restore stderr on exit
+			os.Stderr = originalStderr
+		}()
+	}
+
 	// Check for --store-url or DATABASE_URL for persistence.
 	storeURL := os.Getenv("DATABASE_URL")
 
@@ -421,7 +439,7 @@ func main() {
 	// Build layout
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
-	left.AddItem(searchField, 1, 0, false)
+	left.AddItem(searchField, 3, 0, false)
 	left.AddItem(taskList, 0, 1, true)
 	right := tview.NewFlex().SetDirection(tview.FlexRow)
 	right.AddItem(detailTable, 0, 3, false)
@@ -429,6 +447,7 @@ func main() {
 	flex.AddItem(left, 30, 0, true)
 	flex.AddItem(right, 0, 1, false)
 
+	searchField.SetBorder(true).SetTitle("Filter")
 	taskList.SetBorder(true).SetTitle("Tasks")
 	detailTable.SetBorder(true).SetTitle("Details")
 	logView.SetBorder(true).SetTitle("Log")
@@ -492,9 +511,11 @@ func main() {
 	// Start TUI
 	if err := app.SetRoot(flex, true).Run(); err != nil {
 		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
-		fmt.Fprintln(os.Stderr, "tview run error:", err)
 		os.Exit(1)
 	}
 	logEvent("TUI exited")
-	fmt.Fprintln(os.Stderr, "TUI exited")
+	// Stderr is restored by defer, so this will be visible if we manually restore it
+	if originalStderr != nil {
+		fmt.Fprintln(originalStderr, "TUI exited")
+	}
 }

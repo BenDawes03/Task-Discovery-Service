@@ -1,0 +1,9 @@
+[2026-01-13 16:45:27] ========== Server Started ==========
+[2026-01-13 16:45:27] Log file: logs\server_2026-01-13_16-45-27.log
+[2026-01-13 16:45:28] Using in-memory registry (no persistence)
+[2026-01-13 16:45:28] Starting server on port 5000 (mode=udp)
+[2026-01-13 16:45:28] Server started successfully
+[2026-01-13 16:45:28] Broadcasting server info (heartbeat timeout: 1m0s)
+[2026-01-13 16:45:28] Starting TUI mode
+[2026-01-13 16:45:38] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:45:41] TUI exited

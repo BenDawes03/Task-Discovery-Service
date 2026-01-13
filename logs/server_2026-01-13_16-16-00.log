@@ -1,0 +1,33 @@
+[2026-01-13 16:16:00] ========== Server Started ==========
+[2026-01-13 16:16:00] Log file: logs\server_2026-01-13_16-16-00.log
+[2026-01-13 16:16:02] Using in-memory registry (no persistence)
+[2026-01-13 16:16:02] Starting server on port 5000 (mode=udp)
+[2026-01-13 16:16:02] Server started successfully
+[2026-01-13 16:16:02] Broadcasting server info (heartbeat timeout: 1m0s)
+[2026-01-13 16:16:02] Starting TUI mode
+[2026-01-13 16:16:12] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:16:22] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:16:32] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:16:42] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:16:52] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:02] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:12] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:22] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:32] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:42] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:17:52] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:02] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:12] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:22] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:32] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:42] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:18:52] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:02] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:12] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:22] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:32] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:42] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:19:52] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:20:02] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:20:12] Cleanup ran: removed 0 stale entries
+[2026-01-13 16:20:12] TUI exited
