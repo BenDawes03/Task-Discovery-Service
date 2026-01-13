@@ -2,20 +2,21 @@ package registry
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type MemoryRegistry struct {
 	mutex           sync.RWMutex
 	services        map[string][]ServiceEntry
-	roundRobinIndex map[string]int
-	totalQueries    int64
+	roundRobinIndex sync.Map // map[string]*atomic.Int64 for lock-free round-robin
+	totalQueries    atomic.Int64
 }
 
 func NewMemoryRegistry() *MemoryRegistry {
 	return &MemoryRegistry{
-		services:        make(map[string][]ServiceEntry),
-		roundRobinIndex: make(map[string]int),
+		services: make(map[string][]ServiceEntry),
+		// roundRobinIndex is initialized as sync.Map (zero value)
 	}
 }
 
@@ -39,32 +40,37 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 		QueryCount:    0,
 	}
 	registry.services[task] = append(entries, newEntry)
-	// ensure round robin index exists
-	if _, ok := registry.roundRobinIndex[task]; !ok {
-		registry.roundRobinIndex[task] = 0
-	}
+	// Initialize round-robin index for new task
+	registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 }
 
 func (registry *MemoryRegistry) GetService(task string) (string, error) {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
-	//check service existence
-
+	// Use RLock for read-only access to services map (major performance improvement)
+	registry.mutex.RLock()
 	entries, found := registry.services[task]
 	if !found || len(entries) == 0 {
+		registry.mutex.RUnlock()
 		return "", ErrNotFound
 	}
-	idx := registry.roundRobinIndex[task]
-	if idx >= len(entries) {
-		idx = idx % len(entries)
+	numEntries := len(entries)
+	registry.mutex.RUnlock()
+
+	// Atomic round-robin selection (lock-free)
+	idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
+	idxPtr := idxVal.(*atomic.Int64)
+	idx := int(idxPtr.Add(1)-1) % numEntries
+
+	// Reacquire read lock just to read the entry
+	registry.mutex.RLock()
+	if idx >= len(registry.services[task]) {
+		// Race condition: entries changed, recalculate
+		idx = idx % len(registry.services[task])
 	}
-	selected := entries[idx]
-	selected.QueryCount++
+	selected := registry.services[task][idx]
+	registry.mutex.RUnlock()
 
-	registry.services[task][idx] = selected // Update the slice entry
-
-	registry.totalQueries++
-	registry.roundRobinIndex[task] = (idx + 1) % len(entries) // Increment and wrap index
+	// Increment total queries atomically (lock-free)
+	registry.totalQueries.Add(1)
 
 	return selected.Address, nil
 }
@@ -85,13 +91,14 @@ func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 		}
 		if len(kept) == 0 {
 			delete(registry.services, task)
-			delete(registry.roundRobinIndex, task)
+			registry.roundRobinIndex.Delete(task)
 		} else {
 			registry.services[task] = kept
-			// clamp roundRobinIndex
-			if idx, ok := registry.roundRobinIndex[task]; ok {
-				if idx >= len(kept) {
-					registry.roundRobinIndex[task] = idx % len(kept)
+			// Reset round-robin index if it's out of bounds
+			if idxVal, ok := registry.roundRobinIndex.Load(task); ok {
+				idxPtr := idxVal.(*atomic.Int64)
+				if int(idxPtr.Load()) >= len(kept) {
+					idxPtr.Store(0)
 				}
 			}
 		}
@@ -117,7 +124,7 @@ func (registry *MemoryRegistry) GetStats() Stats {
 	registry.mutex.RLock()
 	defer registry.mutex.RUnlock()
 	return Stats{
-		TotalQueries: registry.totalQueries,
+		TotalQueries: registry.totalQueries.Load(),
 		TotalTasks:   len(registry.services),
 	}
 }
