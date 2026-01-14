@@ -59,13 +59,13 @@ var (
 func writeToLogView(message string) {
 	uiMutex.Lock()
 	defer uiMutex.Unlock()
-	
+
 	// Add to bounded log buffer
 	logLines = append(logLines, fmt.Sprintf("%s %s", time.Now().Format("[15:04:05]"), message))
 	if len(logLines) > maxLogLines {
 		logLines = logLines[len(logLines)-maxLogLines:]
 	}
-	
+
 	// Redraw entire log view with bounded content
 	logView.Clear()
 	for _, line := range logLines {
@@ -81,7 +81,7 @@ func logEvent(message string) {
 	if logWriter != nil {
 		logWriter.Write([]byte(logLine))
 	}
-	
+
 	// Before TUI starts, also print to stderr for visibility
 	if !runningTUI {
 		fmt.Fprint(os.Stderr, logLine)
@@ -146,11 +146,11 @@ func uiUpdateCoordinator() {
 				servicesMapCopy[k] = make([]registry.ServiceEntry, len(v))
 				copy(servicesMapCopy[k], v)
 			}
-			
+
 			app.QueueUpdateDraw(func() {
 				uiMutex.Lock()
 				defer uiMutex.Unlock()
-				
+
 				// Update task list
 				taskList.Clear()
 				var firstTask string
@@ -189,7 +189,7 @@ func uiUpdateCoordinator() {
 func updateDetailsTable(services []registry.ServiceEntry) {
 	uiMutex.Lock()
 	defer uiMutex.Unlock()
-	
+
 	detailTable.Clear()
 	detailTable.SetCell(0, 0, tview.NewTableCell("Address").SetSelectable(false))
 	detailTable.SetCell(0, 1, tview.NewTableCell("LastHeartbeat").SetSelectable(false))
@@ -240,8 +240,6 @@ func initLogFile() error {
 
 	return nil
 }
-
-
 
 // askTerminalOptions collects interactive options from the terminal before
 // starting any server output. It returns the chosen transport mode ("udp"|"tcp"),
