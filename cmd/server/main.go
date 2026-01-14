@@ -34,10 +34,10 @@ var (
 	cleanupInterval  time.Duration
 
 	// TLS configuration
-	enableTLS   bool
-	tlsCertFile string
-	tlsKeyFile  string
-	tlsClientCA string
+	useTLS          bool
+	tlsCertFile     string
+	tlsKeyFile      string
+	tlsClientCAFile string
 
 	serverStartTime = time.Now()
 	reg             registry.Registry
@@ -248,7 +248,7 @@ func initLogFile() error {
 }
 
 // askTerminalOptions collects interactive options from the terminal before
-// starting any server output. It returns the chosen transport mode ("udp"|"tcp"),
+// starting any server output. It returns the chosen transport mode ("udp"|"tcp"|"tls"),
 // whether to run the TUI, and whether the TUI was forced via args.
 func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
@@ -259,19 +259,22 @@ func askTerminalOptions() (string, bool, bool) {
 	// Parse command-line flags
 	for i, a := range os.Args[1:] {
 		switch a {
-		case "--force-ui", "-ui":
+		case "--force-ui", "--ui":
 			forceUI = true
 			runTUI = true
 			skipPrompts = true
-		case "--no-tui":
+		case "--no-ui":
 			runTUI = false
 			skipPrompts = true
 		case "--tcp":
 			transportMode = "tcp"
 		case "--udp":
 			transportMode = "udp"
-		case "--store-url":
-			// Skip next arg (it's the URL value)
+		case "--tls":
+			transportMode = "tls"
+			useTLS = true
+		case "--store-url", "--tls-cert", "--tls-key", "--tls-client-ca":
+			// Skip next arg (it's the value)
 			i++
 		}
 		_ = i
@@ -280,7 +283,7 @@ func askTerminalOptions() (string, bool, bool) {
 	// If not in interactive terminal or prompts skipped, return early
 	if skipPrompts || !term.IsTerminal(int(os.Stdin.Fd())) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to UDP transport and no TUI")
+			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
 		return transportMode, runTUI, forceUI
@@ -288,7 +291,7 @@ func askTerminalOptions() (string, bool, bool) {
 
 	// Interactive prompts
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
+	fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp 3) tls. Enter 1, 2, or 3 [1]: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 	switch strings.ToLower(input) {
@@ -296,10 +299,16 @@ func askTerminalOptions() (string, bool, bool) {
 		transportMode = "udp"
 	case "2":
 		transportMode = "tcp"
+	case "3":
+		transportMode = "tls"
+		useTLS = true
 	case "udp":
 		transportMode = "udp"
 	case "tcp":
 		transportMode = "tcp"
+	case "tls":
+		transportMode = "tls"
+		useTLS = true
 	default:
 		fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
 		transportMode = "udp"
@@ -323,10 +332,10 @@ func main() {
 	// Parse command-line flags
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
-	flag.BoolVar(&enableTLS, "tls", false, "Enable TLS with mutual authentication (requires TCP mode)")
+	flag.BoolVar(&useTLS, "tls", false, "Enable TLS with mutual authentication (requires --tcp or interactive selection)")
 	flag.StringVar(&tlsCertFile, "tls-cert", "certs/server.crt", "Server TLS certificate file")
 	flag.StringVar(&tlsKeyFile, "tls-key", "certs/server.key", "Server TLS private key file")
-	flag.StringVar(&tlsClientCA, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
+	flag.StringVar(&tlsClientCAFile, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
 	flag.Parse()
 
 	// Initialize file logging
@@ -418,35 +427,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
 	}
 
-	// Validate TLS configuration
-	if enableTLS {
-		if transportMode != "tcp" {
-			logEvent("ERROR: TLS requires TCP mode")
-			fmt.Fprintln(os.Stderr, "ERROR: TLS requires TCP mode. Use --tcp with --tls")
-			os.Exit(1)
-		}
-		logEvent("Starting server with TLS (mutual authentication enabled)")
-		fmt.Fprintf(os.Stderr, "starting server (mode=tcp, tls=enabled, mutual-auth=enabled)\n")
-	} else {
-		logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", ListenPort, transportMode))
-		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
-	}
-
+	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", ListenPort, transportMode))
+	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	switch transportMode {
+	case "tls":
+		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
+		go func() {
+			if err := transport.StartTCPServerTLS(reg, ListenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+				logEvent(fmt.Sprintf("ERROR: TLS server error: %v", err))
+				fmt.Fprintln(os.Stderr, "tls server error:", err)
+				os.Exit(1)
+			}
+		}()
 	case "tcp":
 		go func() {
-			if enableTLS {
-				if err := transport.StartTCPServerTLS(reg, ListenPort, tlsCertFile, tlsKeyFile, tlsClientCA, logEvent); err != nil {
-					logEvent(fmt.Sprintf("ERROR: TLS server error: %v", err))
-					fmt.Fprintln(os.Stderr, "tls server error:", err)
-					os.Exit(1)
-				}
-			} else {
-				if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
-					logEvent(fmt.Sprintf("ERROR: TCP server error: %v", err))
-					fmt.Fprintln(os.Stderr, "tcp server error:", err)
-					os.Exit(1)
-				}
+			if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
+				logEvent(fmt.Sprintf("ERROR: TCP server error: %v", err))
+				fmt.Fprintln(os.Stderr, "tcp server error:", err)
+				os.Exit(1)
 			}
 		}()
 	default:
