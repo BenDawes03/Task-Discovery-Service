@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"tds/pkg/transport"
 	"time"
 )
 
@@ -21,36 +23,90 @@ func Register(serverAddr, task, address string) error {
 	return RegisterUDP(serverAddr, task, address)
 }
 
-// RegisterUDP performs a UDP register (legacy behaviour).
+// RegisterUDP performs a UDP register using JSON protocol.
 func RegisterUDP(serverAddr, task, address string) error {
 	conn, err := net.DialTimeout("udp", serverAddr, 2*time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_, err = fmt.Fprintf(conn, "REGISTER %s %s", task, address)
-	return err
+
+	// Send JSON request
+	msg := transport.CentralizedMessage{
+		Command: "REGISTER",
+		Task:    task,
+		Address: address,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		return err
+	}
+
+	// Read JSON response
+	buf := make([]byte, 4096)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+
+	var resp transport.CentralizedResponse
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Status == "OK" {
+		return nil
+	}
+	return fmt.Errorf("server error: %s", resp.Error)
 }
 
-// RegisterTCP performs a TCP register and reads the server response.
+// RegisterTCP performs a TCP register using JSON protocol and reads the server response.
 func RegisterTCP(serverAddr, task, address string) error {
 	conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	fmt.Fprintf(conn, "REGISTER %s %s\n", task, address)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	r := bufio.NewReader(conn)
-	resp, err := r.ReadString('\n')
+
+	// Send JSON request (one line)
+	msg := transport.CentralizedMessage{
+		Command: "REGISTER",
+		Task:    task,
+		Address: address,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	_, err = fmt.Fprintf(conn, "%s\n", string(data))
 	if err != nil {
 		return err
 	}
-	resp = strings.TrimSpace(resp)
-	if resp == "OK" {
+
+	// Read JSON response
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	r := bufio.NewReader(conn)
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return err
+	}
+
+	var resp transport.CentralizedResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Status == "OK" {
 		return nil
 	}
-	return fmt.Errorf("server error: %s", resp)
+	return fmt.Errorf("server error: %s", resp.Error)
 }
 
 // Query asks the server for a task; returns the address or an empty string on not found.
@@ -63,52 +119,94 @@ func Query(serverAddr, task string) (string, error) {
 	return QueryUDP(serverAddr, task)
 }
 
-// QueryUDP performs the legacy UDP query.
+// QueryUDP performs the query over UDP using JSON protocol.
 func QueryUDP(serverAddr, task string) (string, error) {
 	conn, err := net.DialTimeout("udp", serverAddr, 2*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
-	_, err = fmt.Fprintf(conn, "QUERY %s", task)
+
+	// Send JSON request
+	msg := transport.CentralizedMessage{
+		Command: "QUERY",
+		Task:    task,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	_, err = conn.Write(data)
 	if err != nil {
 		return "", err
 	}
-	buf := make([]byte, 1024)
+
+	// Read JSON response
+	buf := make([]byte, 4096)
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		return "", err
 	}
-	resp := strings.TrimSpace(string(buf[:n]))
-	if resp == "NOTFOUND" {
+
+	var resp transport.CentralizedResponse
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Status == "NOTFOUND" {
 		return "", nil
 	}
-	return resp, nil
+	if resp.Status == "ERR" {
+		return "", fmt.Errorf("server error: %s", resp.Error)
+	}
+	return resp.Address, nil
 }
 
-// QueryTCP performs the query over TCP and interprets server replies.
+// QueryTCP performs the query over TCP using JSON protocol and interprets server replies.
 func QueryTCP(serverAddr, task string) (string, error) {
 	conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
-	fmt.Fprintf(conn, "QUERY %s\n", task)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	r := bufio.NewReader(conn)
-	resp, err := r.ReadString('\n')
+
+	// Send JSON request (one line)
+	msg := transport.CentralizedMessage{
+		Command: "QUERY",
+		Task:    task,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	_, err = fmt.Fprintf(conn, "%s\n", string(data))
 	if err != nil {
 		return "", err
 	}
-	resp = strings.TrimSpace(resp)
-	if resp == "NOTFOUND" {
+
+	// Read JSON response
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	r := bufio.NewReader(conn)
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return "", err
+	}
+
+	var resp transport.CentralizedResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Status == "NOTFOUND" {
 		return "", nil
 	}
-	if resp == "ERR" {
-		return "", fmt.Errorf("server error")
+	if resp.Status == "ERR" {
+		return "", fmt.Errorf("server error: %s", resp.Error)
 	}
-	return resp, nil
+	return resp.Address, nil
 }
 
 // RegisterTLS performs a TCP register with TLS and mutual authentication.

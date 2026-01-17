@@ -4,16 +4,16 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"tds/pkg/registry"
 )
 
-// StartTCPServer starts a simple line-oriented TCP server that understands
-// the same REGISTER / QUERY commands as the UDP server. Each connection is
-// handled concurrently and may send multiple commands (one per line).
+// StartTCPServer starts a JSON-based TCP server that understands
+// the same JSON messages as the UDP server. Each connection is
+// handled concurrently and may send multiple commands (one JSON object per line).
 func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
@@ -36,51 +36,81 @@ func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error
 func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
-	r := bufio.NewReader(conn)
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			// EOF or read error -> close connection
-			return
-		}
-		line = strings.TrimSpace(line)
-		parts := strings.Fields(line)
-		if len(parts) == 0 {
+	scanner := bufio.NewScanner(conn)
+	encoder := json.NewEncoder(conn)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		
+		// Parse JSON message
+		var msg CentralizedMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			resp := CentralizedResponse{
+				Status: "ERR",
+				Error:  "invalid JSON: " + err.Error(),
+			}
+			encoder.Encode(resp)
 			continue
 		}
-		cmd := strings.ToUpper(parts[0])
-		switch cmd {
+
+		// Handle command
+		switch msg.Command {
 		case "REGISTER":
-			if len(parts) >= 3 {
-				task := parts[1]
-				addrParam := parts[2]
-				reg.Register(task, addrParam)
-				if onEvent != nil {
-					onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", task, addrParam, remote))
+			if msg.Task == "" || msg.Address == "" {
+				resp := CentralizedResponse{
+					Status: "ERR",
+					Error:  "task and address required",
 				}
-				conn.Write([]byte("OK\n"))
-			} else {
-				conn.Write([]byte("ERR\n"))
+				encoder.Encode(resp)
+				continue
 			}
+
+			reg.Register(msg.Task, msg.Address)
+			if onEvent != nil {
+				onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", msg.Task, msg.Address, remote))
+			}
+
+			resp := CentralizedResponse{Status: "OK"}
+			encoder.Encode(resp)
+
 		case "QUERY":
-			if len(parts) >= 2 {
-				task := parts[1]
-				addrStr, err := reg.GetService(task)
-				if onEvent != nil {
-					onEvent(fmt.Sprintf("QUERY %s from %v", task, remote))
+			if msg.Task == "" {
+				resp := CentralizedResponse{
+					Status: "ERR",
+					Error:  "task required",
 				}
-				if err == registry.ErrNotFound || addrStr == "" {
-					conn.Write([]byte("NOTFOUND\n"))
-				} else if err != nil {
-					conn.Write([]byte("ERR\n"))
-				} else {
-					conn.Write([]byte(addrStr + "\n"))
+				encoder.Encode(resp)
+				continue
+			}
+
+			addrStr, err := reg.GetService(msg.Task)
+			if onEvent != nil {
+				onEvent(fmt.Sprintf("QUERY %s from %v", msg.Task, remote))
+			}
+
+			var resp CentralizedResponse
+			if err == registry.ErrNotFound || addrStr == "" {
+				resp = CentralizedResponse{Status: "NOTFOUND"}
+			} else if err != nil {
+				resp = CentralizedResponse{
+					Status: "ERR",
+					Error:  err.Error(),
 				}
 			} else {
-				conn.Write([]byte("ERR\n"))
+				resp = CentralizedResponse{
+					Status:  "OK",
+					Address: addrStr,
+				}
 			}
+
+			encoder.Encode(resp)
+
 		default:
-			conn.Write([]byte("ERR\n"))
+			resp := CentralizedResponse{
+				Status: "ERR",
+				Error:  "unknown command: " + msg.Command,
+			}
+			encoder.Encode(resp)
 		}
 	}
 }

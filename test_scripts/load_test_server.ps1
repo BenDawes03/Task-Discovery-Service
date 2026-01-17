@@ -35,7 +35,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[BUILD] Build successful!" -ForegroundColor Green
 Write-Host ""
 
-# Function to send registration via UDP
+# Function to send registration via UDP (JSON protocol)
 function Send-RegisterUDP {
     param (
         [string]$Server,
@@ -43,8 +43,13 @@ function Send-RegisterUDP {
         [string]$Address
     )
     
-    $message = "REGISTER $Task $Address"
-    $bytes = [System.Text.Encoding]::ASCII.GetBytes($message)
+    $jsonObj = @{
+        cmd = "REGISTER"
+        task = $Task
+        address = $Address
+    }
+    $message = $jsonObj | ConvertTo-Json -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($message)
     
     try {
         $udpClient = New-Object System.Net.Sockets.UdpClient
@@ -52,22 +57,33 @@ function Send-RegisterUDP {
         $serverParts = $Server.Split(':')
         $udpClient.Connect($serverParts[0], [int]$serverParts[1])
         $udpClient.Send($bytes, $bytes.Length) | Out-Null
+        
+        # Read JSON response
+        $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $response = $udpClient.Receive([ref]$remoteEP)
+        $responseText = [System.Text.Encoding]::UTF8.GetString($response)
         $udpClient.Close()
-        return $true
+        
+        $respObj = $responseText | ConvertFrom-Json
+        return ($respObj.status -eq "OK")
     } catch {
         return $false
     }
 }
 
-# Function to send query via UDP
+# Function to send query via UDP (JSON protocol)
 function Send-QueryUDP {
     param (
         [string]$Server,
         [string]$Task
     )
     
-    $message = "QUERY $Task"
-    $bytes = [System.Text.Encoding]::ASCII.GetBytes($message)
+    $jsonObj = @{
+        cmd = "QUERY"
+        task = $Task
+    }
+    $message = $jsonObj | ConvertTo-Json -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($message)
     
     try {
         $udpClient = New-Object System.Net.Sockets.UdpClient
@@ -78,16 +94,23 @@ function Send-QueryUDP {
         
         $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
         $response = $udpClient.Receive([ref]$remoteEP)
-        $responseText = [System.Text.Encoding]::ASCII.GetString($response)
+        $responseText = [System.Text.Encoding]::UTF8.GetString($response)
         $udpClient.Close()
         
-        return @{Success=$true; Response=$responseText}
+        $respObj = $responseText | ConvertFrom-Json
+        if ($respObj.status -eq "NOTFOUND") {
+            return @{Success=$true; Response="NOTFOUND"}
+        } elseif ($respObj.status -eq "OK") {
+            return @{Success=$true; Response=$respObj.address}
+        } else {
+            return @{Success=$false; Response=""}
+        }
     } catch {
         return @{Success=$false; Response=""}
     }
 }
 
-# Function to send registration via TCP
+# Function to send registration via TCP (JSON protocol)
 function Send-RegisterTCP {
     param (
         [string]$Server,
@@ -103,23 +126,30 @@ function Send-RegisterTCP {
         $writer = New-Object System.IO.StreamWriter($stream)
         $reader = New-Object System.IO.StreamReader($stream)
         
-        $writer.WriteLine("REGISTER $Task $Address")
+        $jsonObj = @{
+            cmd = "REGISTER"
+            task = $Task
+            address = $Address
+        }
+        $message = $jsonObj | ConvertTo-Json -Compress
+        $writer.WriteLine($message)
         $writer.Flush()
         
         $response = $reader.ReadLine()
+        $respObj = $response | ConvertFrom-Json
         
         $writer.Close()
         $reader.Close()
         $stream.Close()
         $tcpClient.Close()
         
-        return $response -eq "OK"
+        return ($respObj.status -eq "OK")
     } catch {
         return $false
     }
 }
 
-# Function to send query via TCP
+# Function to send query via TCP (JSON protocol)
 function Send-QueryTCP {
     param (
         [string]$Server,
@@ -134,17 +164,29 @@ function Send-QueryTCP {
         $writer = New-Object System.IO.StreamWriter($stream)
         $reader = New-Object System.IO.StreamReader($stream)
         
-        $writer.WriteLine("QUERY $Task")
+        $jsonObj = @{
+            cmd = "QUERY"
+            task = $Task
+        }
+        $message = $jsonObj | ConvertTo-Json -Compress
+        $writer.WriteLine($message)
         $writer.Flush()
         
         $response = $reader.ReadLine()
+        $respObj = $response | ConvertFrom-Json
         
         $writer.Close()
         $reader.Close()
         $stream.Close()
         $tcpClient.Close()
         
-        return @{Success=$true; Response=$response}
+        if ($respObj.status -eq "NOTFOUND") {
+            return @{Success=$true; Response="NOTFOUND"}
+        } elseif ($respObj.status -eq "OK") {
+            return @{Success=$true; Response=$respObj.address}
+        } else {
+            return @{Success=$false; Response=""}
+        }
     } catch {
         return @{Success=$false; Response=""}
     }
@@ -156,8 +198,9 @@ $registerScript = {
     
     function Send-RegisterUDP {
         param([string]$Server, [string]$Task, [string]$Address)
-        $message = "REGISTER $Task $Address"
-        $bytes = [System.Text.Encoding]::ASCII.GetBytes($message)
+        $jsonObj = @{cmd="REGISTER"; task=$Task; address=$Address}
+        $message = $jsonObj | ConvertTo-Json -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($message)
         try {
             $udpClient = New-Object System.Net.Sockets.UdpClient
             $udpClient.Client.ReceiveTimeout = 2000
@@ -168,9 +211,10 @@ $registerScript = {
             # Wait for OK response
             $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
             $response = $udpClient.Receive([ref]$remoteEP)
-            $responseText = [System.Text.Encoding]::ASCII.GetString($response)
+            $responseText = [System.Text.Encoding]::UTF8.GetString($response)
             $udpClient.Close()
-            return ($responseText -eq "OK")
+            $respObj = $responseText | ConvertFrom-Json
+            return ($respObj.status -eq "OK")
         } catch {
             return $false
         }
@@ -184,12 +228,18 @@ $registerScript = {
             $tcpClient.Connect($serverParts[0], [int]$serverParts[1])
             $stream = $tcpClient.GetStream()
             $writer = New-Object System.IO.StreamWriter($stream)
-            $writer.WriteLine("REGISTER $Task $Address")
+            $reader = New-Object System.IO.StreamReader($stream)
+            $jsonObj = @{cmd="REGISTER"; task=$Task; address=$Address}
+            $message = $jsonObj | ConvertTo-Json -Compress
+            $writer.WriteLine($message)
             $writer.Flush()
+            $response = $reader.ReadLine()
+            $respObj = $response | ConvertFrom-Json
             $writer.Close()
+            $reader.Close()
             $stream.Close()
             $tcpClient.Close()
-            return $true
+            return ($respObj.status -eq "OK")
         } catch {
             return $false
         }
@@ -238,8 +288,9 @@ $queryScript = {
     
     function Send-QueryUDP {
         param([string]$Server, [string]$Task)
-        $message = "QUERY $Task"
-        $bytes = [System.Text.Encoding]::ASCII.GetBytes($message)
+        $jsonObj = @{cmd="QUERY"; task=$Task}
+        $message = $jsonObj | ConvertTo-Json -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($message)
         try {
             $udpClient = New-Object System.Net.Sockets.UdpClient
             $udpClient.Client.ReceiveTimeout = 2000
@@ -248,9 +299,16 @@ $queryScript = {
             $udpClient.Send($bytes, $bytes.Length) | Out-Null
             $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
             $response = $udpClient.Receive([ref]$remoteEP)
-            $responseText = [System.Text.Encoding]::ASCII.GetString($response)
+            $responseText = [System.Text.Encoding]::UTF8.GetString($response)
             $udpClient.Close()
-            return @{Success=$true; Response=$responseText}
+            $respObj = $responseText | ConvertFrom-Json
+            if ($respObj.status -eq "NOTFOUND") {
+                return @{Success=$true; Response="NOTFOUND"}
+            } elseif ($respObj.status -eq "OK") {
+                return @{Success=$true; Response=$respObj.address}
+            } else {
+                return @{Success=$false; Response=""; Error="Unknown status"}
+            }
         } catch {
             return @{Success=$false; Response=""; Error=$_.Exception.Message}
         }
@@ -265,14 +323,23 @@ $queryScript = {
             $stream = $tcpClient.GetStream()
             $writer = New-Object System.IO.StreamWriter($stream)
             $reader = New-Object System.IO.StreamReader($stream)
-            $writer.WriteLine("QUERY $Task")
+            $jsonObj = @{cmd="QUERY"; task=$Task}
+            $message = $jsonObj | ConvertTo-Json -Compress
+            $writer.WriteLine($message)
             $writer.Flush()
             $response = $reader.ReadLine()
+            $respObj = $response | ConvertFrom-Json
             $writer.Close()
             $reader.Close()
             $stream.Close()
             $tcpClient.Close()
-            return @{Success=$true; Response=$response}
+            if ($respObj.status -eq "NOTFOUND") {
+                return @{Success=$true; Response="NOTFOUND"}
+            } elseif ($respObj.status -eq "OK") {
+                return @{Success=$true; Response=$respObj.address}
+            } else {
+                return @{Success=$false; Response=""}
+            }
         } catch {
             return @{Success=$false; Response=""}
         }

@@ -1,6 +1,53 @@
-Current TODO:
-- Current mode is either database or in-memory: implement caching
-- round-Robin is currently a mapping in memory. Should too many services be active the round robin will be a very large structure
-- Implement TLS for secure communication 
-- gateway service for internal and external services
-- peer to peer mode
+
+TODO:
+
+Centralised server mode:
+- Create inital basic UDP server code for POC purposes ✓
+- Create client program that queries the server directly ✓
+- Implement Round-Robin implementation for mappings ✓
+- round-Robin is currently a mapping in memory. Should too many services be active the round robin will be a very large structure [in progress]
+- Create a database and cache hierarchy for larger systems ✓
+- Implement TCP mode for reliable communications ✓
+- Implement the JSON message format that designed in peer-to-peer implementation ✓
+- Create a comprehensive set of tests using VMs to simulate proper load [NOT STARTED]
+- Create dummy services that use the client library to talk to simulate a full scale system [NOT STARTED]
+
+TLS-Mode
+- Add TLS to the TCP server code ✓
+    -- certificates are expected to be signed by CA and not using the self signing code added for test / dev processes
+- Add TLS mode option on server start ✓
+- Add connection pooling [Not started]
+    -- for every set of query and registry a new TLS handshake has to complete, add a pool to reduce overhead
+
+Peer to Peer mode:
+- Create peer-to-peer scaffolding ✓
+    -- Runs in client_proxy. When started, if it is not given a bootstrap nodes it starts its own ring. If given a node it registers with it
+    -- All nodes known by the bootstrap node are passed on to the new node, any missing or future nodes are discovered when they query / register with the node
+    -- Node IDs calculated as a hash of Node's IP address
+    -- Due to the more rich commumication of this mode, JSON message structures have been added so changes to messages can be easily managed
+    -- When registering a task, task name is hashed and the node finds the node with the closest id to that hash, once found it registers the task with that peer
+
+- Create a method to cope with slow propagation of node discovery ✓
+    -- Potential solutions: k-nearest neighbours, node list advertising, querying bootstrap node
+    -- k-nearest neighbours: adds redundancy for node loss and copes with propagation issue, needs additional resources for storing duplicate database
+    -- node list advertising: periodically send entire node list to all known nodes: ensures that all registered nodes are known however has large overhead with massive data transfer on larger networks
+    -- query bootstrap node: with exception of first node, all nodes have a given node that they could query for any changes to node list: will have large impact on bootstrap nodes performance
+       in a system with multiple bootstrap nodes it only slightly speeds up propagation
+    -- Chosen implementation: k-nearest neighbours as it increases number of nodes that contain task-address mapping for redundancy
+       additionally increases likelihood of task mapping being found even if nearest node is not known to the node completing the query
+
+- Cope with loss of nodes and especially bootstrap node [In Progress]
+    -- lost nodes currently coped with using k-nearest implementation 
+    -- let client be booted with multiple boostrap nodes in case some are offline
+    -- handle complete loss of boostrap nodes, is there a way to re-open the circle?
+
+Firewall mode:
+- Find a way to manage services that are not reachable due to routing constraints ✓
+    -- trying to find a balance between the original purpose of this project and being able to handle this issue was difficult
+    -- potential solutions included circumventing firewall rules entirely by having the server (which has to be able to communicate with both) pass the data
+       this was the exact problem i was attempting to solve with this project 
+    -- I decided the best solution was to give the server a list of all the firewall rules and for it to ensure that the client could talk to the service machine
+    -- current implementation only handles explicit rules stating direct routes between each machine
+- Implement more complex routing checks for implicit access [IN PROGRESS]
+    -- Current implementation does not check if a client can access the subnet or range of ip addresses that the service is on
+    -- Research into details of how firewall rules work

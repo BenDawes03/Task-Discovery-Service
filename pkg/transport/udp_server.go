@@ -1,18 +1,18 @@
 package transport
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 	"tds/pkg/registry"
 )
 
-// StartUDPServer starts a minimal UDP server that accepts two commands (single-line, whitespace-separated):
-// REGISTER <task> <address>  -> updates registry and replies OK
-// QUERY <task>              -> replies with the selected address or NOTFOUND
-// StartUDPServer starts a minimal UDP server that accepts two commands (single-line, whitespace-separated):
-// REGISTER <task> <address>  -> updates registry and replies OK
-// QUERY <task>              -> replies with the selected address or NOTFOUND
+// StartUDPServer starts a JSON-based UDP server that accepts commands:
+// {"cmd": "REGISTER", "task": "taskname", "address": "ip:port"}
+// {"cmd": "QUERY", "task": "taskname"}
+// Responds with JSON:
+// {"status": "OK"} or {"status": "NOTFOUND"} or {"status": "ERR", "error": "..."}
+// or {"status": "OK", "address": "ip:port"}
 // onEvent, if non-nil, will be called with short human-readable messages for UI/logging.
 func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error {
 	addr := net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: port}
@@ -23,7 +23,7 @@ func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error
 	defer conn.Close()
 
 	for {
-		buf := make([]byte, 1024)
+		buf := make([]byte, 4096)
 		n, remote, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			// transient read error: log and continue
@@ -37,44 +37,80 @@ func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error
 }
 
 func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, remote *net.UDPAddr, onEvent func(string)) {
-	line := strings.TrimSpace(string(data))
-	parts := strings.Fields(line)
-	if len(parts) == 0 {
+	// Parse JSON message
+	var msg CentralizedMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		resp := CentralizedResponse{
+			Status: "ERR",
+			Error:  "invalid JSON: " + err.Error(),
+		}
+		respData, _ := json.Marshal(resp)
+		conn.WriteToUDP(respData, remote)
 		return
 	}
 
-	cmd := strings.ToUpper(parts[0])
-	switch cmd {
+	// Handle command
+	switch msg.Command {
 	case "REGISTER":
-		if len(parts) >= 3 {
-			task := parts[1]
-			addrParam := parts[2]
-			reg.Register(task, addrParam)
-			if onEvent != nil {
-				onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", task, addrParam, remote))
+		if msg.Task == "" || msg.Address == "" {
+			resp := CentralizedResponse{
+				Status: "ERR",
+				Error:  "task and address required",
 			}
-			conn.WriteToUDP([]byte("OK"), remote)
-		} else {
-			conn.WriteToUDP([]byte("ERR"), remote)
+			respData, _ := json.Marshal(resp)
+			conn.WriteToUDP(respData, remote)
+			return
 		}
+
+		reg.Register(msg.Task, msg.Address)
+		if onEvent != nil {
+			onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", msg.Task, msg.Address, remote))
+		}
+
+		resp := CentralizedResponse{Status: "OK"}
+		respData, _ := json.Marshal(resp)
+		conn.WriteToUDP(respData, remote)
+
 	case "QUERY":
-		if len(parts) >= 2 {
-			task := parts[1]
-			addrStr, err := reg.GetService(task)
-			if onEvent != nil {
-				onEvent(fmt.Sprintf("QUERY %s from %v", task, remote))
+		if msg.Task == "" {
+			resp := CentralizedResponse{
+				Status: "ERR",
+				Error:  "task required",
 			}
-			if err == registry.ErrNotFound || addrStr == "" {
-				conn.WriteToUDP([]byte("NOTFOUND"), remote)
-			} else if err != nil {
-				conn.WriteToUDP([]byte("ERR"), remote)
-			} else {
-				conn.WriteToUDP([]byte(addrStr), remote)
+			respData, _ := json.Marshal(resp)
+			conn.WriteToUDP(respData, remote)
+			return
+		}
+
+		addrStr, err := reg.GetService(msg.Task)
+		if onEvent != nil {
+			onEvent(fmt.Sprintf("QUERY %s from %v", msg.Task, remote))
+		}
+
+		var resp CentralizedResponse
+		if err == registry.ErrNotFound || addrStr == "" {
+			resp = CentralizedResponse{Status: "NOTFOUND"}
+		} else if err != nil {
+			resp = CentralizedResponse{
+				Status: "ERR",
+				Error:  err.Error(),
 			}
 		} else {
-			conn.WriteToUDP([]byte("ERR"), remote)
+			resp = CentralizedResponse{
+				Status:  "OK",
+				Address: addrStr,
+			}
 		}
-	default:
-		conn.WriteToUDP([]byte("ERR"), remote)
+
+		respData, _ := json.Marshal(resp)
+		conn.WriteToUDP(respData, remote)
+
+		default:
+		resp := CentralizedResponse{
+			Status: "ERR",
+			Error:  "unknown command: " + msg.Command,
+		}
+		respData, _ := json.Marshal(resp)
+		conn.WriteToUDP(respData, remote)
 	}
 }
