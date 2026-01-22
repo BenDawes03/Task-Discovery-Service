@@ -11,7 +11,7 @@ Centralised server mode:
 - Implement the JSON message format that designed in peer-to-peer implementation ✓
 - Create a comprehensive set of tests using VMs to simulate proper load [NOT STARTED]
 - Create dummy services that use the client library to talk to simulate a full scale system [NOT STARTED]
-
+- More smart caching, rather than highest query counts, it could be a more complex approach? [NOT STARTED]
 TLS-Mode
 - Add TLS to the TCP server code ✓
     -- certificates are expected to be signed by CA and not using the self signing code added for test / dev processes
@@ -51,3 +51,12 @@ Firewall mode:
 - Implement more complex routing checks for implicit access [IN PROGRESS]
     -- Current implementation does not check if a client can access the subnet or range of ip addresses that the service is on
     -- Research into details of how firewall rules work
+
+1:1 TODO:
+- review changes to system
+- go over challenges and how they were solved
+- Discuss which features to develop further / cutoff for remaining
+- What do i need to present, test evidence, simulation system etc 
+- Any areas he thinks needs more work / need to be presented better
+- Is there any recommended structure for the report
+- 
