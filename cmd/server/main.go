@@ -39,6 +39,9 @@ var (
 	tlsKeyFile      string
 	tlsClientCAFile string
 
+	// Database configuration
+	storeURL string
+
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -336,6 +339,7 @@ func main() {
 	flag.StringVar(&tlsCertFile, "tls-cert", "certs/server.crt", "Server TLS certificate file")
 	flag.StringVar(&tlsKeyFile, "tls-key", "certs/server.key", "Server TLS private key file")
 	flag.StringVar(&tlsClientCAFile, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
+	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgres://user:password@host:port/dbname)")
 	flag.Parse()
 
 	// Initialize file logging
@@ -365,15 +369,10 @@ func main() {
 		}()
 	}
 
-	// Check for --store-url or DATABASE_URL for persistence.
-	storeURL := os.Getenv("DATABASE_URL")
-
-	// Check for --store-url flag
-	for i, a := range os.Args[1:] {
-		if a == "--store-url" && i+1 < len(os.Args)-1 {
-			storeURL = os.Args[i+2]
-			break
-		}
+	// Check for --store-url flag or DATABASE_URL environment variable for persistence.
+	// Flag takes precedence over environment variable
+	if storeURL == "" {
+		storeURL = os.Getenv("DATABASE_URL")
 	}
 
 	if storeURL != "" {
