@@ -363,8 +363,12 @@ func main() {
 		runningTUI = true
 		// Save original stderr for restoration on exit
 		originalStderr = os.Stderr
-		// All further output will go through logEvent() to the TUI
-		os.Stderr = os.NewFile(0, os.DevNull)
+		// Open actual /dev/null and redirect stderr to it
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err == nil {
+			os.Stderr = devNull
+			defer devNull.Close()
+		}
 		defer func() {
 			// Restore stderr on exit
 			os.Stderr = originalStderr
