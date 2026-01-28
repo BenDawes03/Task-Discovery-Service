@@ -359,6 +359,8 @@ func main() {
 	// If running TUI, redirect stderr to discard to prevent corruption
 	var originalStderr *os.File
 	if runTUI {
+		// Set runningTUI immediately so logEvent() queues messages for TUI
+		runningTUI = true
 		// Save original stderr for restoration on exit
 		originalStderr = os.Stderr
 		// All further output will go through logEvent() to the TUI
@@ -381,7 +383,9 @@ func main() {
 		s, err := postgres.NewPostgresStore(storeURL)
 		if err != nil {
 			logEvent(fmt.Sprintf("ERROR: failed to initialize postgres store: %v", err))
-			fmt.Fprintf(os.Stderr, "failed to initialize postgres store: %v\n", err)
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "failed to initialize postgres store: %v\n", err)
+			}
 			os.Exit(1)
 		}
 
@@ -391,7 +395,9 @@ func main() {
 		if err := s.Migrate(ctx); err != nil {
 			cancel()
 			logEvent(fmt.Sprintf("ERROR: failed to run migrations: %v", err))
-			fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
+			}
 			s.Close()
 			os.Exit(1)
 		}
@@ -404,37 +410,51 @@ func main() {
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		if err := storeReg.WarmCacheFromDB(ctx); err != nil {
 			logEvent(fmt.Sprintf("WARNING: failed to warm cache from db: %v", err))
-			fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
+			}
 		} else {
 			if CacheMaxSize > 0 {
 				logEvent(fmt.Sprintf("Cache warmed with top %d most queried tasks from database", CacheMaxSize))
-				fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", CacheMaxSize)
+				if !runTUI {
+					fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", CacheMaxSize)
+				}
 			} else {
 				logEvent("Cache warmed from database (unlimited)")
-				fmt.Fprintln(os.Stderr, "cache warmed from database (unlimited)")
+				if !runTUI {
+					fmt.Fprintln(os.Stderr, "cache warmed from database (unlimited)")
+				}
 			}
 		}
 		cancel()
 
 		reg = storeReg
 		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", CacheMaxSize))
-		fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", CacheMaxSize)
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", CacheMaxSize)
+		}
 	} else {
 		// Fall back to in-memory registry
 		reg = registry.NewMemoryRegistry()
 		logEvent("Using in-memory registry (no persistence)")
-		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
+		if !runTUI {
+			fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
+		}
 	}
 
 	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", ListenPort, transportMode))
-	fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	}
 	switch transportMode {
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
 			if err := transport.StartTCPServerTLS(reg, ListenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
 				logEvent(fmt.Sprintf("ERROR: TLS server error: %v", err))
-				fmt.Fprintln(os.Stderr, "tls server error:", err)
+				if !runTUI {
+					fmt.Fprintln(os.Stderr, "tls server error:", err)
+				}
 				os.Exit(1)
 			}
 		}()
@@ -442,7 +462,9 @@ func main() {
 		go func() {
 			if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
 				logEvent(fmt.Sprintf("ERROR: TCP server error: %v", err))
-				fmt.Fprintln(os.Stderr, "tcp server error:", err)
+				if !runTUI {
+					fmt.Fprintln(os.Stderr, "tcp server error:", err)
+				}
 				os.Exit(1)
 			}
 		}()
@@ -450,13 +472,17 @@ func main() {
 		go func() {
 			if err := transport.StartUDPServer(reg, ListenPort, logEvent); err != nil {
 				logEvent(fmt.Sprintf("ERROR: UDP server error: %v", err))
-				fmt.Fprintln(os.Stderr, "udp server error:", err)
+				if !runTUI {
+					fmt.Fprintln(os.Stderr, "udp server error:", err)
+				}
 				os.Exit(1)
 			}
 		}()
 	}
 	logEvent("Server started successfully")
-	fmt.Fprintln(os.Stderr, "Server correctly started")
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "Server correctly started")
+	}
 	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
 	// Broadcast server info on boot (fire-and-forget)
 	go transport.BroadcastServerInfo(ListenPort, heartbeatTimeout, serverStartTime)
@@ -495,7 +521,7 @@ func main() {
 	}
 
 	logEvent("Starting TUI mode")
-	runningTUI = true
+	// Note: runningTUI already set to true earlier
 
 	// Start the UI update coordinator (single goroutine for all UI updates)
 	go uiUpdateCoordinator()
