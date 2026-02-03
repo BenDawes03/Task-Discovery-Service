@@ -111,10 +111,11 @@ func (sr *StoreBackedRegistry) Register(task, addr string) {
 	sr.memCache.Register(task, addr)
 
 	// Also write to persistent store synchronously
+	// Note: QueryCount is not set here - it defaults to 0 for new entries
+	// and is preserved for existing entries by the ON CONFLICT clause
 	entry := &store.ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: time.Now(),
-		QueryCount:    0,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
