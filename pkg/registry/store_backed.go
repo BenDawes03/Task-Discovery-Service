@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tds/pkg/store"
@@ -49,7 +50,8 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	if sr.cacheMaxSize <= 0 {
 		for task, entries := range services {
 			for _, e := range entries {
-				sr.memCache.Register(task, e.Address)
+				// Directly populate cache with query counts from DB
+				sr.populateCacheEntry(task, e.Address, e.QueryCount, e.LastHeartbeat)
 			}
 		}
 	} else {
@@ -91,7 +93,8 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 		for i := 0; i < limit; i++ {
 			ts := taskList[i]
 			for _, e := range ts.entries {
-				sr.memCache.Register(ts.task, e.Address)
+				// Directly populate cache with query counts from DB
+				sr.populateCacheEntry(ts.task, e.Address, e.QueryCount, e.LastHeartbeat)
 			}
 		}
 
@@ -103,6 +106,34 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	sr.cacheMutex.Unlock()
 
 	return nil
+}
+
+// populateCacheEntry directly adds an entry to cache with existing query count and heartbeat.
+// This is used during cache warming to preserve query counts from the database.
+func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount int64, lastHeartbeat time.Time) {
+	sr.memCache.mutex.Lock()
+	defer sr.memCache.mutex.Unlock()
+	
+	entries := sr.memCache.services[task]
+	// Check if entry already exists
+	for i, e := range entries {
+		if e.Address == addr {
+			// Update with DB values
+			entries[i].QueryCount = queryCount
+			entries[i].LastHeartbeat = lastHeartbeat
+			sr.memCache.services[task] = entries
+			return
+		}
+	}
+	
+	// New entry - add with DB values
+	newEntry := ServiceEntry{
+		Address:       addr,
+		LastHeartbeat: lastHeartbeat,
+		QueryCount:    queryCount,
+	}
+	sr.memCache.services[task] = append(entries, newEntry)
+	sr.memCache.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 }
 
 // Register adds or updates a service entry in both the cache and the store.
