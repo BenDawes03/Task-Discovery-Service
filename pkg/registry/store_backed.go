@@ -136,7 +136,10 @@ func (sr *StoreBackedRegistry) GetService(task string) (string, error) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, _ = sr.store.GetService(ctx, task)
+			_, err := sr.store.GetService(ctx, task)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[STORE] Failed to update query count for task '%s': %v\n", task, err)
+			}
 		}()
 		return addr, nil
 	}

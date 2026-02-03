@@ -60,19 +60,21 @@ func (registry *MemoryRegistry) GetService(task string) (string, error) {
 	idxPtr := idxVal.(*atomic.Int64)
 	idx := int(idxPtr.Add(1)-1) % numEntries
 
-	// Reacquire read lock just to read the entry
-	registry.mutex.RLock()
+	// Now need write lock to increment query count for the selected entry
+	registry.mutex.Lock()
 	if idx >= len(registry.services[task]) {
 		// Race condition: entries changed, recalculate
 		idx = idx % len(registry.services[task])
 	}
-	selected := registry.services[task][idx]
-	registry.mutex.RUnlock()
+	selectedAddr := registry.services[task][idx].Address
+	// Increment the query count for this specific entry
+	registry.services[task][idx].QueryCount++
+	registry.mutex.Unlock()
 
 	// Increment total queries atomically (lock-free)
 	registry.totalQueries.Add(1)
 
-	return selected.Address, nil
+	return selectedAddr, nil
 }
 
 func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
