@@ -48,12 +48,12 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 // Register adds or updates a service entry.
 func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store.ServiceEntry) error {
 	query := `
-		INSERT INTO services (task, address, last_heartbeat, query_count, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		INSERT INTO services (task, address, last_heartbeat, created_at, updated_at)
+		VALUES ($1, $2, $3, NOW(), NOW())
 		ON CONFLICT (task, address) DO UPDATE
 		SET last_heartbeat = EXCLUDED.last_heartbeat, updated_at = NOW()
 	`
-	_, err := ps.db.ExecContext(ctx, query, task, entry.Address, entry.LastHeartbeat, entry.QueryCount)
+	_, err := ps.db.ExecContext(ctx, query, task, entry.Address, entry.LastHeartbeat)
 	return err
 }
 
