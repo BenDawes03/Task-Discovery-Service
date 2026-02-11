@@ -34,9 +34,39 @@ func NewStoreBackedRegistry(s store.Store, cacheMaxSize int) *StoreBackedRegistr
 	}
 }
 
+// syncQueryCountsToDB writes query counts from cache to database before cache warming.
+// This ensures LFU cache selection picks tasks based on current query activity.
+func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
+	// Get current cached services with their query counts
+	cachedServices := sr.memCache.ListServices()
+	
+	for task, entries := range cachedServices {
+		for _, entry := range entries {
+			if entry.QueryCount > 0 {
+				// Write query count to DB
+				storeEntry := &store.ServiceEntry{
+					Address:       entry.Address,
+					LastHeartbeat: entry.LastHeartbeat,
+					QueryCount:    entry.QueryCount,
+				}
+				if err := sr.store.Register(ctx, task, storeEntry); err != nil {
+					fmt.Fprintf(os.Stderr, "[STORE] Failed to sync query count for %s/%s: %v\n", task, entry.Address, err)
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
 // WarmCacheFromDB loads the top X most queried entries from the database into the in-memory cache.
 // If cacheMaxSize is 0, loads all entries (backward compatible behavior).
 func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
+	// First, sync query counts from cache to DB so LFU selection uses current data
+	if err := sr.syncQueryCountsToDB(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[STORE] Warning: failed to sync query counts: %v\n", err)
+	}
+	
 	services, err := sr.store.ListServices(ctx)
 	if err != nil {
 		return err
@@ -164,15 +194,7 @@ func (sr *StoreBackedRegistry) GetService(task string) (string, error) {
 	// Try cache first (fast path)
 	addr, err := sr.memCache.GetService(task)
 	if err == nil {
-		// Cache hit - also update query count in DB asynchronously
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := sr.store.GetService(ctx, task)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[STORE] Failed to update query count for task '%s': %v\n", task, err)
-			}
-		}()
+		// Cache hit - return immediately (query count tracked in cache)
 		return addr, nil
 	}
 
