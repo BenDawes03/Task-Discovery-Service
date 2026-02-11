@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
@@ -22,13 +23,12 @@ import (
 )
 
 // Config
-const (
-	ListenPort      = 5000
-	CleanupInterval = 10 * time.Second
-	CacheMaxSize    = 100 // Maximum number of tasks to keep in cache (0 = unlimited)
-)
-
 var (
+	// Server configuration
+	listenPort   int
+	cacheMaxSize int
+	logDir       string
+
 	// Configurable timeouts
 	heartbeatTimeout time.Duration
 	cleanupInterval  time.Duration
@@ -42,6 +42,10 @@ var (
 	// Database configuration
 	storeURL string
 
+	// UI configuration
+	forceUI bool
+	noUI    bool
+
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -51,9 +55,13 @@ var (
 	logView     = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	searchField = tview.NewInputField().SetLabel(" Filter: ")
 
+	// Filter state
+	currentFilter = ""
+
 	// File logging
-	logFile   *os.File
-	logWriter io.Writer
+	logFile        *os.File
+	logWriter      io.Writer
+	originalStderr *os.File // Store original stderr for critical error display
 
 	// UI update coordination
 	logMessageChan   = make(chan string, 1000) // Buffered channel for log messages
@@ -108,6 +116,24 @@ func logEvent(message string) {
 	}
 }
 
+// fatalError handles critical errors during startup
+// It ensures the error is visible even when TUI mode redirects stderr
+func fatalError(message string) {
+	logEvent(fmt.Sprintf("FATAL: %s", message))
+	
+	// If TUI mode, write to original stderr so user can see the error
+	if runningTUI && originalStderr != nil {
+		fmt.Fprintf(originalStderr, "\nFATAL ERROR: %s\n", message)
+		fmt.Fprintln(originalStderr, "Check the log file for more details.")
+	} else if !runningTUI {
+		fmt.Fprintf(os.Stderr, "FATAL: %s\n", message)
+	}
+	
+	// Give time for log message to be written to file
+	time.Sleep(100 * time.Millisecond)
+	os.Exit(1)
+}
+
 // uiUpdateCoordinator is the single goroutine that handles all UI updates
 // This prevents race conditions and rendering corruption
 func uiUpdateCoordinator() {
@@ -160,10 +186,17 @@ func uiUpdateCoordinator() {
 				uiMutex.Lock()
 				defer uiMutex.Unlock()
 
-				// Update task list
+				// Update task list with filter applied
 				taskList.Clear()
 				var firstTask string
+				filterLower := strings.ToLower(currentFilter)
+				
 				for task, entries := range servicesMapCopy {
+					// Apply filter: show only tasks that contain the filter string (case-insensitive)
+					if filterLower != "" && !strings.Contains(strings.ToLower(task), filterLower) {
+						continue
+					}
+					
 					label := fmt.Sprintf("%s (%d)", task, len(entries))
 					t := task
 					if firstTask == "" {
@@ -225,14 +258,13 @@ func requestDashboardUpdate() {
 // initLogFile creates or appends to a log file in the logs/ directory
 func initLogFile() error {
 	// Create logs directory if it doesn't exist
-	logsDir := "logs"
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	// Create log filename with timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	logPath := filepath.Join(logsDir, fmt.Sprintf("server_%s.log", timestamp))
+	logPath := filepath.Join(logDir, fmt.Sprintf("server_%s.log", timestamp))
 
 	// Open log file
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -256,31 +288,25 @@ func initLogFile() error {
 func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
-	forceUI := false
 	skipPrompts := false
 
-	// Parse command-line flags
-	for i, a := range os.Args[1:] {
-		switch a {
-		case "--force-ui", "--ui":
-			forceUI = true
-			runTUI = true
-			skipPrompts = true
-		case "--no-ui":
-			runTUI = false
-			skipPrompts = true
-		case "--tcp":
-			transportMode = "tcp"
-		case "--udp":
-			transportMode = "udp"
-		case "--tls":
-			transportMode = "tls"
-			useTLS = true
-		case "--store-url", "--tls-cert", "--tls-key", "--tls-client-ca":
-			// Skip next arg (it's the value)
-			i++
+	// Check if UI mode was forced via flags
+	if forceUI {
+		runTUI = true
+		skipPrompts = true
+	}
+	if noUI {
+		runTUI = false
+		skipPrompts = true
+	}
+
+	// Check if transport mode was set via flags
+	transportFlagSet := false
+	for _, a := range os.Args[1:] {
+		if a == "--tcp" || a == "--udp" || a == "--tls" {
+			transportFlagSet = true
+			break
 		}
-		_ = i
 	}
 
 	// If not in interactive terminal or prompts skipped, return early
@@ -289,43 +315,85 @@ func askTerminalOptions() (string, bool, bool) {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
+		// Use flag value or default
+		if useTLS {
+			transportMode = "tls"
+		}
 		return transportMode, runTUI, forceUI
 	}
 
 	// Interactive prompts
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp 3) tls. Enter 1, 2, or 3 [1]: ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-	switch strings.ToLower(input) {
-	case "", "1":
-		transportMode = "udp"
-	case "2":
-		transportMode = "tcp"
-	case "3":
-		transportMode = "tls"
-		useTLS = true
-	case "udp":
-		transportMode = "udp"
-	case "tcp":
-		transportMode = "tcp"
-	case "tls":
-		transportMode = "tls"
-		useTLS = true
-	default:
-		fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
-		transportMode = "udp"
+	
+	// Transport mode prompt (skip if flag was set)
+	if !transportFlagSet {
+		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp 3) tls. Enter 1, 2, or 3 [1]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		switch strings.ToLower(input) {
+		case "", "1":
+			transportMode = "udp"
+		case "2":
+			transportMode = "tcp"
+		case "3":
+			transportMode = "tls"
+			useTLS = true
+		case "udp":
+			transportMode = "udp"
+		case "tcp":
+			transportMode = "tcp"
+		case "tls":
+			transportMode = "tls"
+			useTLS = true
+		default:
+			fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting to UDP transport")
+			transportMode = "udp"
+		}
+	} else {
+		// Use flag value
+		if useTLS {
+			transportMode = "tls"
+		}
 	}
 
-	// Prompt whether to start the TUI
-	fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(strings.ToLower(choice))
-	if choice == "n" || choice == "no" {
-		runTUI = false
-		fmt.Fprintln(os.Stderr, "User declined TUI. Server will continue running without the UI.")
-	} else {
-		runTUI = true
+	// Database persistence prompt (skip if --store-url flag was set)
+	if storeURL == "" {
+		fmt.Fprint(os.Stderr, "Enable database persistence? [y/N]: ")
+		dbChoice, _ := reader.ReadString('\n')
+		dbChoice = strings.TrimSpace(strings.ToLower(dbChoice))
+		if dbChoice == "y" || dbChoice == "yes" {
+			fmt.Fprint(os.Stderr, "Enter database URL (e.g., postgresql://user:password@localhost:5432/trs?sslmode=disable): ")
+			dbURL, _ := reader.ReadString('\n')
+			storeURL = strings.TrimSpace(dbURL)
+			if storeURL != "" {
+				fmt.Fprintln(os.Stderr, "Database persistence enabled")
+				
+				// Cache size prompt (only if database is enabled and not set via flag)
+				if cacheMaxSize == 100 { // Default value, not set via flag
+					fmt.Fprint(os.Stderr, "Enter cache max size (0 for unlimited) [100]: ")
+					cacheInput, _ := reader.ReadString('\n')
+					cacheInput = strings.TrimSpace(cacheInput)
+					if cacheInput != "" {
+						fmt.Sscanf(cacheInput, "%d", &cacheMaxSize)
+					}
+				}
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "Using in-memory registry (no persistence)")
+		}
+	}
+
+	// Prompt whether to start the TUI (skip if flag was set)
+	if !forceUI && !noUI {
+		fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(strings.ToLower(choice))
+		if choice == "n" || choice == "no" {
+			runTUI = false
+			fmt.Fprintln(os.Stderr, "User declined TUI. Server will continue running without the UI.")
+		} else {
+			runTUI = true
+		}
 	}
 
 	return transportMode, runTUI, forceUI
@@ -333,14 +401,45 @@ func askTerminalOptions() (string, bool, bool) {
 
 func main() {
 	// Parse command-line flags
+	flag.IntVar(&listenPort, "port", 5000, "Port to listen on")
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
-	flag.BoolVar(&useTLS, "tls", false, "Enable TLS with mutual authentication (requires --tcp or interactive selection)")
+	
+	// Transport mode flags
+	tcpMode := flag.Bool("tcp", false, "Use TCP transport")
+	udpMode := flag.Bool("udp", false, "Use UDP transport (default)")
+	tlsMode := flag.Bool("tls", false, "Use TLS transport with mutual authentication")
+	
+	// TLS configuration flags
 	flag.StringVar(&tlsCertFile, "tls-cert", "certs/server.crt", "Server TLS certificate file")
 	flag.StringVar(&tlsKeyFile, "tls-key", "certs/server.key", "Server TLS private key file")
 	flag.StringVar(&tlsClientCAFile, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
-	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgres://user:password@host:port/dbname)")
+	
+	// Database configuration flags
+	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgresql://user:password@localhost:5432/dbname)")
+	flag.IntVar(&cacheMaxSize, "cache-max-size", 100, "Maximum number of tasks to keep in cache (0 = unlimited)")
+	
+	// Logging configuration flags
+	flag.StringVar(&logDir, "log-dir", "logs", "Directory for log files")
+	
+	// UI configuration flags
+	flag.BoolVar(&forceUI, "force-ui", false, "Force TUI mode without prompting")
+	flag.BoolVar(&forceUI, "ui", false, "Alias for --force-ui")
+	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
+	
 	flag.Parse()
+
+	// Process transport mode flags
+	if *tlsMode {
+		useTLS = true
+	}
+	if *tcpMode && !*tlsMode {
+		// Explicitly TCP without TLS
+		useTLS = false
+	}
+	if *udpMode {
+		useTLS = false
+	}
 
 	// Initialize file logging
 	if err := initLogFile(); err != nil {
@@ -357,7 +456,6 @@ func main() {
 	transportMode, runTUI, _ := askTerminalOptions()
 
 	// If running TUI, redirect stderr to discard to prevent corruption
-	var originalStderr *os.File
 	if runTUI {
 		// Set runningTUI immediately so logEvent() queues messages for TUI
 		runningTUI = true
@@ -373,6 +471,10 @@ func main() {
 			// Restore stderr on exit
 			os.Stderr = originalStderr
 		}()
+
+		// CRITICAL: Start the UI update coordinator NOW, before any database initialization
+		// This ensures log messages from database setup are properly queued and processed
+		go uiUpdateCoordinator()
 	}
 
 	// Check for --store-url flag or DATABASE_URL environment variable for persistence.
@@ -386,11 +488,7 @@ func main() {
 		logEvent("Initializing postgres persistent store")
 		s, err := postgres.NewPostgresStore(storeURL)
 		if err != nil {
-			logEvent(fmt.Sprintf("ERROR: failed to initialize postgres store: %v", err))
-			if !runTUI {
-				fmt.Fprintf(os.Stderr, "failed to initialize postgres store: %v\n", err)
-			}
-			os.Exit(1)
+			fatalError(fmt.Sprintf("failed to initialize postgres store: %v", err))
 		}
 
 		// Run migrations
@@ -398,16 +496,12 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := s.Migrate(ctx); err != nil {
 			cancel()
-			logEvent(fmt.Sprintf("ERROR: failed to run migrations: %v", err))
-			if !runTUI {
-				fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
-			}
 			s.Close()
-			os.Exit(1)
+			fatalError(fmt.Sprintf("failed to run migrations: %v", err))
 		}
 		cancel()
 
-		storeReg := registry.NewStoreBackedRegistry(s, CacheMaxSize)
+		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
 
 		// Warm the in-memory cache from the database on startup
 		logEvent("Warming cache from database")
@@ -418,10 +512,10 @@ func main() {
 				fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
 			}
 		} else {
-			if CacheMaxSize > 0 {
-				logEvent(fmt.Sprintf("Cache warmed with top %d most queried tasks from database", CacheMaxSize))
+			if cacheMaxSize > 0 {
+				logEvent(fmt.Sprintf("Cache warmed with top %d most queried tasks from database", cacheMaxSize))
 				if !runTUI {
-					fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", CacheMaxSize)
+					fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", cacheMaxSize)
 				}
 			} else {
 				logEvent("Cache warmed from database (unlimited)")
@@ -433,9 +527,9 @@ func main() {
 		cancel()
 
 		reg = storeReg
-		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", CacheMaxSize))
+		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", cacheMaxSize))
 		if !runTUI {
-			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", CacheMaxSize)
+			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", cacheMaxSize)
 		}
 	} else {
 		// Fall back to in-memory registry
@@ -446,7 +540,7 @@ func main() {
 		}
 	}
 
-	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", ListenPort, transportMode))
+	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", listenPort, transportMode))
 	if !runTUI {
 		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	}
@@ -454,32 +548,20 @@ func main() {
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
-			if err := transport.StartTCPServerTLS(reg, ListenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
-				logEvent(fmt.Sprintf("ERROR: TLS server error: %v", err))
-				if !runTUI {
-					fmt.Fprintln(os.Stderr, "tls server error:", err)
-				}
-				os.Exit(1)
+			if err := transport.StartTCPServerTLS(reg, listenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+				fatalError(fmt.Sprintf("TLS server error: %v", err))
 			}
 		}()
 	case "tcp":
 		go func() {
-			if err := transport.StartTCPServer(reg, ListenPort, logEvent); err != nil {
-				logEvent(fmt.Sprintf("ERROR: TCP server error: %v", err))
-				if !runTUI {
-					fmt.Fprintln(os.Stderr, "tcp server error:", err)
-				}
-				os.Exit(1)
+			if err := transport.StartTCPServer(reg, listenPort, logEvent); err != nil {
+				fatalError(fmt.Sprintf("TCP server error: %v", err))
 			}
 		}()
 	default:
 		go func() {
-			if err := transport.StartUDPServer(reg, ListenPort, logEvent); err != nil {
-				logEvent(fmt.Sprintf("ERROR: UDP server error: %v", err))
-				if !runTUI {
-					fmt.Fprintln(os.Stderr, "udp server error:", err)
-				}
-				os.Exit(1)
+			if err := transport.StartUDPServer(reg, listenPort, logEvent); err != nil {
+				fatalError(fmt.Sprintf("UDP server error: %v", err))
 			}
 		}()
 	}
@@ -489,7 +571,7 @@ func main() {
 	}
 	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
 	// Broadcast server info on boot (fire-and-forget)
-	go transport.BroadcastServerInfo(ListenPort, heartbeatTimeout, serverStartTime)
+	go transport.BroadcastServerInfo(listenPort, heartbeatTimeout, serverStartTime)
 
 	// Build layout
 	flex := tview.NewFlex()
@@ -502,10 +584,35 @@ func main() {
 	flex.AddItem(left, 30, 0, true)
 	flex.AddItem(right, 0, 1, false)
 
-	searchField.SetBorder(true).SetTitle("Filter")
-	taskList.SetBorder(true).SetTitle("Tasks")
+	// Configure search field with live filtering
+	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
+	searchField.SetChangedFunc(func(text string) {
+		currentFilter = text
+		requestDashboardUpdate() // Trigger refresh with filter
+	})
+	searchField.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEscape {
+			app.SetFocus(taskList)
+		}
+	})
+	
+	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
 	detailTable.SetBorder(true).SetTitle("Details")
 	logView.SetBorder(true).SetTitle("Log")
+	
+	// Set up keyboard navigation
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			// Toggle between filter and task list
+			if app.GetFocus() == searchField {
+				app.SetFocus(taskList)
+			} else {
+				app.SetFocus(searchField)
+			}
+			return nil
+		}
+		return event
+	})
 
 	// Decide whether to run the TUI based on earlier prompts.
 	if !runTUI {
@@ -526,9 +633,7 @@ func main() {
 
 	logEvent("Starting TUI mode")
 	// Note: runningTUI already set to true earlier
-
-	// Start the UI update coordinator (single goroutine for all UI updates)
-	go uiUpdateCoordinator()
+	// Note: uiUpdateCoordinator already started during initialization
 
 	// TUI mode: start tickers and UI refresh
 	// Periodic cleanup
