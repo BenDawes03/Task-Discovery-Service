@@ -57,6 +57,7 @@ var (
 
 	// Filter state
 	currentFilter = ""
+	currentSelectedTask = "" // Track which task is currently selected
 
 	// File logging
 	logFile        *os.File
@@ -189,6 +190,7 @@ func uiUpdateCoordinator() {
 				// Update task list with filter applied
 				taskList.Clear()
 				var firstTask string
+				var taskToShow string // Track which task to display details for
 				filterLower := strings.ToLower(currentFilter)
 				
 				for task, entries := range servicesMapCopy {
@@ -202,9 +204,14 @@ func uiUpdateCoordinator() {
 					if firstTask == "" {
 						firstTask = task
 					}
+					// Check if this is the currently selected task
+					if task == currentSelectedTask {
+						taskToShow = task
+					}
 					taskList.AddItem(label, "", 0, func() {
-						// Request update for selected task (avoid nested QueueUpdateDraw)
+						// Update selected task and refresh details
 						selectedTask := t
+						currentSelectedTask = selectedTask
 						go func() {
 							services := reg.ListServices()[selectedTask]
 							app.QueueUpdateDraw(func() {
@@ -213,14 +220,30 @@ func uiUpdateCoordinator() {
 						}()
 					})
 				}
-				// Auto-update details for first task
-				if firstTask != "" {
-					if services, ok := servicesMapCopy[firstTask]; ok {
+				// If previously selected task still exists, show it; otherwise show first task
+				if taskToShow == "" {
+					taskToShow = firstTask
+					currentSelectedTask = firstTask
+				}
+				
+				// Always update the details table to reflect current state
+				if taskToShow != "" {
+					if services, ok := servicesMapCopy[taskToShow]; ok {
 						// Temporarily unlock for the nested call
 						uiMutex.Unlock()
 						updateDetailsTable(services)
 						uiMutex.Lock()
+					} else {
+						// Task exists but has no services - clear the table
+						uiMutex.Unlock()
+						updateDetailsTable(nil)
+						uiMutex.Lock()
 					}
+				} else {
+					// No tasks at all - clear the details table
+					uiMutex.Unlock()
+					updateDetailsTable(nil)
+					uiMutex.Lock()
 				}
 			})
 		}
@@ -233,13 +256,25 @@ func updateDetailsTable(services []registry.ServiceEntry) {
 	defer uiMutex.Unlock()
 
 	detailTable.Clear()
-	detailTable.SetCell(0, 0, tview.NewTableCell("Address").SetSelectable(false))
-	detailTable.SetCell(0, 1, tview.NewTableCell("LastHeartbeat").SetSelectable(false))
-	detailTable.SetCell(0, 2, tview.NewTableCell("Queries").SetSelectable(false))
+	detailTable.SetCell(0, 0, tview.NewTableCell(" Address ").
+		SetSelectable(false).
+		SetExpansion(1).
+		SetTextColor(tcell.ColorYellow).
+		SetAttributes(tcell.AttrBold))
+	detailTable.SetCell(0, 1, tview.NewTableCell(" LastHeartbeat ").
+		SetSelectable(false).
+		SetExpansion(1).
+		SetTextColor(tcell.ColorYellow).
+		SetAttributes(tcell.AttrBold))
+	detailTable.SetCell(0, 2, tview.NewTableCell(" Queries ").
+		SetSelectable(false).
+		SetExpansion(1).
+		SetTextColor(tcell.ColorYellow).
+		SetAttributes(tcell.AttrBold))
 	for i, e := range services {
-		detailTable.SetCell(i+1, 0, tview.NewTableCell(e.Address))
-		detailTable.SetCell(i+1, 1, tview.NewTableCell(e.LastHeartbeat.Format(time.RFC3339)))
-		detailTable.SetCell(i+1, 2, tview.NewTableCell(fmt.Sprintf("%d", e.QueryCount)))
+		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").SetExpansion(1))
+		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").SetExpansion(1))
+		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").SetExpansion(1))
 	}
 }
 
@@ -598,6 +633,7 @@ func main() {
 	
 	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
 	detailTable.SetBorder(true).SetTitle("Details")
+	detailTable.SetSeparator('|') // Add column separators
 	logView.SetBorder(true).SetTitle("Log")
 	
 	// Set up keyboard navigation
