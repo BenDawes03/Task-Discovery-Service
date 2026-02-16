@@ -149,21 +149,30 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 	for i, e := range entries {
 		if e.Address == addr {
 			// Update with DB values
-			entries[i].QueryCount = queryCount
 			entries[i].LastHeartbeat = lastHeartbeat
 			sr.memCache.services[task] = entries
+			// Set atomic query counter
+			counterKey := task + ":" + addr
+			counterVal, _ := sr.memCache.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
+			counterPtr := counterVal.(*atomic.Int64)
+			counterPtr.Store(queryCount)
 			return
 		}
 	}
 	
-	// New entry - add with DB values
+	// New entry - add with DB values (QueryCount will be synced from atomic counter)
 	newEntry := ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: lastHeartbeat,
-		QueryCount:    queryCount,
 	}
 	sr.memCache.services[task] = append(entries, newEntry)
 	sr.memCache.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
+	
+	// Set atomic query counter
+	counterKey := task + ":" + addr
+	counterVal, _ := sr.memCache.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
+	counterPtr := counterVal.(*atomic.Int64)
+	counterPtr.Store(queryCount)
 }
 
 // Register adds or updates a service entry in both the cache and the store.
