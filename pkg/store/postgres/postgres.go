@@ -50,7 +50,7 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store.ServiceEntry) error {
 	var query string
 	var err error
-	
+
 	if entry.QueryCount > 0 {
 		// Update query count as well (used when syncing from cache)
 		query = `
@@ -72,7 +72,7 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 		`
 		_, err = ps.db.ExecContext(ctx, query, task, entry.Address, entry.LastHeartbeat)
 	}
-	
+
 	return err
 }
 

@@ -39,7 +39,7 @@ func NewStoreBackedRegistry(s store.Store, cacheMaxSize int) *StoreBackedRegistr
 func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 	// Get current cached services with their query counts
 	cachedServices := sr.memCache.ListServices()
-	
+
 	for task, entries := range cachedServices {
 		for _, entry := range entries {
 			if entry.QueryCount > 0 {
@@ -55,7 +55,7 @@ func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -66,7 +66,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	if err := sr.syncQueryCountsToDB(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[STORE] Warning: failed to sync query counts: %v\n", err)
 	}
-	
+
 	services, err := sr.store.ListServices(ctx)
 	if err != nil {
 		return err
@@ -143,7 +143,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount int64, lastHeartbeat time.Time) {
 	sr.memCache.mutex.Lock()
 	defer sr.memCache.mutex.Unlock()
-	
+
 	entries := sr.memCache.services[task]
 	// Check if entry already exists
 	for i, e := range entries {
@@ -159,7 +159,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 			return
 		}
 	}
-	
+
 	// New entry - add with DB values (QueryCount will be synced from atomic counter)
 	newEntry := ServiceEntry{
 		Address:       addr,
@@ -167,7 +167,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 	}
 	sr.memCache.services[task] = append(entries, newEntry)
 	sr.memCache.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
-	
+
 	// Set atomic query counter
 	counterKey := task + ":" + addr
 	counterVal, _ := sr.memCache.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
