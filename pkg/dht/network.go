@@ -88,8 +88,8 @@ func (dn *DHTNetwork) Start() error {
 	}
 	dn.listener = ln
 
-	netLogger.Printf("DHT listening on %s (node ID: %s)",
-		dn.dht.listenAddr, NodeIDToString(dn.dht.self.ID))
+	netLogger.Printf("DHT listening on %s (advertise %s, node ID: %s)",
+		dn.dht.listenAddr, dn.dht.self.Address, NodeIDToString(dn.dht.self.ID))
 
 	// start accepting connections
 	dn.wg.Add(1)
@@ -161,7 +161,7 @@ func (dn *DHTNetwork) handleConnection(conn net.Conn) {
 // handleMessage processes a DHT message and returns a response
 func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 	// add sender as a peer
-	if msg.Sender != "" && msg.Sender != dn.dht.listenAddr {
+	if msg.Sender != "" && msg.Sender != dn.dht.self.Address {
 		dn.dht.AddPeer(msg.Sender)
 	}
 
@@ -169,7 +169,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 	case MsgPing:
 		return &Message{
 			Type:   MsgPong,
-			Sender: dn.dht.listenAddr,
+			Sender: dn.dht.self.Address,
 		}
 
 	case MsgJoin:
@@ -182,7 +182,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 		payload, _ := json.Marshal(PeerListPayload{Peers: peerAddrs})
 		return &Message{
 			Type:    MsgPeerList,
-			Sender:  dn.dht.listenAddr,
+			Sender:  dn.dht.self.Address,
 			Payload: payload,
 		}
 
@@ -199,7 +199,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			netLogger.Printf("stored %s -> %s (in k-closest)", sp.Task, sp.Address)
 			return &Message{
 				Type:   "OK",
-				Sender: dn.dht.listenAddr,
+				Sender: dn.dht.self.Address,
 			}
 		}
 
@@ -207,7 +207,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 		netLogger.Printf("rejected store for %s (not in k-closest)", sp.Task)
 		return &Message{
 			Type:   "NOT_RESPONSIBLE",
-			Sender: dn.dht.listenAddr,
+			Sender: dn.dht.self.Address,
 		}
 
 	case MsgFind:
@@ -227,20 +227,20 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 				})
 				return &Message{
 					Type:    MsgFoundData,
-					Sender:  dn.dht.listenAddr,
+					Sender:  dn.dht.self.Address,
 					Payload: payload,
 				}
 			}
 			return &Message{
 				Type:   MsgNotFound,
-				Sender: dn.dht.listenAddr,
+				Sender: dn.dht.self.Address,
 			}
 		}
 
 		// Not in k-closest, return not found (client will try other k-closest nodes)
 		return &Message{
 			Type:   MsgNotFound,
-			Sender: dn.dht.listenAddr,
+			Sender: dn.dht.self.Address,
 		}
 	}
 
@@ -253,7 +253,7 @@ func (dn *DHTNetwork) joinNetwork() {
 
 	// try each bootstrap node
 	for _, bootstrap := range dn.bootstraps {
-		if bootstrap == dn.dht.listenAddr {
+		if bootstrap == dn.dht.self.Address {
 			continue // don't join ourselves
 		}
 
@@ -261,7 +261,7 @@ func (dn *DHTNetwork) joinNetwork() {
 
 		msg := Message{
 			Type:   MsgJoin,
-			Sender: dn.dht.listenAddr,
+			Sender: dn.dht.self.Address,
 		}
 
 		resp, err := dn.sendMessage(bootstrap, &msg)
@@ -279,7 +279,7 @@ func (dn *DHTNetwork) joinNetwork() {
 
 			netLogger.Printf("received %d peers from %s", len(pl.Peers), bootstrap)
 			for _, peer := range pl.Peers {
-				if peer != dn.dht.listenAddr {
+				if peer != dn.dht.self.Address {
 					dn.dht.AddPeer(peer)
 				}
 			}
@@ -323,7 +323,7 @@ func (dn *DHTNetwork) maintenanceLoop() {
 func (dn *DHTNetwork) pingPeer(addr string) {
 	msg := Message{
 		Type:   MsgPing,
-		Sender: dn.dht.listenAddr,
+		Sender: dn.dht.self.Address,
 	}
 
 	_, err := dn.sendMessage(addr, &msg)
@@ -382,7 +382,7 @@ func (dn *DHTNetwork) Store(task, address string) error {
 
 			msg := Message{
 				Type:    MsgStore,
-				Sender:  dn.dht.listenAddr,
+				Sender:  dn.dht.self.Address,
 				Payload: payload,
 			}
 
@@ -426,7 +426,7 @@ func (dn *DHTNetwork) Find(task string) ([]string, error) {
 	payload, _ := json.Marshal(FindPayload{Task: task})
 	msg := Message{
 		Type:    MsgFind,
-		Sender:  dn.dht.listenAddr,
+		Sender:  dn.dht.self.Address,
 		Payload: payload,
 	}
 

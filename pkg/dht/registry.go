@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync/atomic"
 )
 
@@ -18,8 +19,28 @@ type DHTRegistry struct {
 	errorCount    uint64
 }
 
+func normalizeListenAddr(listenAddr string) string {
+	listenAddr = strings.TrimSpace(listenAddr)
+	if listenAddr == "" {
+		return listenAddr
+	}
+	// Allow users to input just a port number (e.g. "6001").
+	allDigits := true
+	for _, r := range listenAddr {
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return ":" + listenAddr
+	}
+	return listenAddr
+}
+
 // NewDHTRegistry creates a new DHT-based registry
 func NewDHTRegistry(listenAddr string, bootstrapNodes []string) (*DHTRegistry, error) {
+	listenAddr = normalizeListenAddr(listenAddr)
 	dht, err := NewDHT(listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("create dht: %w", err)

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -26,15 +27,15 @@ func askModeOptions() (string, string, string, []string) {
 
 	// Parse command-line flags for non-interactive mode
 	p2pFlag := flag.Bool("p2p", false, "Enable peer-to-peer mode using DHT")
-	p2pPortFlag := flag.String("p2p-port", ":6000", "Port for P2P DHT communication")
-	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes")
+	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
+	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
 	flag.Parse()
 
 	// Check if flags were provided (non-interactive)
 	if *p2pFlag {
 		mode = "p2p"
-		p2pPort = *p2pPortFlag
+		p2pPort = normalizePortInput(*p2pPortFlag)
 		if *bootstrapFlag != "" {
 			bootstrapNodes = strings.Split(*bootstrapFlag, ",")
 			for i := range bootstrapNodes {
@@ -58,7 +59,10 @@ func askModeOptions() (string, string, string, []string) {
 	reader := bufio.NewReader(os.Stdin)
 
 	// Ask for mode
-	fmt.Fprint(os.Stderr, "Select mode: 1) centralized (default) 2) p2p. Enter 1 or 2 [1]: ")
+	fmt.Fprintln(os.Stderr, "Select mode:")
+	fmt.Fprintln(os.Stderr, "  1) centralized (default)")
+	fmt.Fprintln(os.Stderr, "  2) p2p (DHT)")
+	fmt.Fprint(os.Stderr, "Enter choice [1]: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 	switch strings.ToLower(input) {
@@ -73,23 +77,15 @@ func askModeOptions() (string, string, string, []string) {
 
 	if mode == "p2p" {
 		// Ask for P2P port
-		fmt.Fprint(os.Stderr, "Enter P2P port [:6000]: ")
+		fmt.Fprint(os.Stderr, "Enter P2P listen address/port (example: '6000') [6000]: ")
 		portInput, _ := reader.ReadString('\n')
 		portInput = strings.TrimSpace(portInput)
 		if portInput != "" {
-			p2pPort = portInput
+			p2pPort = normalizePortInput(portInput)
 		}
 
 		// Ask for bootstrap nodes
-		fmt.Fprint(os.Stderr, "Enter bootstrap nodes (comma-separated, or leave empty): ")
-		bootstrapInput, _ := reader.ReadString('\n')
-		bootstrapInput = strings.TrimSpace(bootstrapInput)
-		if bootstrapInput != "" {
-			bootstrapNodes = strings.Split(bootstrapInput, ",")
-			for i := range bootstrapNodes {
-				bootstrapNodes[i] = strings.TrimSpace(bootstrapNodes[i])
-			}
-		}
+		bootstrapNodes = askBootstrapNodes(reader)
 	} else {
 		// Centralized mode - ask for transport
 		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
@@ -107,6 +103,63 @@ func askModeOptions() (string, string, string, []string) {
 	}
 
 	return mode, transport, p2pPort, bootstrapNodes
+}
+
+func askBootstrapNodes(reader *bufio.Reader) []string {
+	for {
+		fmt.Fprintln(os.Stderr, "Enter bootstrap nodes (comma-separated host:port, empty for none)")
+		fmt.Fprintln(os.Stderr, "  Example: 127.0.0.1:6000")
+		fmt.Fprint(os.Stderr, "Bootstrap nodes: ")
+		bootstrapInput, _ := reader.ReadString('\n')
+		bootstrapInput = strings.TrimSpace(bootstrapInput)
+		if bootstrapInput == "" {
+			return nil
+		}
+
+		nodes := strings.Split(bootstrapInput, ",")
+		var out []string
+		var bad []string
+		for _, n := range nodes {
+			n = strings.TrimSpace(n)
+			if n == "" {
+				continue
+			}
+			host, port, err := net.SplitHostPort(n)
+			if err != nil || host == "" || port == "" {
+				bad = append(bad, n)
+				continue
+			}
+			out = append(out, n)
+		}
+		if len(bad) == 0 && len(out) > 0 {
+			return out
+		}
+		if len(out) == 0 {
+			fmt.Fprintln(os.Stderr, "No valid bootstrap nodes provided.")
+		} else {
+			fmt.Fprintf(os.Stderr, "Invalid bootstrap node(s): %s\n", strings.Join(bad, ", "))
+		}
+		fmt.Fprintln(os.Stderr, "Format must be host:port (for IPv6, use [addr]:port). Try again or press Enter for none.")
+	}
+}
+
+func normalizePortInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return input
+	}
+	// If user provided only digits, treat it as a port and prepend ':' so net.Listen works.
+	allDigits := true
+	for _, r := range input {
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return ":" + input
+	}
+	return input
 }
 
 func main() {

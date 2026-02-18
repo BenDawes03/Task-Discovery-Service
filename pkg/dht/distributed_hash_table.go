@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,10 +36,17 @@ type DHT struct {
 
 // NewDHT creates a new DHT node
 func NewDHT(listenAddr string) (*DHT, error) {
-	nodeID := HashAddress(listenAddr)
+	advertiseAddr := strings.TrimSpace(listenAddr)
+	// ":port" is a valid listen address but not a dialable peer address.
+	// For local demos, advertise on loopback by default.
+	if strings.HasPrefix(advertiseAddr, ":") {
+		advertiseAddr = "127.0.0.1" + advertiseAddr
+	}
+
+	nodeID := HashAddress(advertiseAddr)
 	self := &Node{
 		ID:       nodeID,
-		Address:  listenAddr,
+		Address:  advertiseAddr,
 		LastSeen: time.Now(),
 	}
 
