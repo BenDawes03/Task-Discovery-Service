@@ -3,11 +3,13 @@ package registry
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"tds/pkg/firewall"
 	"tds/pkg/store"
 )
 
@@ -160,7 +162,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 		}
 	}
 
-	// New entry - add with DB values (QueryCount will be synced from atomic counter)
+	// New entry - add with DB values
 	newEntry := ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: lastHeartbeat,
@@ -200,8 +202,13 @@ func (sr *StoreBackedRegistry) Register(task, addr string) {
 // GetService retrieves a service from the cache first (fast path).
 // On cache miss, fetches from DB and potentially evicts least-used from cache.
 func (sr *StoreBackedRegistry) GetService(task string) (string, error) {
+	return sr.GetServiceForRequestor(task, nil)
+}
+
+// GetServiceForRequestor retrieves a service that the requestor is allowed to reach.
+func (sr *StoreBackedRegistry) GetServiceForRequestor(task string, requestorIP net.IP) (string, error) {
 	// Try cache first (fast path)
-	addr, err := sr.memCache.GetService(task)
+	addr, err := sr.memCache.GetServiceForRequestor(task, requestorIP)
 	if err == nil {
 		// Cache hit - return immediately (query count tracked in cache)
 		return addr, nil
@@ -220,25 +227,41 @@ func (sr *StoreBackedRegistry) GetService(task string) (string, error) {
 	sr.memCache.Register(task, entry.Address)
 	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', fetched from DB: %s\n", task, entry.Address)
 
+	// Now check firewall rules if requestor IP is provided
+	if requestorIP != nil {
+		addr, err = sr.memCache.GetServiceForRequestor(task, requestorIP)
+		if err != nil {
+			return "", err
+		}
+		return addr, nil
+	}
+
 	return entry.Address, nil
 }
 
-// Cleanup removes stale entries from both cache and store.
+// SetFirewall configures the firewall rules for this registry.
+func (sr *StoreBackedRegistry) SetFirewall(fw *firewall.Firewall) {
+	sr.memCache.SetFirewall(fw)
+}
+
+// Cleanup removes stale entries from the in-memory cache.
+// For the persistent store, entries are marked as inactive rather than deleted,
+// preserving them for logging and audit purposes.
 func (sr *StoreBackedRegistry) Cleanup(timeout time.Duration) int {
 	// Remove from cache immediately
 	cacheRemoved := sr.memCache.Cleanup(timeout)
 
-	// Also remove from persistent store synchronously
+	// Mark as inactive in persistent store (not deleted, for logging/audit)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	dbRemoved, err := sr.store.Cleanup(ctx, timeout)
+	dbFlagged, err := sr.store.Cleanup(ctx, timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[STORE] Cleanup failed: %v\n", err)
 	}
 
-	// Return total removed from both cache and database
-	return cacheRemoved + int(dbRemoved)
+	// Return total: removed from cache + flagged as inactive in DB
+	return cacheRemoved + int(dbFlagged)
 }
 
 // ListServices returns services from the in-memory cache.

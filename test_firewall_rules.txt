@@ -1,0 +1,18 @@
+# Firewall Rules for Comprehensive Test
+# Format: source_ip_or_cidr destination_ip_or_cidr
+
+# Allow 192.168.1.x subnet to communicate with itself
+192.168.1.0/24 192.168.1.0/24
+
+# Allow 192.168.1.x subnet to reach 10.0.0.x subnet
+192.168.1.0/24 10.0.0.0/24
+
+# Allow 10.0.0.x subnet to communicate with itself
+10.0.0.0/24 10.0.0.0/24
+
+# Allow localhost to reach everything (for testing)
+127.0.0.1 192.168.1.0/24
+127.0.0.1 10.0.0.0/24
+127.0.0.1 172.16.0.0/24
+
+# Note: 172.16.0.100 (ClientE) has NO outbound rules - isolated

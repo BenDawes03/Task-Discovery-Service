@@ -17,6 +17,7 @@ import (
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
+	"tds/pkg/firewall"
 	"tds/pkg/registry"
 	"tds/pkg/store/postgres"
 	"tds/pkg/transport"
@@ -436,32 +437,36 @@ func askTerminalOptions() (string, bool, bool) {
 
 func main() {
 	// Parse command-line flags
+	var firewallRulesPath string
+
 	flag.IntVar(&listenPort, "port", 5000, "Port to listen on")
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
-	
+	flag.StringVar(&firewallRulesPath, "firewall-rules", "", "Path to firewall rules file (optional)")
+
 	// Transport mode flags
 	tcpMode := flag.Bool("tcp", false, "Use TCP transport")
 	udpMode := flag.Bool("udp", false, "Use UDP transport (default)")
 	tlsMode := flag.Bool("tls", false, "Use TLS transport with mutual authentication")
-	
+
 	// TLS configuration flags
 	flag.StringVar(&tlsCertFile, "tls-cert", "certs/server.crt", "Server TLS certificate file")
 	flag.StringVar(&tlsKeyFile, "tls-key", "certs/server.key", "Server TLS private key file")
 	flag.StringVar(&tlsClientCAFile, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
-	
+
 	// Database configuration flags
 	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgresql://user:password@localhost:5432/dbname)")
 	flag.IntVar(&cacheMaxSize, "cache-max-size", 100, "Maximum number of tasks to keep in cache (0 = unlimited)")
-	
+
 	// Logging configuration flags
 	flag.StringVar(&logDir, "log-dir", "logs", "Directory for log files")
-	
+
 	// UI configuration flags
 	flag.BoolVar(&forceUI, "force-ui", false, "Force TUI mode without prompting")
 	flag.BoolVar(&forceUI, "ui", false, "Alias for --force-ui")
 	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
-	
+	flag.BoolVar(&noUI, "no-tui", false, "Alias for --no-ui")
+
 	flag.Parse()
 
 	// Process transport mode flags
@@ -512,6 +517,25 @@ func main() {
 		go uiUpdateCoordinator()
 	}
 
+	// Load firewall rules if specified
+	var fw *firewall.Firewall
+	if firewallRulesPath != "" {
+		var err error
+		fw, err = firewall.LoadFromFile(firewallRulesPath)
+		if err != nil {
+			fatalError(fmt.Sprintf("failed to load firewall rules: %v", err))
+		}
+		logEvent(fmt.Sprintf("Loaded %d firewall rules from %s", fw.RuleCount(), firewallRulesPath))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
+		}
+	} else {
+		logEvent("No firewall rules specified; all requests will be allowed")
+		if !runTUI {
+			fmt.Fprintln(os.Stderr, "no firewall rules specified; all requests will be allowed")
+		}
+	}
+
 	// Check for --store-url flag or DATABASE_URL environment variable for persistence.
 	// Flag takes precedence over environment variable
 	if storeURL == "" {
@@ -535,8 +559,11 @@ func main() {
 			fatalError(fmt.Sprintf("failed to run migrations: %v", err))
 		}
 		cancel()
-
+		
 		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
+		if fw != nil {
+			storeReg.SetFirewall(fw)
+		}
 
 		// Warm the in-memory cache from the database on startup
 		logEvent("Warming cache from database")
@@ -568,7 +595,11 @@ func main() {
 		}
 	} else {
 		// Fall back to in-memory registry
-		reg = registry.NewMemoryRegistry()
+		memReg := registry.NewMemoryRegistry()
+		if fw != nil {
+			memReg.SetFirewall(fw)
+		}
+		reg = memReg
 		logEvent("Using in-memory registry (no persistence)")
 		if !runTUI {
 			fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")

@@ -1,8 +1,10 @@
 package registry
 
 import (
+	"net"
 	"sync"
 	"sync/atomic"
+	"tds/pkg/firewall"
 	"time"
 )
 
@@ -12,13 +14,22 @@ type MemoryRegistry struct {
 	roundRobinIndex sync.Map // map[string]*atomic.Int64 for lock-free round-robin
 	queryCounters   sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
 	totalQueries    atomic.Int64
+	firewall        *firewall.Firewall
 }
 
 func NewMemoryRegistry() *MemoryRegistry {
 	return &MemoryRegistry{
 		services: make(map[string][]ServiceEntry),
-		// roundRobinIndex is initialized as sync.Map (zero value)
+		firewall: nil, // No firewall by default
 	}
+}
+
+// SetFirewall configures the firewall rules for this registry.
+// If fw is nil, firewall filtering is disabled.
+func (registry *MemoryRegistry) SetFirewall(fw *firewall.Firewall) {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	registry.firewall = fw
 }
 
 func (registry *MemoryRegistry) Register(task, addr string) {
@@ -41,42 +52,61 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 		QueryCount:    0,
 	}
 	registry.services[task] = append(entries, newEntry)
-	// Initialize round-robin index for new task
+	// Ensure a round-robin index exists for the task.
 	registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 }
 
 func (registry *MemoryRegistry) GetService(task string) (string, error) {
-	// Use RLock for read-only access to services map (major performance improvement)
+	return registry.GetServiceForRequestor(task, nil)
+}
+
+func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP net.IP) (string, error) {
+	// Copy current addresses under RLock so we don't hold the lock while
+	// doing parsing / firewall checks.
 	registry.mutex.RLock()
 	entries, found := registry.services[task]
 	if !found || len(entries) == 0 {
 		registry.mutex.RUnlock()
 		return "", ErrNotFound
 	}
-	numEntries := len(entries)
+	addrs := make([]string, len(entries))
+	for i, e := range entries {
+		addrs[i] = e.Address
+	}
 	registry.mutex.RUnlock()
 
-	// Atomic round-robin selection (lock-free)
+	// Filter allowed addresses (if firewall is configured and we know requestor IP).
+	allowedAddrs := addrs
+	if registry.firewall != nil && requestorIP != nil {
+		allowedAddrs = allowedAddrs[:0]
+		for _, addr := range addrs {
+			hostPart, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				hostPart = addr
+			}
+			destIP := net.ParseIP(hostPart)
+			if destIP != nil && registry.firewall.IsAllowed(requestorIP, destIP) {
+				allowedAddrs = append(allowedAddrs, addr)
+			}
+		}
+		if len(allowedAddrs) == 0 {
+			return "", ErrNoAllowedService
+		}
+	}
+
+	// Atomic round-robin selection over the allowed set.
 	idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 	idxPtr := idxVal.(*atomic.Int64)
-	idx := int(idxPtr.Add(1)-1) % numEntries
+	idx := int(idxPtr.Add(1)-1) % len(allowedAddrs)
+	selectedAddr := allowedAddrs[idx]
 
-	// Read the selected address (only read lock needed)
-	registry.mutex.RLock()
-	if idx >= len(registry.services[task]) {
-		// Race condition: entries changed, recalculate
-		idx = idx % len(registry.services[task])
-	}
-	selectedAddr := registry.services[task][idx].Address
-	registry.mutex.RUnlock()
-
-	// Increment query count atomically (lock-free)
+	// Increment query count atomically (lock-free).
 	counterKey := task + ":" + selectedAddr
 	counterVal, _ := registry.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
 	counterPtr := counterVal.(*atomic.Int64)
 	counterPtr.Add(1)
 
-	// Increment total queries atomically (lock-free)
+	// Increment total queries atomically (lock-free).
 	registry.totalQueries.Add(1)
 
 	return selectedAddr, nil
@@ -117,14 +147,13 @@ func (registry *MemoryRegistry) ListServices() map[string][]ServiceEntry {
 	registry.mutex.RLock() // Read lock allows concurrent access from multiple readers (e.g., TUI)
 	defer registry.mutex.RUnlock()
 
-	// CRITICAL: Must return a copy to prevent the UI from modifying the underlying data (race condition)
-	// Also sync atomic query counts into the ServiceEntry structs
+	// CRITICAL: Must return a deep copy to prevent callers from mutating internal slices.
+	// Also sync atomic query counts into the returned ServiceEntry structs.
 	copyMap := make(map[string][]ServiceEntry)
 	for task, entries := range registry.services {
 		sliceCopy := make([]ServiceEntry, len(entries))
 		for i, entry := range entries {
 			sliceCopy[i] = entry
-			// Get current query count from atomic counter
 			counterKey := task + ":" + entry.Address
 			if counterVal, ok := registry.queryCounters.Load(counterKey); ok {
 				counterPtr := counterVal.(*atomic.Int64)

@@ -11,6 +11,8 @@ A distributed task-to-IP registry service with support for both centralized and 
 - **Round-Robin Load Balancing**: Automatic distribution of queries across multiple service instances
 - **Heartbeat & Cleanup**: Automatic removal of stale service registrations
 - **Interactive Monitoring**: Real-time TUI dashboard and command interface
+- **Firewall-Aware Routing**: Filter query responses based on firewall rules
+- **Persistent Storage (Optional)**: PostgreSQL backend with cache (store-backed registry)
 
 ## Architecture Overview
 
@@ -258,6 +260,18 @@ Network communication layer:
 go run ./cmd/server
 ```
 
+Optional flags:
+```bash
+# Firewall-aware routing
+go run ./cmd/server --firewall-rules firewall_rules.example
+
+# PostgreSQL backend (also checks DATABASE_URL if --store-url is omitted)
+go run ./cmd/server --store-url "postgres://user:pass@localhost:5432/tds?sslmode=disable"
+
+# Headless mode (no TUI)
+go run ./cmd/server --no-ui
+```
+
 **2. Start the client proxy (in another terminal):**
 ```bash
 go run ./cmd/client_proxy
@@ -397,6 +411,57 @@ Query Results:
 - Server must be running: `go run ./cmd/server`
 - Script uses PowerShell jobs for concurrent client simulation
 - No external dependencies required
+
+## Firewall-Aware Routing
+
+The server can filter service responses based on network firewall rules to ensure clients only receive addresses they can reach.
+
+### Firewall Rules File Format
+
+```
+# Format: source_ip_or_cidr destination_ip_or_cidr
+192.168.1.10 10.0.0.5
+192.168.1.0/24 10.0.0.0/24
+```
+
+See [docs/FIREWALL_RULES.md](docs/FIREWALL_RULES.md) for complete documentation.
+
+## Centralized Mode Protocol (JSON)
+
+The centralized UDP/TCP servers use a simple JSON message protocol.
+
+### Registration
+```json
+{"cmd":"REGISTER","task":"my_task","address":"10.0.0.5:8080"}
+```
+
+### Query
+```json
+{"cmd":"QUERY","task":"my_task"}
+```
+
+### Responses
+- `{"status":"OK"}` (REGISTER success)
+- `{"status":"OK","address":"10.0.0.5:8080"}` (QUERY success)
+- `{"status":"NOTFOUND"}` (no service registered)
+- `{"status":"FORBIDDEN"}` (no service allowed by firewall rules)
+- `{"status":"ERR","error":"..."}`
+
+## Server Flags
+
+```
+--port <n>                 Listen port (default: 5000)
+--firewall-rules <path>    Path to firewall rules file (optional)
+--store-url <url>          PostgreSQL connection URL (optional; falls back to DATABASE_URL)
+--cache-max-size <n>       Max tasks to keep in cache (0 = unlimited)
+--heartbeat-timeout <dur>  Timeout for service heartbeats (default: 60s)
+--cleanup-interval <dur>   Cleanup interval for stale entries (default: 10s)
+--no-ui                    Run without interactive TUI (alias: --no-tui)
+--force-ui, --ui           Force TUI mode without prompting
+--udp                      Use UDP transport
+--tcp                      Use TCP transport
+--tls                      Use TLS transport (mutual auth)
+```
 
 ## Testing
 
@@ -757,4 +822,5 @@ Each client proxy node provides a command console:
 
 ### Project Files
 - [README.md](README.md) - This file (comprehensive guide)
+
 

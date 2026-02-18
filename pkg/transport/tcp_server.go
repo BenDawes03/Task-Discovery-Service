@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+
 	"tds/pkg/registry"
 )
 
-// StartTCPServer starts a JSON-based TCP server that understands
-// the same JSON messages as the UDP server. Each connection is
-// handled concurrently and may send multiple commands (one JSON object per line).
+// StartTCPServer starts a JSON-based TCP server that understands the same JSON
+// messages as the UDP server. Each connection is handled concurrently and may
+// send multiple commands (one JSON object per line).
 func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
@@ -36,32 +37,29 @@ func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error
 func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
+
+	// Extract requestor IP for firewall-aware routing.
+	var requestorIP net.IP
+	if tcpAddr, ok := remote.(*net.TCPAddr); ok {
+		requestorIP = tcpAddr.IP
+	}
+
 	scanner := bufio.NewScanner(conn)
 	encoder := json.NewEncoder(conn)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		
-		// Parse JSON message
+
 		var msg CentralizedMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
-			resp := CentralizedResponse{
-				Status: "ERR",
-				Error:  "invalid JSON: " + err.Error(),
-			}
-			encoder.Encode(resp)
+			_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()})
 			continue
 		}
 
-		// Handle command
 		switch msg.Command {
 		case "REGISTER":
 			if msg.Task == "" || msg.Address == "" {
-				resp := CentralizedResponse{
-					Status: "ERR",
-					Error:  "task and address required",
-				}
-				encoder.Encode(resp)
+				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task and address required"})
 				continue
 			}
 
@@ -69,48 +67,32 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 			if onEvent != nil {
 				onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", msg.Task, msg.Address, remote))
 			}
-
-			resp := CentralizedResponse{Status: "OK"}
-			encoder.Encode(resp)
+			_ = encoder.Encode(CentralizedResponse{Status: "OK"})
 
 		case "QUERY":
 			if msg.Task == "" {
-				resp := CentralizedResponse{
-					Status: "ERR",
-					Error:  "task required",
-				}
-				encoder.Encode(resp)
+				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task required"})
 				continue
 			}
 
-			addrStr, err := reg.GetService(msg.Task)
+			addrStr, err := reg.GetServiceForRequestor(msg.Task, requestorIP)
 			if onEvent != nil {
 				onEvent(fmt.Sprintf("QUERY %s from %v", msg.Task, remote))
 			}
 
-			var resp CentralizedResponse
-			if err == registry.ErrNotFound || addrStr == "" {
-				resp = CentralizedResponse{Status: "NOTFOUND"}
-			} else if err != nil {
-				resp = CentralizedResponse{
-					Status: "ERR",
-					Error:  err.Error(),
-				}
-			} else {
-				resp = CentralizedResponse{
-					Status:  "OK",
-					Address: addrStr,
-				}
+			switch {
+			case err == nil:
+				_ = encoder.Encode(CentralizedResponse{Status: "OK", Address: addrStr})
+			case err == registry.ErrNotFound || addrStr == "":
+				_ = encoder.Encode(CentralizedResponse{Status: "NOTFOUND"})
+			case err == registry.ErrNoAllowedService:
+				_ = encoder.Encode(CentralizedResponse{Status: "FORBIDDEN"})
+			default:
+				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: err.Error()})
 			}
-
-			encoder.Encode(resp)
 
 		default:
-			resp := CentralizedResponse{
-				Status: "ERR",
-				Error:  "unknown command: " + msg.Command,
-			}
-			encoder.Encode(resp)
+			_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "unknown command: " + msg.Command})
 		}
 	}
 }
@@ -167,11 +149,10 @@ func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clien
 		}
 
 		// Verify TLS connection and extract client certificate info
-		tlsConn, ok := conn.(*tls.Conn)
-		if ok {
+		if tlsConn, ok := conn.(*tls.Conn); ok {
 			if err := tlsConn.Handshake(); err != nil {
 				fmt.Printf("tls handshake error: %v\n", err)
-				conn.Close()
+				_ = conn.Close()
 				continue
 			}
 			state := tlsConn.ConnectionState()
