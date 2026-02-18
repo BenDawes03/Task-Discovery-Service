@@ -229,24 +229,31 @@ func RegisterTLS(serverAddr, task, address, certFile, keyFile, caFile string) er
 		return fmt.Errorf("tls handshake: %w", err)
 	}
 
-	// Verify server certificate
-	state := conn.ConnectionState()
-	if len(state.PeerCertificates) == 0 {
-		return fmt.Errorf("server provided no certificate")
+	// Send JSON request and read JSON response
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+
+	msg := transport.CentralizedMessage{
+		Command: "REGISTER",
+		Task:    task,
+		Address: address,
+	}
+	if err := enc.Encode(msg); err != nil {
+		return fmt.Errorf("encode request: %w", err)
 	}
 
-	fmt.Fprintf(conn, "REGISTER %s %s\n", task, address)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	r := bufio.NewReader(conn)
-	resp, err := r.ReadString('\n')
-	if err != nil {
-		return err
+	var resp transport.CentralizedResponse
+	if err := dec.Decode(&resp); err != nil {
+		return fmt.Errorf("decode response: %w", err)
 	}
-	resp = strings.TrimSpace(resp)
-	if resp == "OK" {
+	if resp.Status == "OK" {
 		return nil
 	}
-	return fmt.Errorf("server error: %s", resp)
+	if resp.Error != "" {
+		return fmt.Errorf("server error: %s", resp.Error)
+	}
+	return fmt.Errorf("server error: %s", resp.Status)
 }
 
 // QueryTLS performs a query over TLS with mutual authentication.
@@ -268,21 +275,32 @@ func QueryTLS(serverAddr, task, certFile, keyFile, caFile string) (string, error
 		return "", fmt.Errorf("tls handshake: %w", err)
 	}
 
-	fmt.Fprintf(conn, "QUERY %s\n", task)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	r := bufio.NewReader(conn)
-	resp, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+
+	msg := transport.CentralizedMessage{
+		Command: "QUERY",
+		Task:    task,
 	}
-	resp = strings.TrimSpace(resp)
-	if resp == "NOTFOUND" {
+	if err := enc.Encode(msg); err != nil {
+		return "", fmt.Errorf("encode request: %w", err)
+	}
+
+	var resp transport.CentralizedResponse
+	if err := dec.Decode(&resp); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if resp.Status == "NOTFOUND" {
 		return "", nil
 	}
-	if resp == "ERR" {
-		return "", fmt.Errorf("server error")
+	if resp.Status == "ERR" {
+		return "", fmt.Errorf("server error: %s", resp.Error)
 	}
-	return resp, nil
+	if resp.Status != "OK" {
+		return "", fmt.Errorf("server error: %s", resp.Status)
+	}
+	return resp.Address, nil
 }
 
 // loadTLSConfig creates a TLS configuration with client certificate and CA verification.

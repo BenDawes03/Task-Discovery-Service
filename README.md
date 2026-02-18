@@ -179,7 +179,60 @@ Distributed hash table implementation for P2P mode:
   - `FIND`: Task query from k-closest nodes
   - `FOUND/NOTFOUND`: Query responses
 
+**Concurrency Model:**
 
+The DHT uses a `sync.RWMutex` to protect shared state (ring, peers, storage). To avoid deadlocks and improve performance, we use the **`*Locked` pattern**:
+
+```go
+// Public methods - thread-safe, take lock
+func (dht *DHT) AmIInKClosest(task string, k int) bool {
+    dht.mutex.RLock()  // Takes lock
+    defer dht.mutex.RUnlock()
+    return dht.amIInKClosestLocked(task, k)
+}
+
+// Private *Locked methods - NOT thread-safe, assume lock held
+func (dht *DHT) amIInKClosestLocked(task string, k int) bool {
+    // No lock - caller must hold lock
+    // Safe to access dht.ring directly
+}
+```
+
+**Why `*Locked` methods?**
+
+1. **Avoid Deadlock**: Go's `sync.RWMutex` doesn't support recursive locking. If a method holding a write lock called another method that tried to take a read lock, it would deadlock.
+
+2. **Performance**: When already holding a lock (e.g., in `CleanupStaleData` iterating over storage), avoid repeated lock/unlock overhead.
+
+3. **Atomicity**: Keep entire operation under one lock for consistent view of data structures.
+
+```go
+// ✅ Safe - one lock for entire operation
+func (dht *DHT) CleanupStaleData() int {
+    dht.mutex.Lock()
+    defer dht.mutex.Unlock()
+    
+    for task := range dht.storage {
+        if !dht.amIInKClosestLocked(task, k) {  // No lock
+            delete(dht.storage, task)
+        }
+    }
+}
+
+// ❌ Would deadlock
+func (dht *DHT) CleanupStaleData() int {
+    dht.mutex.Lock()
+    defer dht.mutex.Unlock()
+    
+    for task := range dht.storage {
+        if !dht.AmIInKClosest(task, k) {  // Tries to RLock() → DEADLOCK!
+            delete(dht.storage, task)
+        }
+    }
+}
+```
+
+This is a standard Go idiom used throughout the standard library (e.g., `container/list`, `container/heap`).
 
 ### Registry Package (`pkg/registry`)
 Core registry abstraction layer:
