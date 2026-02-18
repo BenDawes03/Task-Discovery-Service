@@ -1,0 +1,4 @@
+"Timestamp","Mode","Test","Status","Detail"
+"2026-02-16T17:46:03","tls","TLS suite","SKIP","Skipped by -SkipTLS"
+"2026-02-16T17:46:03","udp","udp suite setup","FAIL","This command cannot be run because ""RedirectStandardOutput"" and ""RedirectStandardError"" are same. Give different inputs and Run your command again."
+"2026-02-16T17:46:03","tcp","tcp suite setup","FAIL","This command cannot be run because ""RedirectStandardOutput"" and ""RedirectStandardError"" are same. Give different inputs and Run your command again."

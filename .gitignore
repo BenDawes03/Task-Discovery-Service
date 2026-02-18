@@ -1,0 +1,8 @@
+# Build artifacts
+bin/
+
+# Logs
+logs/
+**/logs/
+*.log
+*.log.*

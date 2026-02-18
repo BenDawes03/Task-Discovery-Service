@@ -318,16 +318,16 @@ Automated test scripts are provided in [test_scripts](test_scripts):
 **P2P Network Demo:**
 ```powershell
 # Start a 5-node P2P network automatically
-.\test_scripts\demo_p2p.ps1
+.\demos\p2p\demo_p2p.ps1
 
 # Or start nodes individually
-.\test_scripts\node_1_start.ps1  # Bootstrap node
-.\test_scripts\node_2_start.ps1  # Joins node 1
-.\test_scripts\node_3_start.ps1  # Joins nodes 1,2
+.\test_scripts\p2p\node_1_start.ps1  # Bootstrap node
+.\test_scripts\p2p\node_2_start.ps1  # Joins node 1
+.\test_scripts\p2p\node_3_start.ps1  # Joins nodes 1,2
 # ... etc
 
 # Test the full network
-.\test_scripts\test_p2p_network.ps1
+.\test_scripts\p2p\test_p2p_network.ps1
 ```
 
 ## Building
@@ -337,12 +337,12 @@ Automated test scripts are provided in [test_scripts](test_scripts):
 go build ./...
 
 # Build specific components
-go build -o server.exe ./cmd/server
-go build -o client_proxy.exe ./cmd/client_proxy
-go build -o test_client.exe ./cmd/test_client
+go build -o bin/server.exe ./cmd/server
+go build -o bin/client_proxy.exe ./cmd/client_proxy
+go build -o bin/test_client.exe ./cmd/test_client
 
 # Build with race detector (useful for debugging concurrency issues)
-go build -race -o client_proxy_race.exe ./cmd/client_proxy
+go build -race -o bin/client_proxy_race.exe ./cmd/client_proxy
 ```
 
 ## Performance Testing
@@ -353,10 +353,10 @@ A comprehensive load test script is provided to test server performance under co
 
 ```powershell
 # Run with default settings (10 clients, 100 ops each, UDP)
-.\test_scripts\load_test_server.ps1
+.\test_scripts\centralized\load_test_server.ps1
 
 # Custom configuration
-.\test_scripts\load_test_server.ps1 -NumClients 20 -RegistrationsPerClient 500 -QueriesPerClient 500 -Protocol tcp
+.\test_scripts\centralized\load_test_server.ps1 -NumClients 20 -RegistrationsPerClient 500 -QueriesPerClient 500 -Protocol tcp
 
 # Test parameters:
 #   -NumClients: Number of concurrent client simulations (default: 10)
@@ -472,8 +472,8 @@ Example:
 Request:  QUERY <task>
 Response: <address> | NOTFOUND | ERR <message>
 
-Example:
-  → QUERY web-api
+  # Run with default settings (10 clients, 100 ops each, UDP)
+  .\test_scripts\centralized\load_test_server.ps1
   ← 192.168.1.50:8080
 ```
 
