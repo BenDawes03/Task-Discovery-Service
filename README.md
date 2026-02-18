@@ -263,7 +263,10 @@ go run ./cmd/server
 Optional flags:
 ```bash
 # Firewall-aware routing
-go run ./cmd/server --firewall-rules firewall_rules.example
+go run ./cmd/server --firewall --firewall-rules firewall_rules.example
+
+# Disable firewall (even if a rules file is provided)
+go run ./cmd/server --no-firewall --firewall-rules firewall_rules.example
 
 # PostgreSQL backend (also checks DATABASE_URL if --store-url is omitted)
 go run ./cmd/server --store-url "postgres://user:pass@localhost:5432/tds?sslmode=disable"
@@ -271,6 +274,8 @@ go run ./cmd/server --store-url "postgres://user:pass@localhost:5432/tds?sslmode
 # Headless mode (no TUI)
 go run ./cmd/server --no-ui
 ```
+
+If you run the server interactively with no firewall flags, it will prompt whether to enable firewall-aware routing and (optionally) ask for a firewall rules directory.
 
 **2. Start the client proxy (in another terminal):**
 ```bash
@@ -451,7 +456,9 @@ The centralized UDP/TCP servers use a simple JSON message protocol.
 
 ```
 --port <n>                 Listen port (default: 5000)
---firewall-rules <path>    Path to firewall rules file (optional)
+--firewall                 Enable firewall-aware routing (permissive if no rules)
+--no-firewall              Disable firewall-aware routing (ignores --firewall-rules)
+--firewall-rules <path>    Path to firewall rules file (optional; implies firewall unless --no-firewall is set)
 --store-url <url>          PostgreSQL connection URL (optional; falls back to DATABASE_URL)
 --cache-max-size <n>       Max tasks to keep in cache (0 = unlimited)
 --heartbeat-timeout <dur>  Timeout for service heartbeats (default: 60s)

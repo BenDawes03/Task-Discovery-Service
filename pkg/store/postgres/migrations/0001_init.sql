@@ -10,6 +10,17 @@ CREATE TABLE IF NOT EXISTS services (
 	UNIQUE(task, address)
 );
 
+-- If the table already exists from an older schema, ensure newer columns exist
+-- before creating indexes that reference them.
+ALTER TABLE services ADD COLUMN IF NOT EXISTS query_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+
+-- Ensure ON CONFLICT (task, address) works even if the original UNIQUE constraint
+-- wasn't present in an older schema.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_address_unique ON services(task, address);
+
 CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);
 CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);
 CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);

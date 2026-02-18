@@ -44,17 +44,26 @@ source_ip_or_cidr destination_ip_or_cidr
 
 ## Usage
 
-Start the server with the `--firewall-rules` flag to load a firewall rules file:
+Start the server with `--firewall-rules` to load a firewall rules file (this also enables firewall-aware routing). You can also add `--firewall` explicitly if you prefer:
 
 ```bash
 # In-memory mode with firewall rules
 go run ./cmd/server --firewall-rules firewall_rules.txt
 
+# Same thing, explicit firewall enable
+go run ./cmd/server --firewall --firewall-rules firewall_rules.txt
+
 # With PostgreSQL backend
 go run ./cmd/server --store-url "postgres://user:pass@localhost/tds" --firewall-rules firewall_rules.txt
 ```
 
-If no firewall rules file is specified, the server operates in **permissive mode** and allows all requests.
+If firewall is enabled but no firewall rules file is specified, the server operates in **permissive mode** and allows all requests.
+
+To disable firewall-aware routing entirely (even if a rules file is provided), use:
+
+```bash
+go run ./cmd/server --no-firewall --firewall-rules firewall_rules.txt
+```
 
 ## Protocol Changes
 

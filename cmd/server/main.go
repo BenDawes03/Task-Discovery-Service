@@ -43,6 +43,11 @@ var (
 	// Database configuration
 	storeURL string
 
+	// Firewall configuration
+	firewallRulesPath     string
+	firewallEnabledFlag   bool
+	firewallDisabledFlag  bool
+
 	// UI configuration
 	forceUI bool
 	noUI    bool
@@ -345,6 +350,15 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
+	// Check if firewall was set via flags
+	firewallFlagSet := false
+	for _, a := range os.Args[1:] {
+		if a == "--firewall" || a == "--no-firewall" || a == "--firewall-rules" || strings.HasPrefix(a, "--firewall-rules=") {
+			firewallFlagSet = true
+			break
+		}
+	}
+
 	// If not in interactive terminal or prompts skipped, return early
 	if skipPrompts || !term.IsTerminal(int(os.Stdin.Fd())) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -419,6 +433,35 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
+	// Firewall prompt (skip if flags already set)
+	if !firewallFlagSet {
+		fmt.Fprint(os.Stderr, "Enable firewall-aware routing? [y/N]: ")
+		fwChoice, _ := reader.ReadString('\n')
+		fwChoice = strings.TrimSpace(strings.ToLower(fwChoice))
+		if fwChoice == "y" || fwChoice == "yes" {
+			firewallEnabledFlag = true
+			firewallDisabledFlag = false
+
+			fmt.Fprint(os.Stderr, "Firewall rules directory (optional; default '.'): ")
+			dirInput, _ := reader.ReadString('\n')
+			rulesDir := strings.TrimSpace(dirInput)
+			if rulesDir == "" {
+				rulesDir = "."
+			}
+
+			// Try to select a rules file from the directory.
+			// We default to the common generator output name first.
+			candidateNames := []string{"firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
+			for _, name := range candidateNames {
+				candidate := filepath.Join(rulesDir, name)
+				if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+					firewallRulesPath = candidate
+					break
+				}
+			}
+		}
+	}
+
 	// Prompt whether to start the TUI (skip if flag was set)
 	if !forceUI && !noUI {
 		fmt.Fprint(os.Stderr, "Run interactive TUI? [Y/n]: ")
@@ -437,7 +480,8 @@ func askTerminalOptions() (string, bool, bool) {
 
 func main() {
 	// Parse command-line flags
-	var firewallRulesPath string
+	flag.BoolVar(&firewallEnabledFlag, "firewall", false, "Enable firewall-aware routing (if no rules file is provided, operates in permissive mode)")
+	flag.BoolVar(&firewallDisabledFlag, "no-firewall", false, "Disable firewall-aware routing (ignores --firewall-rules)")
 
 	flag.IntVar(&listenPort, "port", 5000, "Port to listen on")
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
@@ -495,6 +539,20 @@ func main() {
 	// Gather terminal options before starting any server output.
 	transportMode, runTUI, _ := askTerminalOptions()
 
+	// Determine effective firewall mode AFTER any interactive prompts.
+	// Backwards compatible behavior: providing --firewall-rules enables firewall-aware routing.
+	firewallEnabled := false
+	switch {
+	case firewallDisabledFlag:
+		firewallEnabled = false
+	case firewallEnabledFlag:
+		firewallEnabled = true
+	case firewallRulesPath != "":
+		firewallEnabled = true
+	default:
+		firewallEnabled = false
+	}
+
 	// If running TUI, redirect stderr to discard to prevent corruption
 	if runTUI {
 		// Set runningTUI immediately so logEvent() queues messages for TUI
@@ -517,22 +575,38 @@ func main() {
 		go uiUpdateCoordinator()
 	}
 
-	// Load firewall rules if specified
+	// Firewall configuration
 	var fw *firewall.Firewall
-	if firewallRulesPath != "" {
-		var err error
-		fw, err = firewall.LoadFromFile(firewallRulesPath)
-		if err != nil {
-			fatalError(fmt.Sprintf("failed to load firewall rules: %v", err))
-		}
-		logEvent(fmt.Sprintf("Loaded %d firewall rules from %s", fw.RuleCount(), firewallRulesPath))
-		if !runTUI {
-			fmt.Fprintf(os.Stderr, "loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
+	if !firewallEnabled {
+		if firewallRulesPath != "" {
+			logEvent(fmt.Sprintf("Firewall disabled; ignoring firewall rules file %s", firewallRulesPath))
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "firewall disabled; ignoring firewall rules file %s\n", firewallRulesPath)
+			}
+		} else {
+			logEvent("Firewall disabled")
+			if !runTUI {
+				fmt.Fprintln(os.Stderr, "firewall disabled")
+			}
 		}
 	} else {
-		logEvent("No firewall rules specified; all requests will be allowed")
-		if !runTUI {
-			fmt.Fprintln(os.Stderr, "no firewall rules specified; all requests will be allowed")
+		if firewallRulesPath != "" {
+			var err error
+			fw, err = firewall.LoadFromFile(firewallRulesPath)
+			if err != nil {
+				fatalError(fmt.Sprintf("failed to load firewall rules: %v", err))
+			}
+			logEvent(fmt.Sprintf("Firewall enabled: loaded %d firewall rules from %s", fw.RuleCount(), firewallRulesPath))
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "firewall enabled: loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
+			}
+		} else {
+			// Enabled but no rules -> permissive mode.
+			fw = firewall.NewFirewall()
+			logEvent("Firewall enabled (permissive): no rules file specified; all requests will be allowed")
+			if !runTUI {
+				fmt.Fprintln(os.Stderr, "firewall enabled (permissive): no rules file specified; all requests will be allowed")
+			}
 		}
 	}
 

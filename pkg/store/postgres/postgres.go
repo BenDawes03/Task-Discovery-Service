@@ -185,11 +185,24 @@ func (ps *PostgresStore) Cleanup(ctx context.Context, timeout time.Duration) (in
 	return count, err
 }
 
-// Migrate runs database migrations (reads and executes 0001_init.sql).
+// Migrate runs database migrations.
+//
+// It is designed to be idempotent, including when the `services` table already exists
+// with an older schema missing newer columns such as `is_active`.
 func (ps *PostgresStore) Migrate(ctx context.Context) error {
-	// For now, we rely on the schema in 0001_init.sql being idempotent (IF NOT EXISTS).
 	// In a production system, use a migration library like migrate or flyway.
-	query := `
+	// Here we keep it simple and explicitly make schema changes safe to re-run.
+	tx, err := ps.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	statements := []string{
+		// Base table (new installs)
+		`
 		CREATE TABLE IF NOT EXISTS services (
 			id SERIAL PRIMARY KEY,
 			task TEXT NOT NULL,
@@ -198,16 +211,32 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 			query_count BIGINT NOT NULL DEFAULT 0,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-			UNIQUE(task, address)
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 		);
+		`,
 
-		CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);
-		CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);
-		CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);
-	`
-	_, err := ps.db.ExecContext(ctx, query)
-	return err
+		// Backfill/upgrade path (existing installs)
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS query_count BIGINT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
+
+		// Required for ON CONFLICT (task, address)
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_address_unique ON services(task, address);`,
+
+		// Indexes
+		`CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);`,
+		`CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);`,
+		`CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // Close closes the database connection.
