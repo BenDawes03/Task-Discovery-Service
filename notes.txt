@@ -12,6 +12,13 @@ Centralised server mode:
 - Create a comprehensive set of tests using VMs to simulate proper load [NOT STARTED]
 - Create dummy services that use the client library to talk to simulate a full scale system [NOT STARTED]
 - More smart caching, rather than highest query counts, it could be a more complex approach? [NOT STARTED]
+- db written to on every query for query count, since this value is only relevant when warming cache, update all before cache warming? [Completed]
+    - This problem was highlighted during performance testing. Cache misses were actually faster becasue of the writeToDB goroutine being spawned for each query
+    - solution was to batch updates to the db and write them perioudically
+    - An issue identified with this solution was that cache warming is done using the DB's view of query counts
+    - Solution was to ensure batch write was performed before cache warming ocurred
+    
+
 TLS-Mode
 - Add TLS to the TCP server code ✓
     -- certificates are expected to be signed by CA and not using the self signing code added for test / dev processes
@@ -52,11 +59,6 @@ Firewall mode:
     -- Current implementation does not check if a client can access the subnet or range of ip addresses that the service is on
     -- Research into details of how firewall rules work
 
-1:1 TODO:
-- review changes to system
-- go over challenges and how they were solved
-- Discuss which features to develop further / cutoff for remaining
-- What do i need to present, test evidence, simulation system etc 
-- Any areas he thinks needs more work / need to be presented better
-- Is there any recommended structure for the report
-- 
+
+testing
+- Use the test scripts and the commit history to document the improvements made to the project
