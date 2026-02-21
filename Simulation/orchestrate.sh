@@ -88,8 +88,9 @@ start_bg() {
   local quoted_cmd
   quoted_cmd="$(printf '%q' "${cmd}")"
 
-  # logs in ~/tds_sim_logs
-  ssh_run "${host}" "mkdir -p ~/tds_sim_logs; (nohup bash -lc ${quoted_cmd} > ~/tds_sim_logs/${name}.log 2>&1 & disown); echo started ${name}"
+  # logs in ~/tds_sim_logs; start the command with nohup, detach and record PID.
+  # Use < /dev/null so backgrounded processes do not inherit the SSH session's stdin.
+  ssh_run "${host}" "mkdir -p ~/tds_sim_logs; nohup bash -lc ${quoted_cmd} > ~/tds_sim_logs/${name}.log 2>&1 < /dev/null & echo \$! > ~/tds_sim_logs/${name}.pid; echo started ${name}"
 }
 
 require_repo_on_host() {
@@ -173,6 +174,50 @@ start_proxies_all_hosts() {
   for host in "${!hosts[@]}"; do
     start_proxy "${host}"
   done
+}
+
+# Open an interactive SSH window to a host using the first available terminal emulator.
+open_ssh_terminal() {
+  local host="$1"
+  local name="$2"
+  local user
+  user="$(ssh_user_for_host "${host}")"
+  local ssh_cmd="ssh ${user}@${host}"
+
+  # Try Windows Terminal (wt)
+  if command -v wt >/dev/null 2>&1; then
+    # wt spawns a new window/tab and runs powershell which then runs ssh and keeps the window open
+    wt new-tab powershell -NoExit -Command "${ssh_cmd}" || true
+    return 0
+  fi
+
+  # GNOME Terminal
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    gnome-terminal --title="${name}@${host}" -- bash -ic "${ssh_cmd}; exec bash" &
+    return 0
+  fi
+
+  # Konsole
+  if command -v konsole >/dev/null 2>&1; then
+    konsole --new-tab -p tabtitle="${name}@${host}" -e bash -ic "${ssh_cmd}; exec bash" &
+    return 0
+  fi
+
+  # xterm
+  if command -v xterm >/dev/null 2>&1; then
+    xterm -T "${name}@${host}" -e "${ssh_cmd}" &
+    return 0
+  fi
+
+  # macOS Terminal via osascript
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "tell application \"Terminal\" to do script \"${ssh_cmd}\"" || true
+    return 0
+  fi
+
+  # Fallback: run ssh in current terminal (interactive)
+  echo "No GUI terminal emulator found to open a new window for ${host}. Running ssh in this terminal..."
+  ${ssh_cmd}
 }
 
 collect_all_hosts() {
@@ -268,6 +313,41 @@ case "${1:-}" in
     start_gates
 
     echo "Done. Logs are under ~/tds_sim_logs on each VM."
+    ;;
+  down)
+    echo "Stopping services on all hosts"
+    # Collect hosts and attempt to stop processes recorded in ~/tds_sim_logs/*.pid
+    while IFS= read -r host; do
+      [[ -z "${host}" ]] && continue
+      echo "Stopping on ${host} (ssh user: $(ssh_user_for_host "${host}"))"
+      # On the remote host: kill PIDs from pid files, remove pid files, and as a fallback pkill known patterns.
+      ssh_run "${host}" "
+        if compgen -G ~/tds_sim_logs/*.pid >/dev/null 2>&1; then
+          for f in ~/tds_sim_logs/*.pid; do
+            pid=\$(cat \"\$f\" 2>/dev/null || true)
+            if [[ -n \"\$pid\" ]]; then
+              kill \"\$pid\" >/dev/null 2>&1 || true
+            fi
+            rm -f \"\$f\" || true
+          done
+        fi
+        # fallback: try to stop any go-run processes started by this orchestrator
+        pkill -f 'go run -mod=vendor' >/dev/null 2>&1 || true
+        pkill -f 'tail -f /dev/null | go run' >/dev/null 2>&1 || true
+        echo stopped"
+    done < <(collect_all_hosts)
+    ;;
+  attach)
+    echo "Opening interactive SSH windows to all hosts..."
+    # For each host, open a terminal window with an ssh session (non-blocking)
+    while IFS= read -r host; do
+      [[ -z "${host}" ]] && continue
+      echo "  -> ${host} (ssh user: $(ssh_user_for_host "${host}"))"
+      open_ssh_terminal "${host}" "${host}" &
+      # small delay to avoid overwhelming the desktop with many windows at once
+      sleep 0.15
+    done < <(collect_all_hosts)
+    wait
     ;;
   logs)
     echo "Tail logs for a host:"
