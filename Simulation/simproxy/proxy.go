@@ -39,10 +39,10 @@ func (c Client) normalized() Client {
 		out.Proto = "udp"
 	}
 	if out.Timeout <= 0 {
-		out.Timeout = 2 * time.Second
+		out.Timeout = 5 * time.Second
 	}
 	if out.Addr == "" {
-		out.Addr = "localhost:5100"
+		out.Addr = "127.0.0.1:5100"
 	}
 	return out
 }

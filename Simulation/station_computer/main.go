@@ -119,12 +119,15 @@ func main() {
 	flag.StringVar(&stationID, "station-id", "station-1", "station identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
-	flag.StringVar(&taskName, "task", "sim.station_computer", "task name to register under")
+	flag.StringVar(&taskName, "task", "", "task name to register under (default: sim.station_computer.<station-id>)")
 	flag.StringVar(&advertise, "advertise", "", "address to register (default derives from -listen; should be reachable by other VMs)")
 	flag.StringVar(&oyboTask, "oybo-task", "sim.cs", "task name to query for CS (OY cards)")
 	flag.StringVar(&pctrboTask, "pctrbo-task", "sim.pctrbo", "task name to query for PCTRBO")
 	flag.IntVar(&batchSize, "batch-size", 5, "number of taps per card type before forwarding to BO")
 	flag.Parse()
+	if strings.TrimSpace(taskName) == "" {
+		taskName = fmt.Sprintf("sim.station_computer.%s", strings.TrimSpace(stationID))
+	}
 	if batchSize <= 0 {
 		batchSize = 5
 	}
@@ -142,7 +145,7 @@ func main() {
 			advertise = "http://" + listen
 		}
 	}
-	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 2 * time.Second}
+	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 	if err := proxyClient.Register(taskName, advertise); err != nil {
 		logger.Printf("proxy register failed (task=%s addr=%s): %v", taskName, advertise, err)
 	} else {

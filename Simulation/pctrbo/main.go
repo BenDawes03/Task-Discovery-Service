@@ -112,7 +112,7 @@ func main() {
 	defer store.Close()
 
 	logger := log.New(os.Stdout, "[pctrbo] ", log.LstdFlags)
-	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 2 * time.Second}
+	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

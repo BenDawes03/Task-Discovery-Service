@@ -148,7 +148,7 @@ func main() {
 	flag.StringVar(&stationID, "station-id", "station-1", "station identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
-	flag.StringVar(&stationTask, "station-task", "sim.station_computer", "task name to query for station computer")
+	flag.StringVar(&stationTask, "station-task", "", "task name to query for station computer (default: sim.station_computer.<station-id>)")
 	flag.StringVar(&oyboTask, "oybo-task", "sim.cs", "task name to query for CS (OY cards)")
 	flag.StringVar(&paTask, "pa-task", "sim.pa", "task name to query for PA (PCTR tokenization)")
 	flag.StringVar(&stationBase, "station", "", "fallback station computer base URL (used if proxy query fails)")
@@ -156,10 +156,13 @@ func main() {
 	flag.StringVar(&paBase, "pa", "", "fallback PA base URL (used if proxy query fails)")
 	flag.StringVar(&pctrPublicKeyPath, "pctr-public-key", "", "RSA public key PEM used to encrypt PCTR card data")
 	flag.Parse()
+	if strings.TrimSpace(stationTask) == "" {
+		stationTask = fmt.Sprintf("sim.station_computer.%s", strings.TrimSpace(stationID))
+	}
 
 	logger := log.New(os.Stdout, "[gate] ", log.LstdFlags)
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 2 * time.Second}
+	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 
 	type cachedAddr struct {
 		value string

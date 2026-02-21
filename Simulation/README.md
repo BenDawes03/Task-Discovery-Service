@@ -123,13 +123,17 @@ curl -X POST http://localhost:9200/tap -H "Content-Type: application/json" -d '{
   - CS registers as task `sim.cs`
   - PCTRBO registers as task `sim.pctrbo`
   - PA registers as task `sim.pa`
-  - Station Computer registers as task `sim.station_computer`
+  - Each Station Computer registers as task `sim.station_computer.<station-id>` (example: `sim.station_computer.station-1`)
   - Gate queries these tasks via the local client proxy (`localhost:5100` by default)
 
 - Gate allow/deny logic:
   - OY: CS `/validate`.
   - PCTR: encrypt card data → PA `/tokenize` (returns yes/no and a token).
   - Only allowed taps are sent to the Station Computer.
+
+- Station selection:
+  - Each gate is booted with `-station-id`.
+  - By default it discovers its station via task `sim.station_computer.<station-id>`.
 
 - Station Computer batching:
   - Receives allowed taps from gates.
@@ -152,4 +156,38 @@ go run ./cmd/client_proxy
 
 ```powershell
 go run ./Simulation/oybo -listen :9101 -proxy localhost:5100 -advertise http://<OYBO_VM_IP>:9101
+```
+
+### SSH orchestrator
+
+If you can SSH to all VMs and each VM has this repo checked out, you can use the included orchestrator:
+
+1) Copy and edit the env file:
+
+```bash
+cp Simulation/orchestrate.env.example Simulation/orchestrate.env
+${EDITOR:-nano} Simulation/orchestrate.env
+```
+
+If SSH usernames differ per VM, set `SSH_USER_DEFAULT` and/or `SSH_USERS` in `Simulation/orchestrate.env`.
+
+2) Start everything:
+
+```bash
+./Simulation/orchestrate.sh up
+```
+
+Optional: sync code to all VMs first:
+
+```bash
+./Simulation/orchestrate.sh sync
+./Simulation/orchestrate.sh up
+```
+
+Or set `SYNC_BEFORE_UP=1` in `Simulation/orchestrate.env` to auto-sync before `up`.
+
+3) Tail logs on a VM:
+
+```bash
+./Simulation/orchestrate.sh logs <host> <name>
 ```

@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	serverAddr := flag.String("server", "localhost:5100", "Proxy server address")
+	serverAddr := flag.String("server", "127.0.0.1:5100", "Proxy server address")
 	flag.Parse()
 
 	if len(flag.Args()) == 0 {

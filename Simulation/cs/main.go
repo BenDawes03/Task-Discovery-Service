@@ -128,7 +128,7 @@ func main() {
 			advertise = "http://" + listen
 		}
 	}
-	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 2 * time.Second}
+	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 	if err := proxyClient.Register(taskName, advertise); err != nil {
 		logger.Printf("proxy register failed (task=%s addr=%s): %v", taskName, advertise, err)
 	} else {
