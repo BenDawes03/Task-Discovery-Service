@@ -1,0 +1,244 @@
+package carddb
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+type CSTransaction struct {
+	TransactionID string
+	CardID        string
+	GateID        string
+	StationID     string
+	TapTime       time.Time
+	Allowed       bool
+	Reason        string
+}
+
+type StationCost struct {
+	FromStation string
+	ToStation   string
+	CostCents   int64
+}
+
+func (s *Store) EnsureCSTables(ctx context.Context) error {
+	q := `
+		CREATE TABLE IF NOT EXISTS transactions (
+			transaction_id TEXT PRIMARY KEY,
+			card_id TEXT NOT NULL,
+			gate_id TEXT NOT NULL,
+			station_id TEXT NOT NULL,
+			tap_time TIMESTAMPTZ NOT NULL,
+			allowed BOOLEAN NOT NULL,
+			reason TEXT NOT NULL,
+			processed BOOLEAN NOT NULL DEFAULT FALSE,
+			processed_at TIMESTAMPTZ NULL,
+			journey_cost_cents BIGINT NULL,
+			error_reason TEXT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_transactions_unprocessed ON transactions(card_id, processed, tap_time);
+
+		CREATE TABLE IF NOT EXISTS station_costs (
+			from_station TEXT NOT NULL,
+			to_station TEXT NOT NULL,
+			cost_cents BIGINT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY(from_station, to_station)
+		);
+	`
+	_, err := s.db.ExecContext(ctx, q)
+	return err
+}
+
+func (s *Store) SeedStationCosts(ctx context.Context, costs []StationCost) error {
+	q := `
+		INSERT INTO station_costs (from_station, to_station, cost_cents, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (from_station, to_station) DO NOTHING;
+	`
+	for _, c := range costs {
+		if c.FromStation == "" || c.ToStation == "" {
+			continue
+		}
+		if c.CostCents < 0 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, q, c.FromStation, c.ToStation, c.CostCents); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) InsertCSTransactions(ctx context.Context, txs []CSTransaction) error {
+	q := `
+		INSERT INTO transactions (
+			transaction_id, card_id, gate_id, station_id, tap_time, allowed, reason, processed
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
+		ON CONFLICT (transaction_id) DO NOTHING;
+	`
+	for _, tx := range txs {
+		if tx.TransactionID == "" || tx.CardID == "" || tx.GateID == "" || tx.StationID == "" || tx.TapTime.IsZero() {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, q, tx.TransactionID, tx.CardID, tx.GateID, tx.StationID, tx.TapTime, tx.Allowed, tx.Reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) getStationCostCentsTx(ctx context.Context, tx *sql.Tx, a, b string) (int64, bool, error) {
+	var cost int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT cost_cents FROM station_costs
+		WHERE (from_station = $1 AND to_station = $2) OR (from_station = $2 AND to_station = $1)
+		LIMIT 1
+	`, a, b).Scan(&cost)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return cost, true, nil
+}
+
+type unprocessedRow struct {
+	id      string
+	station string
+	time    time.Time
+}
+
+// RunJourneyConstruction processes unprocessed transactions per card in chronological order.
+// It pairs transactions (0-1, 2-3, ...) and debits card balance by the station-to-station cost.
+// If one transaction is left over, it remains unprocessed.
+func (s *Store) RunJourneyConstruction(ctx context.Context) (int, error) {
+	// Find cards with at least 2 unprocessed taps.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT card_id
+		FROM transactions
+		WHERE processed = FALSE
+		GROUP BY card_id
+		HAVING COUNT(*) >= 2
+		ORDER BY card_id ASC
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var cardIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		cardIDs = append(cardIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	journeys := 0
+	for _, cardID := range cardIDs {
+		select {
+		case <-ctx.Done():
+			return journeys, ctx.Err()
+		default:
+		}
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return journeys, err
+		}
+
+		// Lock the card row so debit is consistent.
+		var curBal int64
+		err = tx.QueryRowContext(ctx, `SELECT balance_cents FROM cards WHERE card_id = $1 FOR UPDATE`, cardID).Scan(&curBal)
+		if err != nil {
+			_ = tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				// card doesn't exist, mark its transactions as processed with error.
+				_, _ = tx.ExecContext(ctx, `UPDATE transactions SET processed=TRUE, processed_at=NOW(), journey_cost_cents=0, error_reason='unknown card' WHERE card_id=$1 AND processed=FALSE`, cardID)
+				_ = tx.Commit()
+				continue
+			}
+			return journeys, err
+		}
+
+		// Lock the unprocessed tx rows.
+		txRows, err := tx.QueryContext(ctx, `
+			SELECT transaction_id, station_id, tap_time
+			FROM transactions
+			WHERE card_id = $1 AND processed = FALSE
+			ORDER BY tap_time ASC
+			FOR UPDATE
+		`, cardID)
+		if err != nil {
+			_ = tx.Rollback()
+			return journeys, err
+		}
+		var taps []unprocessedRow
+		for txRows.Next() {
+			var r unprocessedRow
+			if err := txRows.Scan(&r.id, &r.station, &r.time); err != nil {
+				_ = txRows.Close()
+				_ = tx.Rollback()
+				return journeys, err
+			}
+			taps = append(taps, r)
+		}
+		_ = txRows.Close()
+		if len(taps) < 2 {
+			_ = tx.Rollback()
+			continue
+		}
+
+		// Process pairs.
+		for i := 0; i+1 < len(taps); i += 2 {
+			from := taps[i]
+			to := taps[i+1]
+
+			cost, ok, err := s.getStationCostCentsTx(ctx, tx, from.station, to.station)
+			if err != nil {
+				_ = tx.Rollback()
+				return journeys, err
+			}
+			if !ok {
+				// Mark as processed but with no debit.
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE transactions
+					SET processed=TRUE, processed_at=NOW(), journey_cost_cents=0, error_reason='missing cost'
+					WHERE transaction_id IN ($1, $2)
+				`, from.id, to.id); err != nil {
+					_ = tx.Rollback()
+					return journeys, err
+				}
+				continue
+			}
+
+			if _, err := tx.ExecContext(ctx, `UPDATE cards SET balance_cents = balance_cents - $1, updated_at = NOW() WHERE card_id = $2`, cost, cardID); err != nil {
+				_ = tx.Rollback()
+				return journeys, err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE transactions
+				SET processed=TRUE, processed_at=NOW(), journey_cost_cents=$3, error_reason=NULL
+				WHERE transaction_id IN ($1, $2)
+			`, from.id, to.id, cost); err != nil {
+				_ = tx.Rollback()
+				return journeys, err
+			}
+			journeys++
+		}
+
+		if err := tx.Commit(); err != nil {
+			return journeys, fmt.Errorf("commit: %w", err)
+		}
+	}
+	return journeys, nil
+}
