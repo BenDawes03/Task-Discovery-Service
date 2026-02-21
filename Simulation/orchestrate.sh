@@ -12,6 +12,17 @@ fi
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 
+# If the env used a tilde (e.g. REMOTE_REPO_DIR=~/bxd280) it may have been expanded
+# to the local user's $HOME when the env file was sourced. That makes commands like
+# `cd ${REMOTE_REPO_DIR}` run against a path rooted in the local machine rather
+# than the remote user's home when executed over SSH. Convert a leading local
+# $HOME prefix back to a tilde so the path is interpreted on the remote side.
+if [[ -n "${REMOTE_REPO_DIR:-}" ]]; then
+  if [[ "${REMOTE_REPO_DIR}" == "${HOME}"* ]]; then
+    REMOTE_REPO_DIR="~${REMOTE_REPO_DIR#${HOME}}"
+  fi
+fi
+
 SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
 server_addr="${TDS_SERVER_HOST}:${TDS_SERVER_PORT}"
