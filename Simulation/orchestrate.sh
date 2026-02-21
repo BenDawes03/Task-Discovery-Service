@@ -220,6 +220,54 @@ open_ssh_terminal() {
   ${ssh_cmd}
 }
 
+# Open an interactive SSH window and run a remote command (keeps the window open).
+open_ssh_terminal_run() {
+  local host="$1"
+  local name="$2"
+  local remote_cmd="$3"
+  local user
+  user="$(ssh_user_for_host "${host}")"
+
+  # Quote the remote command for bash -lc on the remote side.
+  local quoted_remote
+  quoted_remote="$(printf '%q' "${remote_cmd}")"
+  local ssh_cmd="ssh ${user}@${host} bash -lc ${quoted_remote}"
+
+  # Try Windows Terminal (wt)
+  if command -v wt >/dev/null 2>&1; then
+    wt new-tab powershell -NoExit -Command "${ssh_cmd}" || true
+    return 0
+  fi
+
+  # GNOME Terminal
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    gnome-terminal --title="${name}@${host}" -- bash -ic "${ssh_cmd}; exec bash" &
+    return 0
+  fi
+
+  # Konsole
+  if command -v konsole >/dev/null 2>&1; then
+    konsole --new-tab -p tabtitle="${name}@${host}" -e bash -ic "${ssh_cmd}; exec bash" &
+    return 0
+  fi
+
+  # xterm
+  if command -v xterm >/dev/null 2>&1; then
+    xterm -T "${name}@${host}" -e "${ssh_cmd}" &
+    return 0
+  fi
+
+  # macOS Terminal via osascript
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "tell application \"Terminal\" to do script \"${ssh_cmd}\"" || true
+    return 0
+  fi
+
+  # Fallback: run ssh in current terminal (interactive)
+  echo "No GUI terminal emulator found to open a new window for ${host}. Running ssh in this terminal..."
+  ${ssh_cmd}
+}
+
 collect_all_hosts() {
   declare -A hosts=()
 
@@ -347,6 +395,54 @@ case "${1:-}" in
       # small delay to avoid overwhelming the desktop with many windows at once
       sleep 0.15
     done < <(collect_all_hosts)
+    wait
+    ;;
+  attach-up)
+    echo "Opening interactive SSH windows and starting services on each host..."
+
+    # Start TDS server in its own window
+    echo "  -> TDS server: ${TDS_SERVER_HOST} (ssh user: $(ssh_user_for_host "${TDS_SERVER_HOST}"))"
+    remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; go run -mod=vendor ./cmd/server -port ${TDS_SERVER_PORT}"
+    open_ssh_terminal_run "${TDS_SERVER_HOST}" "tds_server" "${remote_cmd}" &
+
+    # Start client proxy on each host in its own window
+    for host in $(collect_all_hosts); do
+      echo "  -> client_proxy on ${host} (ssh user: $(ssh_user_for_host "${host}"))"
+      remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export TDS_SERVER_ADDR='${server_addr}'; export TDS_PROXY_LISTEN='${PROXY_LISTEN}'; tail -f /dev/null | go run -mod=vendor ./cmd/client_proxy"
+      open_ssh_terminal_run "${host}" "client_proxy_${host}" "${remote_cmd}" &
+      sleep 0.08
+    done
+
+    # Start other services
+    echo "  -> CS on ${CS_HOST}"
+    remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export CS_DB_DSN='${CS_DB_DSN}'; go run -mod=vendor ./Simulation/cs -listen ${CS_LISTEN} -proxy ${PROXY_LISTEN} -advertise ${CS_ADVERTISE}"
+    open_ssh_terminal_run "${CS_HOST}" "cs" "${remote_cmd}" &
+
+    echo "  -> PCTRBO on ${PCTRBO_HOST}"
+    remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export PCTRBO_DB_DSN='${PCTRBO_DB_DSN}'; go run -mod=vendor ./Simulation/pctrbo -listen ${PCTRBO_LISTEN} -proxy ${PROXY_LISTEN} -advertise ${PCTRBO_ADVERTISE}"
+    open_ssh_terminal_run "${PCTRBO_HOST}" "pctrbo" "${remote_cmd}" &
+
+    echo "  -> PA on ${PA_HOST}"
+    remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export PA_DB_DSN='${PA_DB_DSN}'; go run -mod=vendor ./Simulation/pa -listen ${PA_LISTEN} -proxy ${PROXY_LISTEN} -private-key ${PA_PRIVATE_KEY} -advertise ${PA_ADVERTISE}"
+    open_ssh_terminal_run "${PA_HOST}" "pa" "${remote_cmd}" &
+
+    # Stations and gates
+    for item in ${STATIONS}; do
+      IFS=',' read -r host station_id listen advertise <<<"${item}"
+      echo "  -> station ${station_id} on ${host}"
+      remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; go run -mod=vendor ./Simulation/station_computer -station-id ${station_id} -listen ${listen} -proxy ${PROXY_LISTEN} -advertise ${advertise}"
+      open_ssh_terminal_run "${host}" "station_${station_id}" "${remote_cmd}" &
+      sleep 0.06
+    done
+
+    for item in ${GATES}; do
+      IFS=',' read -r host gate_id station_id listen <<<"${item}"
+      echo "  -> gate ${gate_id} on ${host}"
+      remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export PCTR_PUBLIC_KEY='${PCTR_PUBLIC_KEY}'; go run -mod=vendor ./Simulation/gate -id ${gate_id} -station-id ${station_id} -listen ${listen} -proxy ${PROXY_LISTEN} -pctr-public-key ${PCTR_PUBLIC_KEY}"
+      open_ssh_terminal_run "${host}" "gate_${gate_id}" "${remote_cmd}" &
+      sleep 0.06
+    done
+
     wait
     ;;
   logs)
