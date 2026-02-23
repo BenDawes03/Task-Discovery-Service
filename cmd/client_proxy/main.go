@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -56,7 +57,14 @@ func askModeOptions() (string, string, string, []string, bool) {
 
 	// If not in interactive terminal, return defaults
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
+		if !background {
+			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
+		}
+		return mode, transport, p2pPort, bootstrapNodes, background
+	}
+
+	// In background mode, skip interactive prompts (use defaults unless flags are provided).
+	if background {
 		return mode, transport, p2pPort, bootstrapNodes, background
 	}
 
@@ -171,6 +179,13 @@ func main() {
 	// Gather mode and transport options
 	mode, transport, p2pPort, bootstrapNodes, background := askModeOptions()
 
+	if background {
+		// Quiet background operation: no logs, no prints, no interactive prompts.
+		log.SetOutput(io.Discard)
+		client.SetQuiet()
+		dht.SetQuiet()
+	}
+
 	listen := os.Getenv("TDS_PROXY_LISTEN")
 	if listen == "" {
 		listen = ":5100"
@@ -197,9 +212,11 @@ func main() {
 
 	if mode == "p2p" {
 		// P2P mode: use DHT
-		fmt.Println("Starting in P2P mode with DHT...")
+		if !background {
+			fmt.Println("Starting in P2P mode with DHT...")
+		}
 
-		if len(bootstrapNodes) > 0 {
+		if !background && len(bootstrapNodes) > 0 {
 			fmt.Printf("Bootstrap nodes: %v\n", bootstrapNodes)
 		}
 
@@ -207,10 +224,16 @@ func main() {
 		var err error
 		dhtRegistry, err = dht.NewDHTRegistry(p2pPort, bootstrapNodes)
 		if err != nil {
+			if background {
+				os.Exit(1)
+			}
 			log.Fatalf("failed to create DHT registry: %v", err)
 		}
 
 		if err := dhtRegistry.Start(); err != nil {
+			if background {
+				os.Exit(1)
+			}
 			log.Fatalf("failed to start DHT: %v", err)
 		}
 
@@ -219,11 +242,15 @@ func main() {
 			done <- client.RunProxyP2P(ctx, listen, dhtRegistry)
 		}()
 
-		fmt.Printf("DHT node listening on %s\n", p2pPort)
-		fmt.Printf("Client proxy listening on %s\n", listen)
+		if !background {
+			fmt.Printf("DHT node listening on %s\n", p2pPort)
+			fmt.Printf("Client proxy listening on %s\n", listen)
+		}
 	} else {
 		// Traditional centralized mode
-		fmt.Printf("Starting in centralized mode with %s transport...\n", transport)
+		if !background {
+			fmt.Printf("Starting in centralized mode with %s transport...\n", transport)
+		}
 
 		go func() {
 			// run proxy and report any error
@@ -234,17 +261,17 @@ func main() {
 			}
 		}()
 
-		fmt.Printf("Client proxy listening on %s\n", listen)
+		if !background {
+			fmt.Printf("Client proxy listening on %s\n", listen)
+		}
 	}
 
 	if background {
-		log.Println("background mode enabled; no interactive stdin")
 		sigCh := make(chan os.Signal, 2)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 		select {
 		case err := <-done:
 			if err != nil {
-				log.Printf("proxy exited with error: %v", err)
 				os.Exit(1)
 			}
 			return
