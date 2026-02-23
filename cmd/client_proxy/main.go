@@ -8,7 +8,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -19,18 +21,21 @@ import (
 
 // askModeOptions collects interactive options from the terminal.
 // Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes
-func askModeOptions() (string, string, string, []string) {
+func askModeOptions() (string, string, string, []string, bool) {
 	mode := "centralized"
 	transport := "udp"
 	p2pPort := ":6000"
 	var bootstrapNodes []string
+	background := false
 
 	// Parse command-line flags for non-interactive mode
 	p2pFlag := flag.Bool("p2p", false, "Enable peer-to-peer mode using DHT")
 	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
 	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
+	backgroundFlag := flag.Bool("background", false, "Run in background (no interactive stdin); exit on SIGINT/SIGTERM or proxy error")
 	flag.Parse()
+	background = *backgroundFlag
 
 	// Check if flags were provided (non-interactive)
 	if *p2pFlag {
@@ -42,7 +47,7 @@ func askModeOptions() (string, string, string, []string) {
 				bootstrapNodes[i] = strings.TrimSpace(bootstrapNodes[i])
 			}
 		}
-		return mode, transport, p2pPort, bootstrapNodes
+		return mode, transport, p2pPort, bootstrapNodes, background
 	}
 
 	if *tcpFlag {
@@ -52,7 +57,7 @@ func askModeOptions() (string, string, string, []string) {
 	// If not in interactive terminal, return defaults
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
-		return mode, transport, p2pPort, bootstrapNodes
+		return mode, transport, p2pPort, bootstrapNodes, background
 	}
 
 	// Interactive prompts
@@ -102,7 +107,7 @@ func askModeOptions() (string, string, string, []string) {
 		}
 	}
 
-	return mode, transport, p2pPort, bootstrapNodes
+	return mode, transport, p2pPort, bootstrapNodes, background
 }
 
 func askBootstrapNodes(reader *bufio.Reader) []string {
@@ -164,7 +169,7 @@ func normalizePortInput(input string) string {
 
 func main() {
 	// Gather mode and transport options
-	mode, transport, p2pPort, bootstrapNodes := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background := askModeOptions()
 
 	listen := os.Getenv("TDS_PROXY_LISTEN")
 	if listen == "" {
@@ -173,6 +178,22 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+
+	var dhtRegistry *dht.DHTRegistry
+	shutdown := func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				log.Printf("proxy stopped with error: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			log.Println("proxy shutdown timed out")
+		}
+		if dhtRegistry != nil {
+			_ = dhtRegistry.Stop()
+		}
+	}
 
 	if mode == "p2p" {
 		// P2P mode: use DHT
@@ -183,7 +204,8 @@ func main() {
 		}
 
 		// create DHT registry
-		dhtRegistry, err := dht.NewDHTRegistry(p2pPort, bootstrapNodes)
+		var err error
+		dhtRegistry, err = dht.NewDHTRegistry(p2pPort, bootstrapNodes)
 		if err != nil {
 			log.Fatalf("failed to create DHT registry: %v", err)
 		}
@@ -213,6 +235,23 @@ func main() {
 		}()
 
 		fmt.Printf("Client proxy listening on %s\n", listen)
+	}
+
+	if background {
+		log.Println("background mode enabled; no interactive stdin")
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		select {
+		case err := <-done:
+			if err != nil {
+				log.Printf("proxy exited with error: %v", err)
+				os.Exit(1)
+			}
+			return
+		case <-sigCh:
+			shutdown()
+			return
+		}
 	}
 
 	// simple interactive loop
@@ -247,15 +286,7 @@ func main() {
 				fmt.Println("DHT mode not enabled")
 			}
 		case "quit", "exit", "q":
-			cancel()
-			select {
-			case err := <-done:
-				if err != nil {
-					log.Printf("proxy stopped with error: %v", err)
-				}
-			case <-time.After(2 * time.Second):
-				log.Println("proxy shutdown timed out")
-			}
+			shutdown()
 			fmt.Println("exiting")
 			return
 		default:
@@ -263,6 +294,5 @@ func main() {
 		}
 	}
 	// stdin closed — shutdown
-	cancel()
-	<-done
+	shutdown()
 }
