@@ -67,6 +67,8 @@ func main() {
 	var seedStart int
 	var seedBalanceCents int64
 	var journeyInterval time.Duration
+	var ticketInterval time.Duration
+	var distributorTask string
 
 	flag.StringVar(&listen, "listen", ":9101", "listen address")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
@@ -78,6 +80,8 @@ func main() {
 	flag.IntVar(&seedStart, "seed-start", 10000, "starting card_id number for seeded working cards")
 	flag.Int64Var(&seedBalanceCents, "seed-balance-cents", 500, "balance_cents for seeded working cards")
 	flag.DurationVar(&journeyInterval, "journey-interval", 5*time.Minute, "how often to run journey construction (set smaller for testing)")
+	flag.DurationVar(&ticketInterval, "ticket-interval", 5*time.Minute, "how often to generate ticket manifests and notify distributor")
+	flag.StringVar(&distributorTask, "distributor-task", "sim.ticketdistributor", "task name for ticket distributor to notify via proxy")
 	flag.Parse()
 
 	if strings.TrimSpace(advertise) == "" {
@@ -110,6 +114,14 @@ func main() {
 	if err := store.EnsureCSTables(ctx); err != nil {
 		cancel()
 		log.Fatalf("ensure cs tables: %v", err)
+	}
+	if err := store.EnsureTicketTables(ctx); err != nil {
+		cancel()
+		log.Fatalf("ensure ticket tables: %v", err)
+	}
+	if err := store.EnsureManifestTables(ctx); err != nil {
+		cancel()
+		log.Fatalf("ensure manifest tables: %v", err)
 	}
 	seedCards := []carddb.Record{
 		{CardID: "1001", Active: true, Blocked: false, BalanceCents: 500},
@@ -203,6 +215,73 @@ func main() {
 		}
 	}()
 
+	// Periodically generate ticket manifests and store in DB for distributors to poll.
+	go func() {
+		if ticketInterval <= 0 {
+			ticketInterval = 5 * time.Minute
+		}
+		ticker := time.NewTicker(ticketInterval)
+		defer ticker.Stop()
+		var lastManifestTime time.Time
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Find tickets added since last manifest
+			newTickets, err := store.GetTicketsCreatedSince(ctx, lastManifestTime)
+			if err != nil {
+				cancel()
+				logger.Printf("ticket query error: %v", err)
+				continue
+			}
+			if len(newTickets) == 0 {
+				cancel()
+				continue
+			}
+			// Build manifest of active tickets departing in the next 15 minutes
+			now := time.Now().UTC()
+			activeTickets, err := store.GetActiveTicketsWithin(ctx, now, 15*time.Minute)
+			if err != nil {
+				cancel()
+				logger.Printf("active tickets query error: %v", err)
+				continue
+			}
+			if len(activeTickets) == 0 {
+				// Nothing to send
+				lastManifestTime = time.Now().UTC()
+				cancel()
+				continue
+			}
+
+			manifest := struct {
+				ID         string            `json:"id"`
+				Generated  time.Time         `json:"generated_at"`
+				Tickets    []map[string]any  `json:"tickets"`
+			}{
+				ID:        fmt.Sprintf("m-%d", time.Now().UTC().Unix()),
+				Generated: time.Now().UTC(),
+				Tickets:   make([]map[string]any, 0, len(activeTickets)),
+			}
+			for _, t := range activeTickets {
+				manifest.Tickets = append(manifest.Tickets, map[string]any{
+					"id": t.ID,
+					"station_id": t.StationID,
+					"train_time": t.TrainTime.Format(time.RFC3339Nano),
+					"passenger": t.Passenger,
+				})
+			}
+
+			// Store manifest in DB for distributors to poll via HTTP
+			body, _ := json.Marshal(manifest)
+			if err := store.InsertManifest(ctx, manifest.ID, manifest.Generated, string(body)); err != nil {
+				cancel()
+				logger.Printf("store manifest failed: %v", err)
+				continue
+			}
+			lastManifestTime = time.Now().UTC()
+			logger.Printf("manifest stored: id=%s tickets=%d", manifest.ID, len(manifest.Tickets))
+			cancel()
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -246,6 +325,57 @@ func main() {
 		writeJSON(w, http.StatusOK, ValidateResponse{Valid: valid, Reason: reason})
 	})
 
+	// Distributors poll these endpoints to discover new manifests and fetch them.
+	mux.HandleFunc("/manifests", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		sinceStr := r.URL.Query().Get("since")
+		var since time.Time
+		if sinceStr != "" {
+			if t, err := time.Parse(time.RFC3339Nano, sinceStr); err == nil {
+				since = t
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		manifests, err := store.GetManifestsSince(ctx, since)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "db error"})
+			return
+		}
+		out := make([]map[string]any, 0, len(manifests))
+		for _, m := range manifests {
+			var payload any
+			_ = json.Unmarshal([]byte(m.Payload), &payload)
+			out = append(out, map[string]any{"id": m.ID, "generated_at": m.Generated, "payload": payload})
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("/manifest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing id"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		m, err := store.GetManifestByID(ctx, id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "manifest not found"})
+			return
+		}
+		var payload any
+		_ = json.Unmarshal([]byte(m.Payload), &payload)
+		writeJSON(w, http.StatusOK, map[string]any{"id": m.ID, "generated_at": m.Generated, "payload": payload})
+	})
+
 	mux.HandleFunc("/batch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, BatchResponse{Accepted: false, Received: 0})
@@ -274,26 +404,63 @@ func main() {
 				writeJSON(w, http.StatusBadRequest, BatchResponse{Accepted: false, Received: 0})
 				return
 			}
-			toInsert = append(toInsert, carddb.CSTransaction{
-				TransactionID: strings.TrimSpace(tx.TransactionID),
-				CardID:        strings.TrimSpace(tx.CardID),
-				GateID:        strings.TrimSpace(tx.GateID),
-				StationID:     strings.TrimSpace(tx.StationID),
-				TapTime:       tapTime,
-				Allowed:       tx.Allowed,
-				Reason:        strings.TrimSpace(tx.Reason),
-			})
-		}
+		toInsert = append(toInsert, carddb.CSTransaction{
+			TransactionID: strings.TrimSpace(tx.TransactionID),
+			CardID:        strings.TrimSpace(tx.CardID),
+			GateID:        strings.TrimSpace(tx.GateID),
+			StationID:     strings.TrimSpace(tx.StationID),
+			TapTime:       tapTime,
+			Allowed:       tx.Allowed,
+			Reason:        strings.TrimSpace(tx.Reason),
+		})
+	}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-		if err := store.InsertCSTransactions(ctx, toInsert); err != nil {
-			logger.Printf("insert transactions failed: %v", err)
-			writeJSON(w, http.StatusServiceUnavailable, BatchResponse{Accepted: false, Received: 0})
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := store.InsertCSTransactions(ctx, toInsert); err != nil {
+		logger.Printf("insert transactions failed: %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, BatchResponse{Accepted: false, Received: 0})
+		return
+	}
+	logger.Printf("received batch: count=%d", len(toInsert))
+	writeJSON(w, http.StatusOK, BatchResponse{Accepted: true, Received: len(toInsert)})
+})
+
+	mux.HandleFunc("/ticket", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		logger.Printf("received batch: count=%d", len(toInsert))
-		writeJSON(w, http.StatusOK, BatchResponse{Accepted: true, Received: len(toInsert)})
+		var req struct {
+			StationID string `json:"station_id"`
+			TrainTime string `json:"train_time"`
+			Passenger string `json:"passenger"`
+		}
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		if strings.TrimSpace(req.StationID) == "" || strings.TrimSpace(req.TrainTime) == "" || strings.TrimSpace(req.Passenger) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing fields"})
+			return
+		}
+		tt, err := time.Parse(time.RFC3339Nano, req.TrainTime)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid train_time"})
+			return
+		}
+		t := carddb.Ticket{StationID: strings.TrimSpace(req.StationID), TrainTime: tt, Passenger: strings.TrimSpace(req.Passenger)}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		id, err := store.InsertTicket(ctx, t)
+		if err != nil {
+			logger.Printf("insert ticket failed: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "db error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
