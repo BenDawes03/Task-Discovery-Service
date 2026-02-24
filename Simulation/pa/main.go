@@ -64,6 +64,9 @@ func main() {
 	var privateKeyPath string
 	var minFundsCents int64
 	var outDir string
+	var seedWorkingCards int
+	var seedStart int
+	var seedBalanceCents int64
 
 	flag.StringVar(&listen, "listen", ":9103", "listen address")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
@@ -74,6 +77,9 @@ func main() {
 	flag.StringVar(&privateKeyPath, "private-key", "", "RSA private key PEM for decrypting gate-encrypted card data")
 	flag.Int64Var(&minFundsCents, "min-funds-cents", 1, "minimum funds required to return token")
 	flag.StringVar(&outDir, "outdir", ".", "directory to write restitution files")
+	flag.IntVar(&seedWorkingCards, "seed-working-cards", 0, "seed N additional working PCTR cards (active, unblocked, balance>=min-funds) into the cards table")
+	flag.IntVar(&seedStart, "seed-start", 20000, "starting card_id number for seeded working PCTR cards")
+	flag.Int64Var(&seedBalanceCents, "seed-balance-cents", 300, "balance_cents for seeded working PCTR cards")
 	flag.Parse()
 
 	if strings.TrimSpace(advertise) == "" {
@@ -94,6 +100,9 @@ func main() {
 	}
 	if strings.TrimSpace(privateKeyPath) == "" {
 		log.Fatalf("missing PA private key: provide -private-key or set PA_PRIVATE_KEY")
+	}
+	if minFundsCents <= 0 {
+		minFundsCents = 1
 	}
 
 	priv, err := pctrcrypto.LoadRSAPrivateKeyFromPEMFile(privateKeyPath)
@@ -124,8 +133,44 @@ func main() {
 		{CardID: "2003", Active: true, Blocked: false, BalanceCents: 100},
 		{CardID: "2999", Active: true, Blocked: true, BalanceCents: 999},
 	}
-	_ = store.Seed(ctx, seedCards)
+	if err := store.Seed(ctx, seedCards); err != nil {
+		cancel()
+		log.Fatalf("seed cards: %v", err)
+	}
 	cancel()
+
+	if seedWorkingCards > 0 {
+		if seedStart < 0 {
+			seedStart = 0
+		}
+		if seedBalanceCents <= 0 {
+			seedBalanceCents = 300
+		}
+		if seedBalanceCents < minFundsCents {
+			seedBalanceCents = minFundsCents
+		}
+
+		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer seedCancel()
+		const batchSize = 1000
+		seeded := 0
+		for seeded < seedWorkingCards {
+			n := seedWorkingCards - seeded
+			if n > batchSize {
+				n = batchSize
+			}
+			batch := make([]carddb.Record, 0, n)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("%d", seedStart+seeded+i)
+				batch = append(batch, carddb.Record{CardID: id, Active: true, Blocked: false, BalanceCents: seedBalanceCents})
+			}
+			if err := store.Seed(seedCtx, batch); err != nil {
+				log.Fatalf("seed working cards: %v", err)
+			}
+			seeded += n
+		}
+		logger.Printf("seeded working PCTR cards: count=%d start=%d", seedWorkingCards, seedStart)
+	}
 
 	// Register through proxy.
 	if advertise == "" {

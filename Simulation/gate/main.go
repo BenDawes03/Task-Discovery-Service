@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -202,16 +203,44 @@ func main() {
 	var cacheMu sync.Mutex
 
 	var pctrPub *rsa.PublicKey
-	if strings.TrimSpace(pctrPublicKeyPath) == "" {
-		pctrPublicKeyPath = strings.TrimSpace(os.Getenv("PCTR_PUBLIC_KEY"))
+	keyPath := strings.TrimSpace(pctrPublicKeyPath)
+	if keyPath == "" {
+		keyPath = strings.TrimSpace(os.Getenv("PCTR_PUBLIC_KEY"))
 	}
-	if strings.TrimSpace(pctrPublicKeyPath) != "" {
-		pk, err := pctrcrypto.LoadRSAPublicKeyFromPEMFile(pctrPublicKeyPath)
+	keyPath = strings.TrimSpace(keyPath)
+
+	findKeyPath := func(explicit string) string {
+		if strings.TrimSpace(explicit) != "" {
+			return strings.TrimSpace(explicit)
+		}
+		candidates := []string{
+			"pctr_public.pem",
+			filepath.FromSlash("./pctr_public.pem"),
+			filepath.FromSlash("./Simulation/gate/pctr_public.pem"),
+			filepath.FromSlash("Simulation/gate/pctr_public.pem"),
+		}
+		for _, c := range candidates {
+			if strings.TrimSpace(c) == "" {
+				continue
+			}
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+		}
+		return ""
+	}
+
+	resolvedKeyPath := findKeyPath(keyPath)
+	if resolvedKeyPath != "" {
+		pk, err := pctrcrypto.LoadRSAPublicKeyFromPEMFile(resolvedKeyPath)
 		if err != nil {
-			logger.Printf("failed to load PCTR public key (PCTR taps will deny): %v", err)
+			logger.Printf("failed to load PCTR public key from %q (PCTR taps will deny): %v", resolvedKeyPath, err)
 		} else {
 			pctrPub = pk
+			logger.Printf("loaded PCTR public key: %s", resolvedKeyPath)
 		}
+	} else {
+		logger.Printf("PCTR public key not found (PCTR taps will deny). Provide -pctr-public-key or set PCTR_PUBLIC_KEY. Looked in ./pctr_public.pem and ./Simulation/gate/pctr_public.pem")
 	}
 
 	resolveBase := func(task string, fallback string, cache *cachedAddr) (string, error) {

@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 : "${GATE_STATION_BASE:=}"
 : "${GATE_OYBO_BASE:=}"
 : "${GATE_PA_BASE:=}"
-: "${GATE_PCTR_PUBLIC_KEY:=${REPO_ROOT}/pctr_public.pem}"
+: "${GATE_PCTR_PUBLIC_KEY:=${REPO_ROOT}/Simulation/gate/pctr_public.pem}"
 
 cd "${REPO_ROOT}"
 export PCTR_PUBLIC_KEY="${GATE_PCTR_PUBLIC_KEY}"
