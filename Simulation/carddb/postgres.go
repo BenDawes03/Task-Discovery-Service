@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -81,6 +82,15 @@ func (s *Store) Upsert(ctx context.Context, r Record) error {
 }
 
 func (s *Store) Seed(ctx context.Context, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	// For large seeds, use bulk INSERTs to avoid per-row round trips.
+	if len(records) > 100 {
+		return s.seedCardsBulk(ctx, records)
+	}
+
 	// Non-destructive seed: only inserts if missing.
 	q := `
 		INSERT INTO cards (card_id, active, blocked, balance_cents, updated_at)
@@ -95,6 +105,52 @@ func (s *Store) Seed(ctx context.Context, records []Record) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Store) seedCardsBulk(ctx context.Context, records []Record) error {
+	const chunkSize = 1000
+
+	filtered := make([]Record, 0, len(records))
+	for _, r := range records {
+		if strings.TrimSpace(r.CardID) == "" {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	for start := 0; start < len(filtered); start += chunkSize {
+		end := start + chunkSize
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		chunk := filtered[start:end]
+
+		var b strings.Builder
+		b.Grow(128 + len(chunk)*32)
+		b.WriteString("INSERT INTO cards (card_id, active, blocked, balance_cents, updated_at) VALUES ")
+
+		args := make([]any, 0, len(chunk)*4)
+		param := 1
+		for i, r := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// ($1,$2,$3,$4,NOW()), ($5,$6,$7,$8,NOW()) ...
+			b.WriteString(fmt.Sprintf("($%d,$%d,$%d,$%d,NOW())", param, param+1, param+2, param+3))
+			param += 4
+			args = append(args, r.CardID, r.Active, r.Blocked, r.BalanceCents)
+		}
+		b.WriteString(" ON CONFLICT (card_id) DO NOTHING;")
+
+		if _, err := s.db.ExecContext(ctx, b.String(), args...); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

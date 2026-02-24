@@ -119,6 +119,18 @@ func main() {
 		cancel()
 		log.Fatalf("seed cards: %v", err)
 	}
+	seedCosts := []carddb.StationCost{
+		{FromStation: "station-1", ToStation: "station-1", CostCents: 0},
+		{FromStation: "station-1", ToStation: "station-2", CostCents: 150},
+		{FromStation: "station-2", ToStation: "station-3", CostCents: 200},
+		{FromStation: "station-1", ToStation: "station-3", CostCents: 300},
+	}
+	if err := store.SeedStationCosts(ctx, seedCosts); err != nil {
+		cancel()
+		log.Fatalf("seed costs: %v", err)
+	}
+	cancel()
+
 	if seedWorkingCards > 0 {
 		if seedStart < 0 {
 			seedStart = 0
@@ -126,6 +138,8 @@ func main() {
 		if seedBalanceCents <= 0 {
 			seedBalanceCents = 500
 		}
+		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer seedCancel()
 		const batchSize = 1000
 		seeded := 0
 		for seeded < seedWorkingCards {
@@ -138,25 +152,13 @@ func main() {
 				id := fmt.Sprintf("%d", seedStart+seeded+i)
 				batch = append(batch, carddb.Record{CardID: id, Active: true, Blocked: false, BalanceCents: seedBalanceCents})
 			}
-			if err := store.Seed(ctx, batch); err != nil {
-				cancel()
+			if err := store.Seed(seedCtx, batch); err != nil {
 				log.Fatalf("seed working cards: %v", err)
 			}
 			seeded += n
 		}
 		logger.Printf("seeded working cards: count=%d start=%d", seedWorkingCards, seedStart)
 	}
-	seedCosts := []carddb.StationCost{
-		{FromStation: "station-1", ToStation: "station-1", CostCents: 0},
-		{FromStation: "station-1", ToStation: "station-2", CostCents: 150},
-		{FromStation: "station-2", ToStation: "station-3", CostCents: 200},
-		{FromStation: "station-1", ToStation: "station-3", CostCents: 300},
-	}
-	if err := store.SeedStationCosts(ctx, seedCosts); err != nil {
-		cancel()
-		log.Fatalf("seed costs: %v", err)
-	}
-	cancel()
 
 	// Register ourselves through the local client proxy (and refresh periodically so we don't age out).
 	if advertise == "" {
