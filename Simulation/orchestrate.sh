@@ -108,7 +108,7 @@ start_proxy() {
   local host="$1"
   require_repo_on_host "${host}"
   start_bg "${host}" "client_proxy" \
-    "set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export TDS_SERVER_ADDR='${server_addr}'; export TDS_PROXY_LISTEN='${PROXY_LISTEN}'; tail -f /dev/null | go run -mod=vendor ./cmd/client_proxy"
+    "set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export TDS_SERVER_ADDR='${server_addr}'; export TDS_PROXY_LISTEN='${PROXY_LISTEN}'; go run -mod=vendor ./cmd/client_proxy -background"
 }
 
 start_tds_server() {
@@ -408,7 +408,7 @@ case "${1:-}" in
     # Start client proxy on each host in its own window
     for host in $(collect_all_hosts); do
       echo "  -> client_proxy on ${host} (ssh user: $(ssh_user_for_host "${host}"))"
-      remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export TDS_SERVER_ADDR='${server_addr}'; export TDS_PROXY_LISTEN='${PROXY_LISTEN}'; tail -f /dev/null | go run -mod=vendor ./cmd/client_proxy"
+      remote_cmd="set -euo pipefail; cd ${REMOTE_REPO_DIR}; export GOTOOLCHAIN=local; export TDS_SERVER_ADDR='${server_addr}'; export TDS_PROXY_LISTEN='${PROXY_LISTEN}'; go run -mod=vendor ./cmd/client_proxy -background"
       open_ssh_terminal_run "${host}" "client_proxy_${host}" "${remote_cmd}" &
       sleep 0.08
     done
@@ -457,7 +457,7 @@ case "${1:-}" in
     ssh_run "${host}" "tail -n 200 -f ~/tds_sim_logs/${name}.log"
     ;;
   *)
-    echo "Usage: $0 sync | up | logs <host> <name>" >&2
+    echo "Usage: $0 sync | up | down | attach | attach-up | logs <host> <name>" >&2
     exit 1
     ;;
 esac
