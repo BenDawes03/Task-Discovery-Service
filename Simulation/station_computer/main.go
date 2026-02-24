@@ -129,6 +129,10 @@ func main() {
 	flag.StringVar(&pctrboTask, "pctrbo-task", "sim.pctrbo", "task name to query for PCTRBO")
 	flag.IntVar(&batchSize, "batch-size", 5, "number of taps per card type before forwarding to BO")
 	flag.Parse()
+
+	if strings.TrimSpace(advertise) == "" {
+		advertise = strings.TrimSpace(os.Getenv("STATION_ADVERTISE"))
+	}
 	if strings.TrimSpace(taskName) == "" {
 		taskName = fmt.Sprintf("sim.station_computer.%s", strings.TrimSpace(stationID))
 	}
@@ -141,13 +145,7 @@ func main() {
 
 	// Register ourselves through the local client proxy (and refresh periodically so we don't age out).
 	if advertise == "" {
-		if strings.HasPrefix(listen, ":") {
-			advertise = "http://localhost" + listen
-		} else if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
-			advertise = listen
-		} else {
-			advertise = "http://" + listen
-		}
+		advertise = simproxy.DeriveHTTPAdvertise(listen)
 	}
 	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 	if err := proxyClient.Register(taskName, advertise); err != nil {

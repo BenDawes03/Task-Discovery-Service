@@ -98,6 +98,10 @@ func main() {
 	flag.StringVar(&paBase, "pa", "", "fallback PA base URL (used if proxy query fails)")
 	flag.Parse()
 
+	if strings.TrimSpace(advertise) == "" {
+		advertise = strings.TrimSpace(os.Getenv("PCTRBO_ADVERTISE"))
+	}
+
 	if strings.TrimSpace(dsn) == "" {
 		dsn = strings.TrimSpace(os.Getenv("PCTRBO_DB_DSN"))
 	}
@@ -137,13 +141,7 @@ func main() {
 
 	// Register through proxy.
 	if advertise == "" {
-		if strings.HasPrefix(listen, ":") {
-			advertise = "http://localhost" + listen
-		} else if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
-			advertise = listen
-		} else {
-			advertise = "http://" + listen
-		}
+		advertise = simproxy.DeriveHTTPAdvertise(listen)
 	}
 	if err := proxyClient.Register(taskName, advertise); err != nil {
 		logger.Printf("proxy register failed (task=%s addr=%s): %v", taskName, advertise, err)

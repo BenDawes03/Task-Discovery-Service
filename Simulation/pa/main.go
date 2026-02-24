@@ -76,6 +76,10 @@ func main() {
 	flag.StringVar(&outDir, "outdir", ".", "directory to write restitution files")
 	flag.Parse()
 
+	if strings.TrimSpace(advertise) == "" {
+		advertise = strings.TrimSpace(os.Getenv("PA_ADVERTISE"))
+	}
+
 	if strings.TrimSpace(dsn) == "" {
 		dsn = strings.TrimSpace(os.Getenv("PA_DB_DSN"))
 	}
@@ -125,13 +129,7 @@ func main() {
 
 	// Register through proxy.
 	if advertise == "" {
-		if strings.HasPrefix(listen, ":") {
-			advertise = "http://localhost" + listen
-		} else if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
-			advertise = listen
-		} else {
-			advertise = "http://" + listen
-		}
+		advertise = simproxy.DeriveHTTPAdvertise(listen)
 	}
 	proxyClient := simproxy.Client{Addr: proxyAddr, Proto: proxyProto, Timeout: 5 * time.Second}
 	if err := proxyClient.Register(taskName, advertise); err != nil {

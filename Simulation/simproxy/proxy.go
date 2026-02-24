@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 )
@@ -29,6 +30,104 @@ func EnsureHTTPBase(addr string) string {
 		return addr
 	}
 	return "http://" + addr
+}
+
+// DeriveHTTPAdvertise returns an HTTP base URL suitable for service registration.
+//
+// If listenAddr already has http/https scheme, it's returned as-is.
+// Otherwise it treats listenAddr as host:port. If host is empty or a wildcard
+// address (":<port>", "0.0.0.0:<port>", "[::]:<port>"), it tries to pick a
+// real non-loopback IP address from active network interfaces.
+//
+// If no non-loopback IP can be found, it falls back to http://localhost:<port>.
+func DeriveHTTPAdvertise(listenAddr string) string {
+	listenAddr = strings.TrimSpace(listenAddr)
+	if listenAddr == "" {
+		return ""
+	}
+	if strings.HasPrefix(listenAddr, "http://") || strings.HasPrefix(listenAddr, "https://") {
+		return listenAddr
+	}
+
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		// Best effort: treat it as already-advertisable.
+		return EnsureHTTPBase(listenAddr)
+	}
+
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		ip := firstNonLoopbackIP()
+		if ip != "" {
+			host = ip
+		} else {
+			host = "localhost"
+		}
+	}
+
+	// Bracket IPv6.
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
+}
+
+func firstNonLoopbackIP() string {
+	// Allow explicit override (useful when multiple NICs exist).
+	if v := strings.TrimSpace(os.Getenv("SIM_ADVERTISE_IP")); v != "" {
+		return v
+	}
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+
+	var v6Candidate string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+			if ip == nil {
+				continue
+			}
+			if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() {
+				continue
+			}
+			if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				continue
+			}
+			if !ip.IsGlobalUnicast() {
+				continue
+			}
+
+			if ip4 := ip.To4(); ip4 != nil {
+				return ip4.String()
+			}
+			// Keep first global v6 as fallback if no v4 exists.
+			if v6Candidate == "" {
+				v6Candidate = ip.String()
+			}
+		}
+	}
+	return v6Candidate
 }
 
 func (c Client) normalized() Client {
