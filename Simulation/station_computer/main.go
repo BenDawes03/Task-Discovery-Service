@@ -120,10 +120,10 @@ func main() {
 	var pctrboTask string
 	var batchSize int
 	flag.StringVar(&listen, "listen", ":9100", "listen address")
-	flag.StringVar(&stationID, "station-id", "station-1", "station identifier")
+	flag.StringVar(&stationID, "station-id", "station-1", "station computer identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
-	flag.StringVar(&taskName, "task", "", "task name to register under (default: sim.station_computer.<station-id>)")
+	flag.StringVar(&taskName, "task", "", "task name to register under (default: station-Computer-<station-id>)")
 	flag.StringVar(&advertise, "advertise", "", "address to register (default derives from -listen; should be reachable by other VMs)")
 	flag.StringVar(&oyboTask, "oybo-task", "sim.cs", "task name to query for CS (OY cards)")
 	flag.StringVar(&pctrboTask, "pctrbo-task", "sim.pctrbo", "task name to query for PCTRBO")
@@ -134,7 +134,7 @@ func main() {
 		advertise = strings.TrimSpace(os.Getenv("STATION_ADVERTISE"))
 	}
 	if strings.TrimSpace(taskName) == "" {
-		taskName = fmt.Sprintf("sim.station_computer.%s", strings.TrimSpace(stationID))
+		taskName = fmt.Sprintf("station-Computer-%s", strings.TrimSpace(stationID))
 	}
 	if batchSize <= 0 {
 		batchSize = 5

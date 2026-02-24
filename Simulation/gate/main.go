@@ -149,10 +149,10 @@ func main() {
 
 	flag.StringVar(&gateID, "id", "gate-1", "gate identifier")
 	flag.StringVar(&listen, "listen", ":9200", "listen address for HTTP tap input")
-	flag.StringVar(&stationID, "station-id", "station-1", "station identifier")
+	flag.StringVar(&stationID, "station-id", "station-1", "station computer identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
-	flag.StringVar(&stationTask, "station-task", "", "task name to query for station computer (default: sim.station_computer.<station-id>)")
+	flag.StringVar(&stationTask, "station-task", "", "task name to query for station computer (default: station-Computer-<station-id>)")
 	flag.StringVar(&oyboTask, "oybo-task", "sim.cs", "task name to query for CS (OY cards)")
 	flag.StringVar(&paTask, "pa-task", "sim.pa", "task name to query for PA (PCTR tokenization)")
 	flag.StringVar(&stationBase, "station", "", "fallback station computer base URL (used if proxy query fails)")
@@ -161,7 +161,7 @@ func main() {
 	flag.StringVar(&pctrPublicKeyPath, "pctr-public-key", "", "RSA public key PEM used to encrypt PCTR card data")
 	flag.Parse()
 	if strings.TrimSpace(stationTask) == "" {
-		stationTask = fmt.Sprintf("sim.station_computer.%s", strings.TrimSpace(stationID))
+		stationTask = fmt.Sprintf("station-Computer-%s", strings.TrimSpace(stationID))
 	}
 
 	logger := log.New(os.Stdout, "[gate] ", log.LstdFlags)

@@ -66,6 +66,7 @@ func main() {
 	var seedWorkingCards int
 	var seedStart int
 	var seedBalanceCents int64
+	var journeyInterval time.Duration
 
 	flag.StringVar(&listen, "listen", ":9101", "listen address")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
@@ -76,6 +77,7 @@ func main() {
 	flag.IntVar(&seedWorkingCards, "seed-working-cards", 0, "seed N additional working cards (active, unblocked, balance>0) into the cards table")
 	flag.IntVar(&seedStart, "seed-start", 10000, "starting card_id number for seeded working cards")
 	flag.Int64Var(&seedBalanceCents, "seed-balance-cents", 500, "balance_cents for seeded working cards")
+	flag.DurationVar(&journeyInterval, "journey-interval", 5*time.Minute, "how often to run journey construction (set smaller for testing)")
 	flag.Parse()
 
 	if strings.TrimSpace(advertise) == "" {
@@ -180,9 +182,12 @@ func main() {
 		}
 	}()
 
-	// Every 5 minutes, run JourneyConstruction.
+	// Periodically run JourneyConstruction.
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		if journeyInterval <= 0 {
+			journeyInterval = 5 * time.Minute
+		}
+		ticker := time.NewTicker(journeyInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
