@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -13,12 +14,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"tds/Simulation/pctrcrypto"
 	"tds/Simulation/simproxy"
+	"tds/pkg/netutil"
 )
 
 type ValidateRequest struct {
@@ -359,35 +363,75 @@ func main() {
 		writeJSON(w, http.StatusOK, TapResponse{Allowed: allowed, Reason: reason})
 	})
 
+	ln, err := netutil.ListenTCP(listen)
+	if err != nil {
+		logger.Fatalf("listen %s: %v", listen, err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srvErr := make(chan error, 1)
 	go func() {
 		logger.Printf("HTTP tap listener on %s", listen)
-		srv := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Printf("tap listener error: %v", err)
-		}
+		srvErr <- srv.Serve(ln)
 	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	fmt.Println("Gate ready")
 	fmt.Println("Enter taps like: OY:1001 or PCTR:2001")
 
-	scanner := bufio.NewScanner(os.Stdin)
+	lines := make(chan string)
+	scanDone := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		defer close(lines)
+		for {
+			fmt.Print("> ")
+			if !scanner.Scan() {
+				scanDone <- scanner.Err()
+				return
+			}
+			lines <- scanner.Text()
+		}
+	}()
+
+	shutdown := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = srv.Shutdown(ctx)
+		cancel()
+	}
+
 	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			break
-		}
-
-		line := scanner.Text()
-		allowed, reason := handleTap(line)
-		if allowed {
-			fmt.Printf("ALLOW (%s)\n", strings.TrimSpace(line))
-		} else {
-			fmt.Printf("DENY (%s) reason=%s\n", strings.TrimSpace(line), reason)
+		select {
+		case <-sigCh:
+			shutdown()
+			logger.Println("exiting")
+			return
+		case err := <-srvErr:
+			if err != nil && err != http.ErrServerClosed {
+				logger.Printf("tap listener error: %v", err)
+			}
+			shutdown()
+			logger.Println("exiting")
+			return
+		case line, ok := <-lines:
+			if !ok {
+				err := <-scanDone
+				if err != nil {
+					logger.Printf("stdin error: %v", err)
+				}
+				shutdown()
+				logger.Println("exiting")
+				return
+			}
+			allowed, reason := handleTap(line)
+			if allowed {
+				fmt.Printf("ALLOW (%s)\n", strings.TrimSpace(line))
+			} else {
+				fmt.Printf("DENY (%s) reason=%s\n", strings.TrimSpace(line), reason)
+			}
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		logger.Printf("stdin error: %v", err)
-	}
-	logger.Println("exiting")
 }

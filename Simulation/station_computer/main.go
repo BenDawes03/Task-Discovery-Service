@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -9,11 +10,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"tds/Simulation/simproxy"
+	"tds/pkg/netutil"
 )
 
 type Transaction struct {
@@ -279,14 +283,27 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:              listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	ln, err := netutil.ListenTCP(listen)
+	if err != nil {
+		logger.Fatalf("listen %s: %v", listen, err)
+	}
+	defer ln.Close()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = server.Shutdown(ctx)
+		cancel()
+	}()
 
 	logger.Printf("listening on %s (station-id=%s batchSize=%d)", listen, stationID, batchSize)
 	fmt.Println("Station Computer ready")
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("server error: %v", err)
 	}
 }

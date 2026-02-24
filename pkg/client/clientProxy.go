@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"tds/pkg/netutil"
 )
 
 var logger = log.New(os.Stdout, "[client-proxy] ", log.LstdFlags)
@@ -34,7 +36,7 @@ func RunProxy(ctx context.Context, listenAddr string) error {
 	if err != nil {
 		return fmt.Errorf("resolve listen addr: %w", err)
 	}
-	conn, err := net.ListenUDP("udp", udpAddr)
+	conn, err := netutil.ListenUDP(udpAddr.String())
 	if err != nil {
 		return fmt.Errorf("listen udp: %w", err)
 	}
@@ -134,7 +136,7 @@ func RunProxyTCP(ctx context.Context, listenAddr string) error {
 		serverAddr = "127.0.0.1:5000"
 	}
 
-	ln, err := net.Listen("tcp", listenAddr)
+	ln, err := netutil.ListenTCP(listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen tcp: %w", err)
 	}
@@ -226,7 +228,7 @@ func RunProxyP2P(ctx context.Context, listenAddr string, dhtRegistry DHTRegistry
 	if err != nil {
 		return fmt.Errorf("resolve listen addr: %w", err)
 	}
-	conn, err := net.ListenUDP("udp", udpAddr)
+	conn, err := netutil.ListenUDP(udpAddr.String())
 	if err != nil {
 		return fmt.Errorf("listen udp: %w", err)
 	}

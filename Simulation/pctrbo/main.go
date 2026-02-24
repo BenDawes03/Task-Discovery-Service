@@ -10,11 +10,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"tds/Simulation/carddb"
 	"tds/Simulation/simproxy"
+	"tds/pkg/netutil"
 )
 
 type Transaction struct {
@@ -274,10 +277,24 @@ func main() {
 		writeJSON(w, http.StatusOK, BatchResponse{Accepted: true, Received: len(toInsert)})
 	})
 
-	srv := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	ln, err := netutil.ListenTCP(listen)
+	if err != nil {
+		logger.Fatalf("listen %s: %v", listen, err)
+	}
+	defer ln.Close()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = srv.Shutdown(ctx)
+		cancel()
+	}()
 	logger.Printf("listening on %s", listen)
 	fmt.Println("PCTRBO ready")
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("server error: %v", err)
 	}
 }
