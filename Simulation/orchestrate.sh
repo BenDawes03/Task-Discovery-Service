@@ -37,25 +37,37 @@ SYNC_EXCLUDES_DEFAULT=(
   "build"
   "bin"
   "logs"
+    down_failures=0
   "test_results_*"
   "test_scripts/results"
   "Simulation/orchestrate.env"
-)
+      # On the remote host: run stop logic in bash for portability of [[/compgen.
+      remote_down_cmd="set -euo pipefail; \
+        if compgen -G ~/tds_sim_logs/*.pid >/dev/null 2>&1; then \
+          for f in ~/tds_sim_logs/*.pid; do \
+            pid=\$(cat \"\$f\" 2>/dev/null || true); \
+            if [[ -n \"\$pid\" ]]; then \
+              kill \"\$pid\" >/dev/null 2>&1 || true; \
+            fi; \
+            rm -f \"\$f\" || true; \
+          done; \
+        fi; \
+        pkill -f 'go run -mod=vendor' >/dev/null 2>&1 || true; \
+        pkill -f 'tail -f /dev/null | go run' >/dev/null 2>&1 || true; \
+        echo stopped"
+      quoted_remote_down_cmd="$(printf '%q' "${remote_down_cmd}")"
 
-SYNC_EXCLUDES=("${SYNC_EXCLUDES_DEFAULT[@]}")
-if [[ -n "${SYNC_EXCLUDES_EXTRA:-}" ]]; then
-  # shellcheck disable=SC2206
-  SYNC_EXCLUDES+=( ${SYNC_EXCLUDES_EXTRA} )
-fi
-
-ssh_run() {
-  local host="$1"; shift
-  local user
-  user="$(ssh_user_for_host "${host}")"
-  ${SSH} "${user}@${host}" "$@"
-}
-
+      if ! ssh_run "${host}" "bash -lc ${quoted_remote_down_cmd}"; then
+        echo "WARN: failed to stop cleanly on ${host}" >&2
+        down_failures=$((down_failures+1))
+      fi
 ssh_user_for_host() {
+
+    if [[ "${down_failures}" -gt 0 ]]; then
+      echo "Down completed with ${down_failures} host error(s)." >&2
+      exit 1
+    fi
+    echo "Down completed successfully on all hosts."
   local host="$1"
 
   # Default user (backwards compatible with older env files that used SSH_USER)
