@@ -52,7 +52,7 @@ ssh_run() {
   local host="$1"; shift
   local user
   user="$(ssh_user_for_host "${host}")"
-  ${SSH} "${user}@${host}" "$@"
+  ${SSH} "${user}@${host}" "$@" < /dev/null
 }
 
 ssh_user_for_host() {
