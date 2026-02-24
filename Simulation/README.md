@@ -123,7 +123,7 @@ curl -X POST http://localhost:9200/tap -H "Content-Type: application/json" -d '{
   - CS registers as task `sim.cs`
   - PCTRBO registers as task `sim.pctrbo`
   - PA registers as task `sim.pa`
-  - Each Station Computer registers as task `station-Computer-<station-id>` (example: `station-Computer-station-1`)
+  - Each Station Computer registers as task `station-Computer-<n>` (example: `station-Computer-1`)
   - Gate queries these tasks via the local client proxy (`localhost:5100` by default)
 
 - Gate allow/deny logic:
@@ -133,7 +133,7 @@ curl -X POST http://localhost:9200/tap -H "Content-Type: application/json" -d '{
 
 - Station selection:
   - Each gate is booted with `-station-id`.
-  - By default it discovers its station via task `station-Computer-<station-id>`.
+  - By default it discovers its station via task `station-Computer-<n>`.
 
 - Station Computer batching:
   - Receives allowed taps from gates.

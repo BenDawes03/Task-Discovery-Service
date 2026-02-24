@@ -160,8 +160,32 @@ func main() {
 	flag.StringVar(&paBase, "pa", "", "fallback PA base URL (used if proxy query fails)")
 	flag.StringVar(&pctrPublicKeyPath, "pctr-public-key", "", "RSA public key PEM used to encrypt PCTR card data")
 	flag.Parse()
+
+	normalizeStationID := func(v string) string {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return v
+		}
+		allDigits := true
+		for _, r := range v {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return "station-" + v
+		}
+		return v
+	}
+	stationID = normalizeStationID(stationID)
+
+	stationTaskID := strings.TrimSpace(stationID)
+	if strings.HasPrefix(stationTaskID, "station-") {
+		stationTaskID = strings.TrimPrefix(stationTaskID, "station-")
+	}
 	if strings.TrimSpace(stationTask) == "" {
-		stationTask = fmt.Sprintf("station-Computer-%s", strings.TrimSpace(stationID))
+		stationTask = fmt.Sprintf("station-Computer-%s", stationTaskID)
 	}
 
 	logger := log.New(os.Stdout, "[gate] ", log.LstdFlags)

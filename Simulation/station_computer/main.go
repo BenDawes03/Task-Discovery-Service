@@ -130,11 +130,35 @@ func main() {
 	flag.IntVar(&batchSize, "batch-size", 5, "number of taps per card type before forwarding to BO")
 	flag.Parse()
 
+	normalizeStationID := func(v string) string {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return v
+		}
+		allDigits := true
+		for _, r := range v {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return "station-" + v
+		}
+		return v
+	}
+	stationID = normalizeStationID(stationID)
+
+	stationTaskID := strings.TrimSpace(stationID)
+	if strings.HasPrefix(stationTaskID, "station-") {
+		stationTaskID = strings.TrimPrefix(stationTaskID, "station-")
+	}
+
 	if strings.TrimSpace(advertise) == "" {
 		advertise = strings.TrimSpace(os.Getenv("STATION_ADVERTISE"))
 	}
 	if strings.TrimSpace(taskName) == "" {
-		taskName = fmt.Sprintf("station-Computer-%s", strings.TrimSpace(stationID))
+		taskName = fmt.Sprintf("station-Computer-%s", stationTaskID)
 	}
 	if batchSize <= 0 {
 		batchSize = 5
