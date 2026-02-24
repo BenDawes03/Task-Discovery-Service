@@ -63,6 +63,9 @@ func main() {
 	var taskName string
 	var advertise string
 	var dsn string
+	var seedWorkingCards int
+	var seedStart int
+	var seedBalanceCents int64
 
 	flag.StringVar(&listen, "listen", ":9101", "listen address")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
@@ -70,6 +73,9 @@ func main() {
 	flag.StringVar(&taskName, "task", "sim.cs", "task name to register under")
 	flag.StringVar(&advertise, "advertise", "", "address to register (default derives from -listen; should be reachable by other VMs)")
 	flag.StringVar(&dsn, "db", "", "Postgres DSN (or set CS_DB_DSN / DATABASE_URL)")
+	flag.IntVar(&seedWorkingCards, "seed-working-cards", 0, "seed N additional working cards (active, unblocked, balance>0) into the cards table")
+	flag.IntVar(&seedStart, "seed-start", 10000, "starting card_id number for seeded working cards")
+	flag.Int64Var(&seedBalanceCents, "seed-balance-cents", 500, "balance_cents for seeded working cards")
 	flag.Parse()
 
 	if strings.TrimSpace(advertise) == "" {
@@ -112,6 +118,33 @@ func main() {
 	if err := store.Seed(ctx, seedCards); err != nil {
 		cancel()
 		log.Fatalf("seed cards: %v", err)
+	}
+	if seedWorkingCards > 0 {
+		if seedStart < 0 {
+			seedStart = 0
+		}
+		if seedBalanceCents <= 0 {
+			seedBalanceCents = 500
+		}
+		const batchSize = 1000
+		seeded := 0
+		for seeded < seedWorkingCards {
+			n := seedWorkingCards - seeded
+			if n > batchSize {
+				n = batchSize
+			}
+			batch := make([]carddb.Record, 0, n)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("%d", seedStart+seeded+i)
+				batch = append(batch, carddb.Record{CardID: id, Active: true, Blocked: false, BalanceCents: seedBalanceCents})
+			}
+			if err := store.Seed(ctx, batch); err != nil {
+				cancel()
+				log.Fatalf("seed working cards: %v", err)
+			}
+			seeded += n
+		}
+		logger.Printf("seeded working cards: count=%d start=%d", seedWorkingCards, seedStart)
 	}
 	seedCosts := []carddb.StationCost{
 		{FromStation: "station-1", ToStation: "station-1", CostCents: 0},
