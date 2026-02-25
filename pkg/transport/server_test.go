@@ -183,6 +183,21 @@ func TestHandleUDPRequestProtocolErrors(t *testing.T) {
 	if resp.Status != "ERR" || !strings.Contains(resp.Error, "task required") {
 		t.Fatalf("expected whitespace query task validation error, got %+v", resp)
 	}
+
+	resp = sendAndHandleUDP(t, fake, []byte(`{"cmd":"HEARTBEAT","task":"ticket","address":"10.0.0.1:7000"}`))
+	if resp.Status != "ERR" || !strings.Contains(resp.Error, "unknown command") {
+		t.Fatalf("expected unknown HEARTBEAT command error, got %+v", resp)
+	}
+
+	resp = sendAndHandleUDP(t, fake, []byte(`{"cmd":"REGISTER","task":123,"address":"10.0.0.1:7000"}`))
+	if resp.Status != "ERR" || !strings.Contains(resp.Error, "invalid JSON") {
+		t.Fatalf("expected malformed register payload error, got %+v", resp)
+	}
+
+	resp = sendAndHandleUDP(t, fake, []byte(`{"cmd":"QUERY","task":123}`))
+	if resp.Status != "ERR" || !strings.Contains(resp.Error, "invalid JSON") {
+		t.Fatalf("expected malformed query payload error, got %+v", resp)
+	}
 }
 
 func runTCPConversation(t *testing.T, reg registry.Registry, lines ...string) []CentralizedResponse {
@@ -254,6 +269,9 @@ func TestHandleTCPConnQueryStatusMappingAndErrors(t *testing.T) {
 		`{"cmd":"REGISTER","task":"   ","address":"10.0.0.1:7000"}`,
 		`{"cmd":"REGISTER","task":"ticket","address":"   "}`,
 		`{"cmd":"NOPE"}`,
+		`{"cmd":"HEARTBEAT","task":"ticket","address":"10.0.0.1:7000"}`,
+		`{"cmd":"REGISTER","task":123,"address":"10.0.0.1:7000"}`,
+		`{"cmd":"QUERY","task":123}`,
 		`{not json}`,
 	)
 
@@ -275,8 +293,17 @@ func TestHandleTCPConnQueryStatusMappingAndErrors(t *testing.T) {
 	if responses[5].Status != "ERR" || !strings.Contains(responses[5].Error, "unknown command") {
 		t.Fatalf("expected unknown command ERR, got %+v", responses[5])
 	}
-	if responses[6].Status != "ERR" || !strings.Contains(responses[6].Error, "invalid JSON") {
-		t.Fatalf("expected invalid JSON ERR, got %+v", responses[6])
+	if responses[6].Status != "ERR" || !strings.Contains(responses[6].Error, "unknown command") {
+		t.Fatalf("expected HEARTBEAT unknown command ERR, got %+v", responses[6])
+	}
+	if responses[7].Status != "ERR" || !strings.Contains(responses[7].Error, "invalid JSON") {
+		t.Fatalf("expected malformed register invalid JSON ERR, got %+v", responses[7])
+	}
+	if responses[8].Status != "ERR" || !strings.Contains(responses[8].Error, "invalid JSON") {
+		t.Fatalf("expected malformed query invalid JSON ERR, got %+v", responses[8])
+	}
+	if responses[9].Status != "ERR" || !strings.Contains(responses[9].Error, "invalid JSON") {
+		t.Fatalf("expected invalid JSON ERR, got %+v", responses[9])
 	}
 }
 

@@ -112,3 +112,46 @@ func TestCleanupRemovesStaleQueryCounters(t *testing.T) {
 		t.Fatalf("expected task to be removed after cleanup")
 	}
 }
+
+func TestRegisterWithInvalidTaskOrAddressIsIgnored(t *testing.T) {
+	r := NewMemoryRegistry()
+	r.Register("", "10.0.0.50:8080")
+	r.Register("task-a", "")
+	r.Register("   ", "10.0.0.50:8080")
+	r.Register("task-a", "   ")
+
+	services := r.ListServices()
+	if len(services) != 0 {
+		t.Fatalf("expected invalid registrations to be ignored, got %+v", services)
+	}
+}
+
+func TestGetServiceWithInvalidTaskReturnsErrInvalidTaskName(t *testing.T) {
+	r := NewMemoryRegistry()
+	_, err := r.GetService("   ")
+	if err != ErrInvalidTaskName {
+		t.Fatalf("expected ErrInvalidTaskName, got %v", err)
+	}
+}
+
+func TestHeartbeatFromUnregisteredServiceCreatesEntry(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "heartbeat-task"
+	addr := "10.0.0.60:8080"
+
+	// In this system, register is also the heartbeat signal.
+	// A heartbeat for an unknown service is treated as first-time registration.
+	r.Register(task, addr)
+
+	services := r.ListServices()
+	entries, ok := services[task]
+	if !ok || len(entries) != 1 {
+		t.Fatalf("expected heartbeat/register to create one service entry")
+	}
+	if entries[0].Address != addr {
+		t.Fatalf("expected registered address %q, got %q", addr, entries[0].Address)
+	}
+	if entries[0].Capacity != 1 {
+		t.Fatalf("expected default capacity 1, got %d", entries[0].Capacity)
+	}
+}

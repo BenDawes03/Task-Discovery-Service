@@ -78,6 +78,8 @@ var (
 	logLines         []string                  // Track log lines for bounded display
 	maxLogLines      = 100                     // Maximum log lines to keep
 	uiMutex          sync.Mutex                // Serialize all UI operations
+	isTerminalFn     = func(fd int) bool { return term.IsTerminal(fd) }
+	promptReaderFn   = func() *bufio.Reader { return bufio.NewReader(os.Stdin) }
 )
 
 func writeToLogView(message string) {
@@ -326,6 +328,16 @@ func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
 	skipPrompts := false
+	flagProvided := func(names ...string) bool {
+		for _, a := range os.Args[1:] {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
 
 	// Check if UI mode was forced via flags
 	if forceUI {
@@ -346,6 +358,16 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
+	// Check if specific config values were set via flags
+	portFlagSet := flagProvided("--port")
+	heartbeatTimeoutFlagSet := flagProvided("--heartbeat-timeout")
+	cleanupIntervalFlagSet := flagProvided("--cleanup-interval")
+	logDirFlagSet := flagProvided("--log-dir")
+	tlsCertFlagSet := flagProvided("--tls-cert")
+	tlsKeyFlagSet := flagProvided("--tls-key")
+	tlsClientCAFlagSet := flagProvided("--tls-client-ca")
+	cacheMaxSizeFlagSet := flagProvided("--cache-max-size")
+
 	// Check if firewall was set via flags
 	firewallFlagSet := false
 	for _, a := range os.Args[1:] {
@@ -356,8 +378,8 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// If not in interactive terminal or prompts skipped, return early
-	if skipPrompts || !term.IsTerminal(int(os.Stdin.Fd())) {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if skipPrompts || !isTerminalFn(int(os.Stdin.Fd())) {
+		if !isTerminalFn(int(os.Stdin.Fd())) {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
@@ -369,7 +391,7 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// Interactive prompts
-	reader := bufio.NewReader(os.Stdin)
+	reader := promptReaderFn()
 
 	// Transport mode prompt (skip if flag was set)
 	if !transportFlagSet {
@@ -402,6 +424,84 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
+	// Core server settings prompts (skip when explicit flags were provided)
+	if !portFlagSet {
+		fmt.Fprintf(os.Stderr, "Server port [%d]: ", listenPort)
+		portInput, _ := reader.ReadString('\n')
+		portInput = strings.TrimSpace(portInput)
+		if portInput != "" {
+			var parsed int
+			if _, err := fmt.Sscanf(portInput, "%d", &parsed); err == nil && parsed > 0 {
+				listenPort = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid port; keeping existing value")
+			}
+		}
+	}
+
+	if !heartbeatTimeoutFlagSet {
+		fmt.Fprintf(os.Stderr, "Heartbeat timeout [%s]: ", heartbeatTimeout)
+		hbInput, _ := reader.ReadString('\n')
+		hbInput = strings.TrimSpace(hbInput)
+		if hbInput != "" {
+			if parsed, err := time.ParseDuration(hbInput); err == nil && parsed > 0 {
+				heartbeatTimeout = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid duration; keeping existing value")
+			}
+		}
+	}
+
+	if !cleanupIntervalFlagSet {
+		fmt.Fprintf(os.Stderr, "Cleanup interval [%s]: ", cleanupInterval)
+		cleanupInput, _ := reader.ReadString('\n')
+		cleanupInput = strings.TrimSpace(cleanupInput)
+		if cleanupInput != "" {
+			if parsed, err := time.ParseDuration(cleanupInput); err == nil && parsed > 0 {
+				cleanupInterval = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid duration; keeping existing value")
+			}
+		}
+	}
+
+	if !logDirFlagSet {
+		fmt.Fprintf(os.Stderr, "Log directory [%s]: ", logDir)
+		logDirInput, _ := reader.ReadString('\n')
+		logDirInput = strings.TrimSpace(logDirInput)
+		if logDirInput != "" {
+			logDir = logDirInput
+		}
+	}
+
+	// TLS-specific prompts are nested under TLS transport selection.
+	if transportMode == "tls" {
+		if !tlsCertFlagSet {
+			fmt.Fprintf(os.Stderr, "TLS cert file [%s]: ", tlsCertFile)
+			certInput, _ := reader.ReadString('\n')
+			certInput = strings.TrimSpace(certInput)
+			if certInput != "" {
+				tlsCertFile = certInput
+			}
+		}
+		if !tlsKeyFlagSet {
+			fmt.Fprintf(os.Stderr, "TLS key file [%s]: ", tlsKeyFile)
+			keyInput, _ := reader.ReadString('\n')
+			keyInput = strings.TrimSpace(keyInput)
+			if keyInput != "" {
+				tlsKeyFile = keyInput
+			}
+		}
+		if !tlsClientCAFlagSet {
+			fmt.Fprintf(os.Stderr, "TLS client CA file [%s]: ", tlsClientCAFile)
+			caInput, _ := reader.ReadString('\n')
+			caInput = strings.TrimSpace(caInput)
+			if caInput != "" {
+				tlsClientCAFile = caInput
+			}
+		}
+	}
+
 	// Database persistence prompt (skip if --store-url flag was set)
 	if storeURL == "" {
 		fmt.Fprint(os.Stderr, "Enable database persistence? [y/N]: ")
@@ -415,7 +515,7 @@ func askTerminalOptions() (string, bool, bool) {
 				fmt.Fprintln(os.Stderr, "Database persistence enabled")
 
 				// Cache size prompt (only if database is enabled and not set via flag)
-				if cacheMaxSize == 100 { // Default value, not set via flag
+				if !cacheMaxSizeFlagSet { // Skip prompt if explicit cache flag set
 					fmt.Fprint(os.Stderr, "Enter cache max size (0 for unlimited) [100]: ")
 					cacheInput, _ := reader.ReadString('\n')
 					cacheInput = strings.TrimSpace(cacheInput)

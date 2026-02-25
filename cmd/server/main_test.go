@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rivo/tview"
 
@@ -17,17 +19,20 @@ func TestAskTerminalOptionsNoUIAndTLS(t *testing.T) {
 	oldNoUI := noUI
 	oldUseTLS := useTLS
 	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
 	defer func() {
 		forceUI = oldForceUI
 		noUI = oldNoUI
 		useTLS = oldUseTLS
 		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
 	}()
 
 	forceUI = false
 	noUI = true
 	useTLS = true
 	os.Args = []string{"server.test"}
+	isTerminalFn = func(fd int) bool { return false }
 
 	transportMode, runTUI, forced := askTerminalOptions()
 	if transportMode != "tls" {
@@ -38,6 +43,269 @@ func TestAskTerminalOptionsNoUIAndTLS(t *testing.T) {
 	}
 	if forced {
 		t.Fatalf("expected forced=false when forceUI=false")
+	}
+}
+
+func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
+	oldForceUI := forceUI
+	oldNoUI := noUI
+	oldUseTLS := useTLS
+	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
+	oldPromptReaderFn := promptReaderFn
+	oldListenPort := listenPort
+	oldHeartbeatTimeout := heartbeatTimeout
+	oldCleanupInterval := cleanupInterval
+	oldLogDir := logDir
+	oldTLSCertFile := tlsCertFile
+	oldTLSKeyFile := tlsKeyFile
+	oldTLSClientCAFile := tlsClientCAFile
+	oldStoreURL := storeURL
+	oldCacheMaxSize := cacheMaxSize
+	oldFirewallEnabledFlag := firewallEnabledFlag
+	oldFirewallDisabledFlag := firewallDisabledFlag
+	oldFirewallRulesPath := firewallRulesPath
+	defer func() {
+		forceUI = oldForceUI
+		noUI = oldNoUI
+		useTLS = oldUseTLS
+		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
+		promptReaderFn = oldPromptReaderFn
+		listenPort = oldListenPort
+		heartbeatTimeout = oldHeartbeatTimeout
+		cleanupInterval = oldCleanupInterval
+		logDir = oldLogDir
+		tlsCertFile = oldTLSCertFile
+		tlsKeyFile = oldTLSKeyFile
+		tlsClientCAFile = oldTLSClientCAFile
+		storeURL = oldStoreURL
+		cacheMaxSize = oldCacheMaxSize
+		firewallEnabledFlag = oldFirewallEnabledFlag
+		firewallDisabledFlag = oldFirewallDisabledFlag
+		firewallRulesPath = oldFirewallRulesPath
+	}()
+
+	forceUI = false
+	noUI = false
+	useTLS = false
+	os.Args = []string{"server.test"}
+	listenPort = 5000
+	heartbeatTimeout = 60 * time.Second
+	cleanupInterval = 10 * time.Second
+	logDir = "logs"
+	tlsCertFile = "certs/server.crt"
+	tlsKeyFile = "certs/server.key"
+	tlsClientCAFile = "certs/ca.crt"
+	storeURL = ""
+	cacheMaxSize = 100
+	firewallEnabledFlag = false
+	firewallDisabledFlag = false
+	firewallRulesPath = ""
+
+	isTerminalFn = func(fd int) bool { return true }
+	promptReaderFn = func() *bufio.Reader {
+		input := strings.Join([]string{
+			"3",                // transport -> tls
+			"5500",             // port
+			"75s",              // heartbeat timeout
+			"15s",              // cleanup interval
+			"custom-logs",      // log dir
+			"certs/custom.crt", // tls cert
+			"certs/custom.key", // tls key
+			"certs/custom-ca.crt", // tls client ca
+			"n", // db disabled
+			"n", // firewall disabled
+			"n", // no tui
+		}, "\n") + "\n"
+		return bufio.NewReader(strings.NewReader(input))
+	}
+
+	transportMode, runTUI, _ := askTerminalOptions()
+
+	if transportMode != "tls" {
+		t.Fatalf("expected tls transport mode, got %q", transportMode)
+	}
+	if runTUI {
+		t.Fatalf("expected runTUI=false from interactive choice")
+	}
+	if listenPort != 5500 {
+		t.Fatalf("expected prompted port 5500, got %d", listenPort)
+	}
+	if heartbeatTimeout != 75*time.Second {
+		t.Fatalf("expected prompted heartbeat timeout 75s, got %s", heartbeatTimeout)
+	}
+	if cleanupInterval != 15*time.Second {
+		t.Fatalf("expected prompted cleanup interval 15s, got %s", cleanupInterval)
+	}
+	if logDir != "custom-logs" {
+		t.Fatalf("expected prompted log dir custom-logs, got %q", logDir)
+	}
+	if tlsCertFile != "certs/custom.crt" || tlsKeyFile != "certs/custom.key" || tlsClientCAFile != "certs/custom-ca.crt" {
+		t.Fatalf("expected prompted TLS files to be applied")
+	}
+}
+
+func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
+	oldForceUI := forceUI
+	oldNoUI := noUI
+	oldUseTLS := useTLS
+	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
+	oldPromptReaderFn := promptReaderFn
+	oldListenPort := listenPort
+	oldHeartbeatTimeout := heartbeatTimeout
+	oldCleanupInterval := cleanupInterval
+	oldLogDir := logDir
+	oldTLSCertFile := tlsCertFile
+	oldTLSKeyFile := tlsKeyFile
+	oldTLSClientCAFile := tlsClientCAFile
+	oldStoreURL := storeURL
+	oldCacheMaxSize := cacheMaxSize
+	defer func() {
+		forceUI = oldForceUI
+		noUI = oldNoUI
+		useTLS = oldUseTLS
+		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
+		promptReaderFn = oldPromptReaderFn
+		listenPort = oldListenPort
+		heartbeatTimeout = oldHeartbeatTimeout
+		cleanupInterval = oldCleanupInterval
+		logDir = oldLogDir
+		tlsCertFile = oldTLSCertFile
+		tlsKeyFile = oldTLSKeyFile
+		tlsClientCAFile = oldTLSClientCAFile
+		storeURL = oldStoreURL
+		cacheMaxSize = oldCacheMaxSize
+	}()
+
+	forceUI = false
+	noUI = false
+	useTLS = true
+	os.Args = []string{
+		"server.test",
+		"--tls",
+		"--port=6001",
+		"--heartbeat-timeout=80s",
+		"--cleanup-interval=20s",
+		"--log-dir=my-logs",
+		"--tls-cert=certs/flag.crt",
+		"--tls-key=certs/flag.key",
+		"--tls-client-ca=certs/flag-ca.crt",
+		"--cache-max-size=42",
+	}
+	listenPort = 6001
+	heartbeatTimeout = 80 * time.Second
+	cleanupInterval = 20 * time.Second
+	logDir = "my-logs"
+	tlsCertFile = "certs/flag.crt"
+	tlsKeyFile = "certs/flag.key"
+	tlsClientCAFile = "certs/flag-ca.crt"
+	storeURL = ""
+	cacheMaxSize = 42
+
+	isTerminalFn = func(fd int) bool { return true }
+	promptReaderFn = func() *bufio.Reader {
+		input := strings.Join([]string{
+			"y", // db enabled
+			"postgresql://example", // db url
+			"n", // firewall disabled
+			"n", // no tui
+		}, "\n") + "\n"
+		return bufio.NewReader(strings.NewReader(input))
+	}
+
+	transportMode, runTUI, _ := askTerminalOptions()
+	if transportMode != "tls" {
+		t.Fatalf("expected tls transport mode with --tls, got %q", transportMode)
+	}
+	if runTUI {
+		t.Fatalf("expected runTUI=false from interactive choice")
+	}
+	if listenPort != 6001 || heartbeatTimeout != 80*time.Second || cleanupInterval != 20*time.Second || logDir != "my-logs" {
+		t.Fatalf("expected flagged core settings to remain unchanged")
+	}
+	if tlsCertFile != "certs/flag.crt" || tlsKeyFile != "certs/flag.key" || tlsClientCAFile != "certs/flag-ca.crt" {
+		t.Fatalf("expected flagged TLS settings to remain unchanged")
+	}
+	if cacheMaxSize != 42 {
+		t.Fatalf("expected cache-max-size from flag to remain unchanged, got %d", cacheMaxSize)
+	}
+}
+
+func TestAskTerminalOptionsMalformedPromptInputKeepsDefaults(t *testing.T) {
+	oldForceUI := forceUI
+	oldNoUI := noUI
+	oldUseTLS := useTLS
+	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
+	oldPromptReaderFn := promptReaderFn
+	oldListenPort := listenPort
+	oldHeartbeatTimeout := heartbeatTimeout
+	oldCleanupInterval := cleanupInterval
+	oldLogDir := logDir
+	oldStoreURL := storeURL
+	oldCacheMaxSize := cacheMaxSize
+	defer func() {
+		forceUI = oldForceUI
+		noUI = oldNoUI
+		useTLS = oldUseTLS
+		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
+		promptReaderFn = oldPromptReaderFn
+		listenPort = oldListenPort
+		heartbeatTimeout = oldHeartbeatTimeout
+		cleanupInterval = oldCleanupInterval
+		logDir = oldLogDir
+		storeURL = oldStoreURL
+		cacheMaxSize = oldCacheMaxSize
+	}()
+
+	forceUI = false
+	noUI = false
+	useTLS = false
+	os.Args = []string{"server.test"}
+	listenPort = 5000
+	heartbeatTimeout = 60 * time.Second
+	cleanupInterval = 10 * time.Second
+	logDir = "logs"
+	storeURL = ""
+	cacheMaxSize = 100
+
+	isTerminalFn = func(fd int) bool { return true }
+	promptReaderFn = func() *bufio.Reader {
+		input := strings.Join([]string{
+			"bad-choice", // invalid transport -> should default UDP
+			"not-a-port", // invalid port -> keep default
+			"not-a-duration", // invalid heartbeat -> keep default
+			"still-not-duration", // invalid cleanup -> keep default
+			"", // empty log dir -> keep default
+			"n", // db disabled
+			"n", // firewall disabled
+			"n", // no tui
+		}, "\n") + "\n"
+		return bufio.NewReader(strings.NewReader(input))
+	}
+
+	transportMode, runTUI, _ := askTerminalOptions()
+	if transportMode != "udp" {
+		t.Fatalf("expected fallback transport udp, got %q", transportMode)
+	}
+	if runTUI {
+		t.Fatalf("expected runTUI=false from interactive choice")
+	}
+	if listenPort != 5000 {
+		t.Fatalf("expected default port retained, got %d", listenPort)
+	}
+	if heartbeatTimeout != 60*time.Second {
+		t.Fatalf("expected default heartbeat timeout retained, got %s", heartbeatTimeout)
+	}
+	if cleanupInterval != 10*time.Second {
+		t.Fatalf("expected default cleanup interval retained, got %s", cleanupInterval)
+	}
+	if logDir != "logs" {
+		t.Fatalf("expected default log dir retained, got %q", logDir)
 	}
 }
 
