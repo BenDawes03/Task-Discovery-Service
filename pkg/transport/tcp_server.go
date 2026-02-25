@@ -52,12 +52,23 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 
 		var msg CentralizedMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
-			_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()})
+			errResp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
+			if err := encoder.Encode(errResp); err != nil {
+				fmt.Printf("tcp encode error (invalid JSON response): %v\n", err)
+				return
+			}
 			continue
 		}
 
 		resp := HandleMessage(reg, msg, requestorIP, remote, onEvent)
-		_ = encoder.Encode(resp)
+		if err := encoder.Encode(resp); err != nil {
+			fmt.Printf("tcp encode error: %v\n", err)
+			return
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("tcp scan error: %v\n", err)
 	}
 }
 

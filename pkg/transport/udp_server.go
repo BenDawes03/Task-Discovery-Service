@@ -50,12 +50,24 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 	var msg CentralizedMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		resp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
-		respData, _ := json.Marshal(resp)
-		_, _ = conn.WriteToUDP(respData, remote)
+		respData, err := json.Marshal(resp)
+		if err != nil {
+			fmt.Printf("udp marshal error: %v\n", err)
+			return
+		}
+		if _, err := conn.WriteToUDP(respData, remote); err != nil {
+			fmt.Printf("udp write error (invalid JSON response): %v\n", err)
+		}
 		return
 	}
 
 	resp := HandleMessage(reg, msg, remote.IP, remote, onEvent)
-	respData, _ := json.Marshal(resp)
-	_, _ = conn.WriteToUDP(respData, remote)
+	respData, err := json.Marshal(resp)
+	if err != nil {
+		fmt.Printf("udp marshal error: %v\n", err)
+		return
+	}
+	if _, err := conn.WriteToUDP(respData, remote); err != nil {
+		fmt.Printf("udp write error: %v\n", err)
+	}
 }
