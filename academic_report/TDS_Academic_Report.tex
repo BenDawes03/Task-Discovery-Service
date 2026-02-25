@@ -342,439 +342,38 @@ The TLS configuration enforces TLS 1.2 minimum version and secure cipher suites 
 \newpage
 \section{Implementation Details}
 
-\subsection{Core Registry Implementation}
 
-The registry interface defines the contract for service storage and retrieval:
-
-\begin{lstlisting}
-type Registry interface {
-    Register(taskName, address string)
-    GetService(taskName string) (string, error)
-    Cleanup(timeout time.Duration) int
-    ListServices() map[string][]ServiceEntry
-    GetStats() Stats
-}
-\end{lstlisting}
-
-\subsubsection{Memory Registry}
-
-The \texttt{MemoryRegistry} implements this interface with thread-safe operations:
-
-\begin{lstlisting}
-func (mr *MemoryRegistry) Register(
-    taskName, address string) {
-    mr.mu.Lock()
-    defer mr.mu.Unlock()
-    
-    // Find existing entry
-    entries := mr.services[taskName]
-    for i := range entries {
-        if entries[i].Address == address {
-            entries[i].LastHeartbeat = time.Now()
-            return
-        }
-    }
-    
-    // Add new entry
-    mr.services[taskName] = append(entries,
-        ServiceEntry{
-            Address:       address,
-            LastHeartbeat: time.Now(),
-            QueryCount:    0,
-        })
-}
-\end{lstlisting}
-
-The round-robin selection maintains fairness across instances:
-
-\begin{lstlisting}
-func (mr *MemoryRegistry) GetService(
-    taskName string) (string, error) {
-    mr.mu.Lock()
-    defer mr.mu.Unlock()
-    
-    entries := mr.services[taskName]
-    if len(entries) == 0 {
-        return "", ErrNotFound
-    }
-    
-    idx := mr.roundRobinIndex[taskName]
-    entry := entries[idx % len(entries)]
-    
-    // Update state
-    entry.QueryCount++
-    atomic.AddInt64(&mr.totalQueries, 1)
-    mr.roundRobinIndex[taskName] = 
-        (idx + 1) % len(entries)
-    
-    return entry.Address, nil
-}
-\end{lstlisting}
-
-\subsubsection{Store-Backed Registry}
-
-The persistent registry implements LFU caching for performance:
-
-\begin{lstlisting}
-func (sr *StoreBackedRegistry) WarmCacheFromDB(
-    ctx context.Context) error {
-    
-    // Sync query counts to DB
-    sr.syncQueryCountsToDB(ctx)
-    
-    services, err := sr.store.ListServices(ctx)
-    if err != nil {
-        return err
-    }
-    
-    if sr.cacheMaxSize <= 0 {
-        // Load all
-        for task, entries := range services {
-            for _, e := range entries {
-                sr.populateCacheEntry(task, e)
-            }
-        }
-    } else {
-        // LFU: Select top-k tasks
-        taskList := sr.computeTaskRanking(services)
-        sort.Slice(taskList, func(i, j int) bool {
-            return taskList[i].totalCount > 
-                   taskList[j].totalCount
-        })
-        
-        for i := 0; i < sr.cacheMaxSize && 
-                    i < len(taskList); i++ {
-            task := taskList[i].task
-            for _, e := range taskList[i].entries {
-                sr.populateCacheEntry(task, e)
-            }
-        }
-    }
-    
-    return nil
-}
-\end{lstlisting}
-
-The cache provides read-through semantics: cache miss triggers DB query and cache population.
-
-\subsection{Transport Layer}
-
-TDS supports three transport modes with unified message handling.
-
-\subsubsection{UDP Transport}
-
-UDP provides low-latency connectionless communication:
-
-\begin{lstlisting}
-func (s *UDPServer) Start(
-    ctx context.Context, registry Registry) error {
-    
-    addr, _ := net.ResolveUDPAddr("udp", s.addr)
-    conn, _ := net.ListenUDP("udp", addr)
-    defer conn.Close()
-    
-    buf := make([]byte, 2048)
-    for {
-        select {
-        case <-ctx.Done():
-            return nil
-        default:
-        }
-        
-        conn.SetReadDeadline(
-            time.Now().Add(500*time.Millisecond))
-        n, clientAddr, err := conn.ReadFromUDP(buf)
-        if err != nil {
-            continue
-        }
-        
-        go s.handlePacket(conn, clientAddr, 
-            buf[:n], registry)
-    }
-}
-\end{lstlisting}
-
-Each packet spawns a goroutine for concurrent processing without blocking the receiver.
-
-\subsubsection{TCP Transport}
-
-TCP provides reliable ordered delivery:
-
-\begin{lstlisting}
-func (s *TCPServer) Start(
-    ctx context.Context, registry Registry) error {
-    
-    listener, _ := net.Listen("tcp", s.addr)
-    defer listener.Close()
-    
-    go func() {
-        <-ctx.Done()
-        listener.Close()
-    }()
-    
-    for {
-        conn, err := listener.Accept()
-        if err != nil {
-            return err
-        }
-        go s.handleConnection(conn, registry)
-    }
-}
-
-func (s *TCPServer) handleConnection(
-    conn net.Conn, registry Registry) {
-    
-    defer conn.Close()
-    scanner := bufio.NewScanner(conn)
-    
-    for scanner.Scan() {
-        line := scanner.Text()
-        response := processCommand(line, registry)
-        conn.Write([]byte(response + "\n"))
-    }
-}
-\end{lstlisting}
-
-\subsubsection{TLS Transport}
-
-TLS adds encryption and mutual authentication:
-
-\begin{lstlisting}
-func NewTLSServer(addr, certFile, keyFile, 
-    caFile string) (*TCPServer, error) {
-    
-    cert, err := tls.LoadX509KeyPair(
-        certFile, keyFile)
-    if err != nil {
-        return nil, err
-    }
-    
-    caCert, err := ioutil.ReadFile(caFile)
-    if err != nil {
-        return nil, err
-    }
-    
-    caCertPool := x509.NewCertPool()
-    caCertPool.AppendCertsFromPEM(caCert)
-    
-    tlsConfig := &tls.Config{
-        Certificates: []tls.Certificate{cert},
-        ClientAuth:   tls.RequireAndVerifyClientCert,
-        ClientCAs:    caCertPool,
-        MinVersion:   tls.VersionTLS12,
-        CipherSuites: []uint16{
-            tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        },
-    }
-    
-    listener, err := tls.Listen("tcp", addr, 
-        tlsConfig)
-    
-    return &TCPServer{
-        listener: listener,
-        addr:     addr,
-    }, nil
-}
-\end{lstlisting}
-
-\subsection{Client Proxy and DHT Implementation}
-
-The client proxy supports both centralized and P2P modes:
-
-\begin{lstlisting}
-func main() {
-    p2pMode := flag.Bool("p2p", false, 
-        "Enable P2P DHT mode")
-    flag.Parse()
-    
-    if *p2pMode {
-        // Start DHT node
-        node := dht.NewNode(nodeID, listenAddr)
-        node.Join(bootstrapPeers)
-        
-        // Route requests via DHT
-        for req := range requests {
-            targetNode := node.FindResponsible(
-                hash(req.TaskName))
-            response := targetNode.Forward(req)
-            sendResponse(response)
-        }
-    } else {
-        // Centralized mode
-        serverAddr := discoverServer()
-        for req := range requests {
-            response := forwardToServer(
-                serverAddr, req)
-            sendResponse(response)
-        }
-    }
-}
-\end{lstlisting}
-
-The DHT node implements Chord-style routing:
-
-\begin{lstlisting}
-func (n *Node) FindResponsible(
-    key []byte) *Node {
-    
-    keyID := hashToID(key)
-    
-    // Check if we're responsible
-    if n.isResponsible(keyID) {
-        return n
-    }
-    
-    // Find closest preceding finger
-    closestNode := n.closestPrecedingNode(keyID)
-    
-    if closestNode == n {
-        return n.successor
-    }
-    
-    // Recursively forward
-    return closestNode.FindResponsible(key)
-}
-\end{lstlisting}
-
-\subsection{Terminal User Interface}
-
-The TUI provides real-time monitoring using the \texttt{tview} library:
-
-\begin{lstlisting}
-func StartTUI(registry Registry) {
-    app := tview.NewApplication()
-    
-    // Service table
-    table := tview.NewTable().
-        SetBorders(true).
-        SetFixed(1, 0)
-    
-    // Stats panel
-    statsView := tview.NewTextView().
-        SetDynamicColors(true)
-    
-    // Update loop
-    go func() {
-        ticker := time.NewTicker(1 * time.Second)
-        for range ticker.C {
-            updateTable(table, registry)
-            updateStats(statsView, registry)
-            app.Draw()
-        }
-    }()
-    
-    // Layout
-    flex := tview.NewFlex().
-        AddItem(table, 0, 3, false).
-        AddItem(statsView, 0, 1, false)
-    
-    app.SetRoot(flex, true).Run()
-}
-\end{lstlisting}
-
-The interface updates at 1Hz showing:
-\begin{itemize}
-    \item All registered tasks and their addresses
-    \item Query count per service instance
-    \item Last heartbeat timestamp
-    \item Aggregate statistics (total queries, tasks, QPS)
-\end{itemize}
-
-\subsection{PostgreSQL Storage}
-
-The PostgreSQL implementation provides ACID persistence:
-
-\begin{lstlisting}
-func (ps *PostgresStore) Register(
-    ctx context.Context, task string, 
-    entry *store.ServiceEntry) error {
-    
-    query := `
-        INSERT INTO services 
-            (task, address, last_heartbeat, 
-             query_count, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
-        ON CONFLICT (task, address) DO UPDATE
-        SET last_heartbeat = EXCLUDED.last_heartbeat,
-            query_count = EXCLUDED.query_count,
-            updated_at = NOW()
-    `
-    
-    _, err := ps.db.ExecContext(ctx, query, 
-        task, entry.Address, entry.LastHeartbeat,
-        entry.QueryCount)
-    
-    return err
-}
-\end{lstlisting}
-
-The schema uses composite primary key \texttt{(task, address)} with indexes on \texttt{last\_heartbeat} for efficient cleanup queries and \texttt{query\_count} for LFU cache warming.
-
-\subsection{Cleanup and Heartbeat}
-
-Automatic cleanup removes stale registrations:
-
-\begin{lstlisting}
-func (mr *MemoryRegistry) Cleanup(
-    timeout time.Duration) int {
-    
-    mr.mu.Lock()
-    defer mr.mu.Unlock()
-    
-    now := time.Now()
-    removed := 0
-    
-    for task, entries := range mr.services {
-        newEntries := []ServiceEntry{}
-        for _, entry := range entries {
-            age := now.Sub(entry.LastHeartbeat)
-            if age <= timeout {
-                newEntries = append(newEntries, entry)
-            } else {
-                removed++
-            }
-        }
-        
-        if len(newEntries) == 0 {
-            delete(mr.services, task)
-        } else {
-            mr.services[task] = newEntries
-        }
-    }
-    
-    return removed
-}
-\end{lstlisting}
-
-The server runs cleanup periodically:
-
-\begin{lstlisting}
-func runCleanupLoop(registry Registry, 
-    interval, timeout time.Duration) {
-    
-    ticker := time.NewTicker(interval)
-    defer ticker.Stop()
-    
-    for range ticker.C {
-        removed := registry.Cleanup(timeout)
-        if removed > 0 {
-            log.Printf("Cleaned %d stale entries", 
-                removed)
-        }
-    }
-}
-\end{lstlisting}
 
 \newpage
-\section{Evaluation, Results, and Conclusions}
+\section{Technical Highlights}
 
+\Section{Implementation Challenges}
+Here i will lay out key insights into areas of my project that presented key challenges to me. It details how I overcame them and, in particular, where I decided to cease further work in the scope of the project timeframe.
+\subsection{Server Cache Performance}
+The implementation of the cache appeared simple but produced several challenges. Having completed the cache implementation, I ran perforance tests with a combination of cache hits and misses. Initially I found that cache misses were actually faster than hits!
+After increasingly deep investigation I found that, though queries should be read intensive, because they incremented query counts and round robin it was write locking significantly.
+My solution was two-fold: firstly, I batched query count updates to the database as they were not necessary until the next cache warming. I then researched in to Atomics for the round robin and with these implemented the cache became significantly faster than the database.
+
+\subsection{Peer-to-Peer Challenges}
+Having implemented and tested the P2P mode for this project, I found that it struggled to scale with large numbers of nodes. 
+The issue pertained to the fact that, as the network grew, patterns of individual nodes communicating emerged. Many nodes were rarely contacted and therefore their routing tables were not updated with the latest information.
+In these cases the centralised approach was far more effective. What the network gained in robustness against node failure, it lost with scale.
+\subsection{Firewall-Mode}
+Firewall mode was a feature I implemented with the goal of allowing the TDS system (in centralised mode) to only serve up services that were routable for the requestor.
+This proved to be a significant challenge as the only method I devised was to import firewall rule file from the system administrator of any given application. This was deemed unacceptable as the separation of the TDS' routing table from the source of truth (the firewall) was a recipe for inconsistency.
+The feature was therefore not developed further but included as an artifact as further work could be done to improve the implementation.
+\subsection{Architectural Decisions}
+
+\section{Testing and Example Applications}
 \subsection{Testing Methodology}
 
-The TDS system underwent comprehensive evaluation across multiple dimensions:
-
-\subsubsection{Functional Testing}
+The TDS system underwent comprehensive testing to validate functionality.
 
 Unit tests validate individual component behavior:
+\subsubsection{Centralised Mode Testing}
+Testing was split into the two modes of operation, centalised and P2P. 
+
+
 \begin{itemize}
     \item Registry operations (register, query, cleanup)
     \item Transport layer message handling
@@ -791,138 +390,45 @@ Integration tests verify end-to-end workflows:
     \item Database persistence and recovery
     \item TLS handshake and authentication
 \end{itemize}
-
-\subsubsection{Performance Testing}
-
-The test environment simulates realistic production scenarios:
-
-\textbf{Load Testing Infrastructure:}
+\subsection{P2P Mode Testing}
+Peer to peer mode leverages the same fundamental packages as the centralised mode.
+However, with the introduction of the Distributed-Hash-Table a large number of acceptance criteria were introduced. 
 \begin{itemize}
-    \item Dummy services script: Spawns $N$ service instances that register with TDS and respond to data requests
-    \item Client query script: Spawns $M$ concurrent client threads performing query-and-send operations
-    \item Orchestrator: Coordinates multi-VM testing across distributed environments
+    \item DHT routing correctness (consistent hashing, finger tables)
+    \item Lookup latency and hop count
+    \item Load distribution across nodes
+    \item Node join/leave dynamics and stabilization
+    \item Network operation after bootstrap node loss
+    \item Node discovery and gossip protocol
 \end{itemize}
 
-\textbf{Test Scenarios:}
-\begin{enumerate}
-    \item \textit{Latency Test}: Measure query response time under varying load (1-1000 concurrent clients)
-    \item \textit{Throughput Test}: Maximum queries per second (QPS) before degradation
-    \item \textit{Scalability Test}: Registry performance with 10-10,000 registered services
-    \item \textit{Failure Recovery}: Service cleanup after heartbeat timeout
-    \item \textit{Cache Performance}: Hit rate and latency comparison for cached vs. uncached queries
-\end{enumerate}
+A point of particular interest was the k-nearest neighbours effectiveness in aleviating the eventual consistency issue with this architecture.
 
-\subsection{Performance Results}
 
-\subsubsection{Query Latency}
 
-Query latency measurements across different configurations:
+\subsubsection{Realistic Application Testing}
+To demonstrate the practical utility of TDS, I implemented a mock-up of the system that inspired it. 
+I created a highly abstracted version of a train ticketing, Oyster and contactless payment system. 
 
-\begin{table}[h]
-\centering
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-\textbf{Configuration} & \textbf{Median} & \textbf{P95} & \textbf{P99} \\
-\midrule
-UDP In-Memory & 0.8 ms & 1.2 ms & 1.8 ms \\
-TCP In-Memory & 1.1 ms & 1.6 ms & 2.3 ms \\
-TLS In-Memory & 2.4 ms & 3.9 ms & 5.1 ms \\
-UDP Store-Backed (cached) & 0.9 ms & 1.4 ms & 2.0 ms \\
-UDP Store-Backed (miss) & 8.3 ms & 12.1 ms & 15.7 ms \\
-\bottomrule
-\end{tabular}
-\caption{Query latency distribution (local network, 100 concurrent clients)}
-\end{table}
+The system specified can be found under the Simulation folder of the project repository.
 
-\textbf{Key Findings:}
+It contains a set of programs that simulate a full distributed system with stations, payment gates, fare calculation and very rough PCTR-tokenisation to simulate cardholder environment structure.
+Key features include:
 \begin{itemize}
-    \item UDP achieves sub-millisecond median latency for in-memory operations
-    \item TCP adds $\sim$30\% overhead due to connection establishment
-    \item TLS approximately doubles TCP latency due to encryption overhead
-    \item Cache hit rate $>$98\% for top 100 tasks under typical workloads
-    \item Database miss penalty acceptable at $<$16ms for P99
+    \item Station computers to batch transactions
+    \item Payment gates to process card and ticket presentations
+    \item Fare calculation service to compute trip costs
+    \item Multiple endpoints for ticket distribution to demonstrate load balancing
 \end{itemize}
 
-\subsubsection{Throughput}
+All of these devices were interconnected by querying the TDS system for service discovery.
+Of key note was that, although many issues arose developing this system and setting up the environment, 
+communication between devices was seamless. This was a testament to the robustness of the project as the only time I had to troubleshoot communication was when i forgot to start the TDS server itself.
 
-Maximum sustainable queries per second:
 
-\begin{table}[h]
-\centering
-\begin{tabular}{@{}lrr@{}}
-\toprule
-\textbf{Configuration} & \textbf{Max QPS} & \textbf{CPU Usage} \\
-\midrule
-UDP In-Memory & 45,000 & 68\% \\
-TCP In-Memory & 32,000 & 82\% \\
-TLS In-Memory & 18,000 & 91\% \\
-Store-Backed (100\% hit) & 42,000 & 71\% \\
-Store-Backed (50\% hit) & 12,000 & 89\% \\
-\bottomrule
-\end{tabular}
-\caption{Maximum throughput (4-core Intel i7, 16GB RAM)}
-\end{table}
 
-UDP achieves highest throughput due to minimal protocol overhead. TLS encryption significantly reduces throughput but remains acceptable for most deployments.
 
-\subsubsection{Scalability}
 
-Registry performance with increasing service count:
-
-\begin{table}[h]
-\centering
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-\textbf{Services} & \textbf{Memory} & \textbf{Query Latency} & \textbf{Cleanup Time} \\
-\midrule
-100 & 12 MB & 0.8 ms & 15 ms \\
-1,000 & 45 MB & 0.9 ms & 142 ms \\
-10,000 & 380 MB & 1.1 ms & 1.4 s \\
-50,000 & 1.8 GB & 1.5 ms & 7.2 s \\
-\bottomrule
-\end{tabular}
-\caption{Scalability characteristics}
-\end{table}
-
-Query latency remains nearly constant due to $O(1)$ map lookup. Memory scales linearly with service count. Cleanup time increases proportionally but remains acceptable since it runs periodically in the background.
-
-\subsection{P2P Mode Evaluation}
-
-The DHT implementation demonstrates distributed scalability:
-
-\begin{table}[h]
-\centering
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-\textbf{Nodes} & \textbf{Avg Hops} & \textbf{Lookup Latency} & \textbf{Load Balance} \\
-\midrule
-3 & 1.1 & 2.3 ms & 0.91 \\
-7 & 1.8 & 4.1 ms & 0.94 \\
-15 & 2.4 & 6.8 ms & 0.97 \\
-31 & 3.1 & 9.2 ms & 0.98 \\
-\bottomrule
-\end{tabular}
-\caption{DHT performance (Load Balance: coefficient of variation, 1.0 = perfect)}
-\end{table}
-
-The logarithmic hop count confirms $O(\log N)$ routing complexity. Load balance improves with more nodes as consistent hashing distributes tasks more evenly.
-
-\subsection{Security Evaluation}
-
-TLS mutual authentication successfully prevents unauthorized access:
-
-\begin{itemize}
-    \item Clients without valid certificates rejected during handshake
-    \item Man-in-the-middle attacks detected via certificate chain verification
-    \item Certificate expiry properly enforced
-    \item Cipher suite negotiation enforces strong encryption
-\end{itemize}
-
-Performance overhead: TLS adds $\sim$1.3ms latency and reduces throughput by $\sim$45\%, acceptable for security-sensitive deployments.
-
-\subsection{Lessons Learned}
-
-\subsubsection{Architectural Decisions}
 
 \textbf{Dual-mode design:} Supporting both centralized and P2P modes within a single codebase introduced complexity but provides valuable deployment flexibility. The abstraction layers (Registry interface, transport adapters) successfully isolated mode-specific logic.
 
