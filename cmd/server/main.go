@@ -44,9 +44,9 @@ var (
 	storeURL string
 
 	// Firewall configuration
-	firewallRulesPath     string
-	firewallEnabledFlag   bool
-	firewallDisabledFlag  bool
+	firewallRulesPath    string
+	firewallEnabledFlag  bool
+	firewallDisabledFlag bool
 
 	// UI configuration
 	forceUI bool
@@ -62,7 +62,7 @@ var (
 	searchField = tview.NewInputField().SetLabel(" Filter: ")
 
 	// Filter state
-	currentFilter = ""
+	currentFilter       = ""
 	currentSelectedTask = "" // Track which task is currently selected
 
 	// File logging
@@ -127,7 +127,7 @@ func logEvent(message string) {
 // It ensures the error is visible even when TUI mode redirects stderr
 func fatalError(message string) {
 	logEvent(fmt.Sprintf("FATAL: %s", message))
-	
+
 	// If TUI mode, write to original stderr so user can see the error
 	if runningTUI && originalStderr != nil {
 		fmt.Fprintf(originalStderr, "\nFATAL ERROR: %s\n", message)
@@ -135,7 +135,7 @@ func fatalError(message string) {
 	} else if !runningTUI {
 		fmt.Fprintf(os.Stderr, "FATAL: %s\n", message)
 	}
-	
+
 	// Give time for log message to be written to file
 	time.Sleep(100 * time.Millisecond)
 	os.Exit(1)
@@ -198,13 +198,13 @@ func uiUpdateCoordinator() {
 				var firstTask string
 				var taskToShow string // Track which task to display details for
 				filterLower := strings.ToLower(currentFilter)
-				
+
 				for task, entries := range servicesMapCopy {
 					// Apply filter: show only tasks that contain the filter string (case-insensitive)
 					if filterLower != "" && !strings.Contains(strings.ToLower(task), filterLower) {
 						continue
 					}
-					
+
 					label := fmt.Sprintf("%s (%d)", task, len(entries))
 					t := task
 					if firstTask == "" {
@@ -231,25 +231,18 @@ func uiUpdateCoordinator() {
 					taskToShow = firstTask
 					currentSelectedTask = firstTask
 				}
-				
+
 				// Always update the details table to reflect current state
 				if taskToShow != "" {
 					if services, ok := servicesMapCopy[taskToShow]; ok {
-						// Temporarily unlock for the nested call
-						uiMutex.Unlock()
-						updateDetailsTable(services)
-						uiMutex.Lock()
+						renderDetailsTable(services)
 					} else {
 						// Task exists but has no services - clear the table
-						uiMutex.Unlock()
-						updateDetailsTable(nil)
-						uiMutex.Lock()
+						renderDetailsTable(nil)
 					}
 				} else {
 					// No tasks at all - clear the details table
-					uiMutex.Unlock()
-					updateDetailsTable(nil)
-					uiMutex.Lock()
+					renderDetailsTable(nil)
 				}
 			})
 		}
@@ -260,7 +253,10 @@ func uiUpdateCoordinator() {
 func updateDetailsTable(services []registry.ServiceEntry) {
 	uiMutex.Lock()
 	defer uiMutex.Unlock()
+	renderDetailsTable(services)
+}
 
+func renderDetailsTable(services []registry.ServiceEntry) {
 	detailTable.Clear()
 	detailTable.SetCell(0, 0, tview.NewTableCell(" Address ").
 		SetSelectable(false).
@@ -374,7 +370,7 @@ func askTerminalOptions() (string, bool, bool) {
 
 	// Interactive prompts
 	reader := bufio.NewReader(os.Stdin)
-	
+
 	// Transport mode prompt (skip if flag was set)
 	if !transportFlagSet {
 		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp 3) tls. Enter 1, 2, or 3 [1]: ")
@@ -417,7 +413,7 @@ func askTerminalOptions() (string, bool, bool) {
 			storeURL = strings.TrimSpace(dbURL)
 			if storeURL != "" {
 				fmt.Fprintln(os.Stderr, "Database persistence enabled")
-				
+
 				// Cache size prompt (only if database is enabled and not set via flag)
 				if cacheMaxSize == 100 { // Default value, not set via flag
 					fmt.Fprint(os.Stderr, "Enter cache max size (0 for unlimited) [100]: ")
@@ -478,6 +474,336 @@ func askTerminalOptions() (string, bool, bool) {
 	return transportMode, runTUI, forceUI
 }
 
+func processTransportModeFlags(tcpMode, udpMode, tlsMode bool) {
+	if tlsMode {
+		useTLS = true
+	}
+	if tcpMode && !tlsMode {
+		// Explicitly TCP without TLS
+		useTLS = false
+	}
+	if udpMode {
+		useTLS = false
+	}
+}
+
+func setupLogging() func() {
+	if err := initLogFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to initialize log file: %v\n", err)
+		logWriter = os.Stderr // Fallback to stderr only
+	}
+
+	return func() {
+		if logFile != nil {
+			logFile.Close()
+		}
+	}
+}
+
+func determineEffectiveFirewallEnabled() bool {
+	// Determine effective firewall mode AFTER any interactive prompts.
+	// Backwards compatible behavior: providing --firewall-rules enables firewall-aware routing.
+	switch {
+	case firewallDisabledFlag:
+		return false
+	case firewallEnabledFlag:
+		return true
+	case firewallRulesPath != "":
+		return true
+	default:
+		return false
+	}
+}
+
+func configureTUIIO(runTUI bool) func() {
+	if !runTUI {
+		return func() {}
+	}
+
+	// Set runningTUI immediately so logEvent() queues messages for TUI
+	runningTUI = true
+
+	// Save original stderr for restoration on exit
+	originalStderr = os.Stderr
+
+	// Open actual /dev/null and redirect stderr to it
+	var devNull *os.File
+	if f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
+		devNull = f
+		os.Stderr = devNull
+	}
+
+	// CRITICAL: Start the UI update coordinator NOW, before any database initialization
+	// This ensures log messages from database setup are properly queued and processed
+	go uiUpdateCoordinator()
+
+	return func() {
+		os.Stderr = originalStderr
+		if devNull != nil {
+			devNull.Close()
+		}
+	}
+}
+
+func configureFirewall(runTUI bool, firewallEnabled bool) *firewall.Firewall {
+	var fw *firewall.Firewall
+	if !firewallEnabled {
+		if firewallRulesPath != "" {
+			logEvent(fmt.Sprintf("Firewall disabled; ignoring firewall rules file %s", firewallRulesPath))
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "firewall disabled; ignoring firewall rules file %s\n", firewallRulesPath)
+			}
+		} else {
+			logEvent("Firewall disabled")
+			if !runTUI {
+				fmt.Fprintln(os.Stderr, "firewall disabled")
+			}
+		}
+		return fw
+	}
+
+	if firewallRulesPath != "" {
+		var err error
+		fw, err = firewall.LoadFromFile(firewallRulesPath)
+		if err != nil {
+			fatalError(fmt.Sprintf("failed to load firewall rules: %v", err))
+		}
+		logEvent(fmt.Sprintf("Firewall enabled: loaded %d firewall rules from %s", fw.RuleCount(), firewallRulesPath))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "firewall enabled: loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
+		}
+		return fw
+	}
+
+	// Enabled but no rules -> permissive mode.
+	fw = firewall.NewFirewall()
+	logEvent("Firewall enabled (permissive): no rules file specified; all requests will be allowed")
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "firewall enabled (permissive): no rules file specified; all requests will be allowed")
+	}
+	return fw
+}
+
+func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
+	// Check for --store-url flag or DATABASE_URL environment variable for persistence.
+	// Flag takes precedence over environment variable
+	if storeURL == "" {
+		storeURL = os.Getenv("DATABASE_URL")
+	}
+
+	if storeURL != "" {
+		// Initialize store-backed registry
+		logEvent("Initializing postgres persistent store")
+		s, err := postgres.NewPostgresStore(storeURL)
+		if err != nil {
+			fatalError(fmt.Sprintf("failed to initialize postgres store: %v", err))
+		}
+
+		// Run migrations
+		logEvent("Running database migrations")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := s.Migrate(ctx); err != nil {
+			cancel()
+			s.Close()
+			fatalError(fmt.Sprintf("failed to run migrations: %v", err))
+		}
+		cancel()
+
+		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
+		if fw != nil {
+			storeReg.SetFirewall(fw)
+		}
+
+		// Warm the in-memory cache from the database on startup
+		logEvent("Warming cache from database")
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		if err := storeReg.WarmCacheFromDB(ctx); err != nil {
+			logEvent(fmt.Sprintf("WARNING: failed to warm cache from db: %v", err))
+			if !runTUI {
+				fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
+			}
+		} else {
+			if cacheMaxSize > 0 {
+				logEvent(fmt.Sprintf("Cache warmed with top %d most queried tasks from database", cacheMaxSize))
+				if !runTUI {
+					fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", cacheMaxSize)
+				}
+			} else {
+				logEvent("Cache warmed from database (unlimited)")
+				if !runTUI {
+					fmt.Fprintln(os.Stderr, "cache warmed from database (unlimited)")
+				}
+			}
+		}
+		cancel()
+
+		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", cacheMaxSize))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", cacheMaxSize)
+		}
+		return storeReg
+	}
+
+	// Fall back to in-memory registry
+	memReg := registry.NewMemoryRegistry()
+	if fw != nil {
+		memReg.SetFirewall(fw)
+	}
+	logEvent("Using in-memory registry (no persistence)")
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
+	}
+	return memReg
+}
+
+func startTransportServer(transportMode string, runTUI bool) {
+	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", listenPort, transportMode))
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
+	}
+
+	switch transportMode {
+	case "tls":
+		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
+		go func() {
+			if err := transport.StartTCPServerTLS(reg, listenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+				fatalError(fmt.Sprintf("TLS server error: %v", err))
+			}
+		}()
+	case "tcp":
+		go func() {
+			if err := transport.StartTCPServer(reg, listenPort, logEvent); err != nil {
+				fatalError(fmt.Sprintf("TCP server error: %v", err))
+			}
+		}()
+	default:
+		go func() {
+			if err := transport.StartUDPServer(reg, listenPort, logEvent); err != nil {
+				fatalError(fmt.Sprintf("UDP server error: %v", err))
+			}
+		}()
+	}
+
+	logEvent("Server started successfully")
+	if !runTUI {
+		fmt.Fprintln(os.Stderr, "Server correctly started")
+	}
+	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
+	go transport.BroadcastServerInfo(listenPort, heartbeatTimeout, serverStartTime)
+}
+
+func setupUILayout() {
+	// Build layout
+	flex := tview.NewFlex()
+	left := tview.NewFlex().SetDirection(tview.FlexRow)
+	left.AddItem(searchField, 3, 0, false)
+	left.AddItem(taskList, 0, 1, true)
+	right := tview.NewFlex().SetDirection(tview.FlexRow)
+	right.AddItem(detailTable, 0, 3, false)
+	right.AddItem(logView, 0, 1, false)
+	flex.AddItem(left, 30, 0, true)
+	flex.AddItem(right, 0, 1, false)
+
+	// Configure search field with live filtering
+	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
+	searchField.SetChangedFunc(func(text string) {
+		currentFilter = text
+		requestDashboardUpdate() // Trigger refresh with filter
+	})
+	searchField.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEscape {
+			app.SetFocus(taskList)
+		}
+	})
+
+	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
+	detailTable.SetBorder(true).SetTitle("Details")
+	detailTable.SetSeparator('|') // Add column separators
+	logView.SetBorder(true).SetTitle("Log")
+
+	// Set up keyboard navigation
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			// Toggle between filter and task list
+			if app.GetFocus() == searchField {
+				app.SetFocus(taskList)
+			} else {
+				app.SetFocus(searchField)
+			}
+			return nil
+		}
+		return event
+	})
+
+	// Start TUI
+	if err := app.SetRoot(flex, true).Run(); err != nil {
+		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
+		os.Exit(1)
+	}
+	logEvent("TUI exited")
+	if originalStderr != nil {
+		fmt.Fprintln(originalStderr, "TUI exited")
+	}
+}
+
+func runHeadlessLoop() {
+	logEvent("Running in headless mode (no TUI)")
+	fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
+
+	// For headless mode, just run cleanup, no UI refresh needed
+	ticker := time.NewTicker(cleanupInterval)
+	go func() {
+		for range ticker.C {
+			removed := reg.Cleanup(heartbeatTimeout)
+			if removed > 0 {
+				logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
+			}
+		}
+	}()
+	select {}
+}
+
+func runTUILoop() {
+	logEvent("Starting TUI mode")
+
+	// TUI mode: start tickers and UI refresh
+	// Periodic cleanup
+	ticker := time.NewTicker(cleanupInterval)
+	go func() {
+		for range ticker.C {
+			removed := reg.Cleanup(heartbeatTimeout)
+			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
+
+			// Warm cache from DB to ensure UI reflects deleted entries
+			if storeReg, ok := reg.(*registry.StoreBackedRegistry); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := storeReg.WarmCacheFromDB(ctx); err != nil {
+					logEvent(fmt.Sprintf("WARNING: failed to warm cache during TUI cleanup loop: %v", err))
+				}
+				cancel()
+			}
+
+			requestDashboardUpdate()
+		}
+	}()
+
+	// Periodic UI refresh
+	uiTicker := time.NewTicker(2 * time.Second)
+	go func() {
+		for range uiTicker.C {
+			requestDashboardUpdate()
+		}
+	}()
+
+	// Start initial data refresh AFTER UI is ready
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		requestDashboardUpdate()
+	}()
+
+	setupUILayout()
+}
+
 func main() {
 	// Parse command-line flags
 	flag.BoolVar(&firewallEnabledFlag, "firewall", false, "Enable firewall-aware routing (if no rules file is provided, operates in permissive mode)")
@@ -513,310 +839,23 @@ func main() {
 
 	flag.Parse()
 
-	// Process transport mode flags
-	if *tlsMode {
-		useTLS = true
-	}
-	if *tcpMode && !*tlsMode {
-		// Explicitly TCP without TLS
-		useTLS = false
-	}
-	if *udpMode {
-		useTLS = false
-	}
-
-	// Initialize file logging
-	if err := initLogFile(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to initialize log file: %v\n", err)
-		logWriter = os.Stderr // Fallback to stderr only
-	}
-	defer func() {
-		if logFile != nil {
-			logFile.Close()
-		}
-	}()
+	processTransportModeFlags(*tcpMode, *udpMode, *tlsMode)
+	defer setupLogging()()
 
 	// Gather terminal options before starting any server output.
 	transportMode, runTUI, _ := askTerminalOptions()
+	defer configureTUIIO(runTUI)()
 
-	// Determine effective firewall mode AFTER any interactive prompts.
-	// Backwards compatible behavior: providing --firewall-rules enables firewall-aware routing.
-	firewallEnabled := false
-	switch {
-	case firewallDisabledFlag:
-		firewallEnabled = false
-	case firewallEnabledFlag:
-		firewallEnabled = true
-	case firewallRulesPath != "":
-		firewallEnabled = true
-	default:
-		firewallEnabled = false
-	}
+	firewallEnabled := determineEffectiveFirewallEnabled()
+	fw := configureFirewall(runTUI, firewallEnabled)
 
-	// If running TUI, redirect stderr to discard to prevent corruption
-	if runTUI {
-		// Set runningTUI immediately so logEvent() queues messages for TUI
-		runningTUI = true
-		// Save original stderr for restoration on exit
-		originalStderr = os.Stderr
-		// Open actual /dev/null and redirect stderr to it
-		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-		if err == nil {
-			os.Stderr = devNull
-			defer devNull.Close()
-		}
-		defer func() {
-			// Restore stderr on exit
-			os.Stderr = originalStderr
-		}()
+	reg = initializeRegistry(runTUI, fw)
+	startTransportServer(transportMode, runTUI)
 
-		// CRITICAL: Start the UI update coordinator NOW, before any database initialization
-		// This ensures log messages from database setup are properly queued and processed
-		go uiUpdateCoordinator()
-	}
-
-	// Firewall configuration
-	var fw *firewall.Firewall
-	if !firewallEnabled {
-		if firewallRulesPath != "" {
-			logEvent(fmt.Sprintf("Firewall disabled; ignoring firewall rules file %s", firewallRulesPath))
-			if !runTUI {
-				fmt.Fprintf(os.Stderr, "firewall disabled; ignoring firewall rules file %s\n", firewallRulesPath)
-			}
-		} else {
-			logEvent("Firewall disabled")
-			if !runTUI {
-				fmt.Fprintln(os.Stderr, "firewall disabled")
-			}
-		}
-	} else {
-		if firewallRulesPath != "" {
-			var err error
-			fw, err = firewall.LoadFromFile(firewallRulesPath)
-			if err != nil {
-				fatalError(fmt.Sprintf("failed to load firewall rules: %v", err))
-			}
-			logEvent(fmt.Sprintf("Firewall enabled: loaded %d firewall rules from %s", fw.RuleCount(), firewallRulesPath))
-			if !runTUI {
-				fmt.Fprintf(os.Stderr, "firewall enabled: loaded %d firewall rules from %s\n", fw.RuleCount(), firewallRulesPath)
-			}
-		} else {
-			// Enabled but no rules -> permissive mode.
-			fw = firewall.NewFirewall()
-			logEvent("Firewall enabled (permissive): no rules file specified; all requests will be allowed")
-			if !runTUI {
-				fmt.Fprintln(os.Stderr, "firewall enabled (permissive): no rules file specified; all requests will be allowed")
-			}
-		}
-	}
-
-	// Check for --store-url flag or DATABASE_URL environment variable for persistence.
-	// Flag takes precedence over environment variable
-	if storeURL == "" {
-		storeURL = os.Getenv("DATABASE_URL")
-	}
-
-	if storeURL != "" {
-		// Initialize store-backed registry
-		logEvent("Initializing postgres persistent store")
-		s, err := postgres.NewPostgresStore(storeURL)
-		if err != nil {
-			fatalError(fmt.Sprintf("failed to initialize postgres store: %v", err))
-		}
-
-		// Run migrations
-		logEvent("Running database migrations")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := s.Migrate(ctx); err != nil {
-			cancel()
-			s.Close()
-			fatalError(fmt.Sprintf("failed to run migrations: %v", err))
-		}
-		cancel()
-		
-		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
-		if fw != nil {
-			storeReg.SetFirewall(fw)
-		}
-
-		// Warm the in-memory cache from the database on startup
-		logEvent("Warming cache from database")
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if err := storeReg.WarmCacheFromDB(ctx); err != nil {
-			logEvent(fmt.Sprintf("WARNING: failed to warm cache from db: %v", err))
-			if !runTUI {
-				fmt.Fprintf(os.Stderr, "warning: failed to warm cache from db: %v\n", err)
-			}
-		} else {
-			if cacheMaxSize > 0 {
-				logEvent(fmt.Sprintf("Cache warmed with top %d most queried tasks from database", cacheMaxSize))
-				if !runTUI {
-					fmt.Fprintf(os.Stderr, "cache warmed with top %d most queried tasks from database\n", cacheMaxSize)
-				}
-			} else {
-				logEvent("Cache warmed from database (unlimited)")
-				if !runTUI {
-					fmt.Fprintln(os.Stderr, "cache warmed from database (unlimited)")
-				}
-			}
-		}
-		cancel()
-
-		reg = storeReg
-		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", cacheMaxSize))
-		if !runTUI {
-			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", cacheMaxSize)
-		}
-	} else {
-		// Fall back to in-memory registry
-		memReg := registry.NewMemoryRegistry()
-		if fw != nil {
-			memReg.SetFirewall(fw)
-		}
-		reg = memReg
-		logEvent("Using in-memory registry (no persistence)")
-		if !runTUI {
-			fmt.Fprintln(os.Stderr, "using in-memory registry (no persistence)")
-		}
-	}
-
-	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", listenPort, transportMode))
 	if !runTUI {
-		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
-	}
-	switch transportMode {
-	case "tls":
-		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
-		go func() {
-			if err := transport.StartTCPServerTLS(reg, listenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
-				fatalError(fmt.Sprintf("TLS server error: %v", err))
-			}
-		}()
-	case "tcp":
-		go func() {
-			if err := transport.StartTCPServer(reg, listenPort, logEvent); err != nil {
-				fatalError(fmt.Sprintf("TCP server error: %v", err))
-			}
-		}()
-	default:
-		go func() {
-			if err := transport.StartUDPServer(reg, listenPort, logEvent); err != nil {
-				fatalError(fmt.Sprintf("UDP server error: %v", err))
-			}
-		}()
-	}
-	logEvent("Server started successfully")
-	if !runTUI {
-		fmt.Fprintln(os.Stderr, "Server correctly started")
-	}
-	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
-	// Broadcast server info on boot (fire-and-forget)
-	go transport.BroadcastServerInfo(listenPort, heartbeatTimeout, serverStartTime)
-
-	// Build layout
-	flex := tview.NewFlex()
-	left := tview.NewFlex().SetDirection(tview.FlexRow)
-	left.AddItem(searchField, 3, 0, false)
-	left.AddItem(taskList, 0, 1, true)
-	right := tview.NewFlex().SetDirection(tview.FlexRow)
-	right.AddItem(detailTable, 0, 3, false)
-	right.AddItem(logView, 0, 1, false)
-	flex.AddItem(left, 30, 0, true)
-	flex.AddItem(right, 0, 1, false)
-
-	// Configure search field with live filtering
-	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
-	searchField.SetChangedFunc(func(text string) {
-		currentFilter = text
-		requestDashboardUpdate() // Trigger refresh with filter
-	})
-	searchField.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEscape {
-			app.SetFocus(taskList)
-		}
-	})
-	
-	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
-	detailTable.SetBorder(true).SetTitle("Details")
-	detailTable.SetSeparator('|') // Add column separators
-	logView.SetBorder(true).SetTitle("Log")
-	
-	// Set up keyboard navigation
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyTab {
-			// Toggle between filter and task list
-			if app.GetFocus() == searchField {
-				app.SetFocus(taskList)
-			} else {
-				app.SetFocus(searchField)
-			}
-			return nil
-		}
-		return event
-	})
-
-	// Decide whether to run the TUI based on earlier prompts.
-	if !runTUI {
-		logEvent("Running in headless mode (no TUI)")
-		fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
-		// For headless mode, just run cleanup, no UI refresh needed
-		ticker := time.NewTicker(cleanupInterval)
-		go func() {
-			for range ticker.C {
-				removed := reg.Cleanup(heartbeatTimeout)
-				if removed > 0 {
-					logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
-				}
-			}
-		}()
-		select {}
+		runHeadlessLoop()
+		return
 	}
 
-	logEvent("Starting TUI mode")
-	// Note: runningTUI already set to true earlier
-	// Note: uiUpdateCoordinator already started during initialization
-
-	// TUI mode: start tickers and UI refresh
-	// Periodic cleanup
-	ticker := time.NewTicker(cleanupInterval)
-	go func() {
-		for range ticker.C {
-			removed := reg.Cleanup(heartbeatTimeout)
-			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
-
-			// Warm cache from DB to ensure UI reflects deleted entries
-			if storeReg, ok := reg.(*registry.StoreBackedRegistry); ok {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = storeReg.WarmCacheFromDB(ctx)
-				cancel()
-			}
-
-			requestDashboardUpdate()
-		}
-	}()
-
-	// Periodic UI refresh
-	uiTicker := time.NewTicker(2 * time.Second)
-	go func() {
-		for range uiTicker.C {
-			requestDashboardUpdate()
-		}
-	}()
-
-	// Start initial data refresh AFTER UI is ready
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		requestDashboardUpdate()
-	}()
-
-	// Start TUI
-	if err := app.SetRoot(flex, true).Run(); err != nil {
-		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
-		os.Exit(1)
-	}
-	logEvent("TUI exited")
-	// Stderr is restored by defer, so this will be visible if we manually restore it
-	if originalStderr != nil {
-		fmt.Fprintln(originalStderr, "TUI exited")
-	}
+	runTUILoop()
 }
