@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"tds/pkg/registry"
 )
@@ -58,6 +59,8 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 
 		switch msg.Command {
 		case "REGISTER":
+			msg.Task = strings.TrimSpace(msg.Task)
+			msg.Address = strings.TrimSpace(msg.Address)
 			if msg.Task == "" || msg.Address == "" {
 				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task and address required"})
 				continue
@@ -77,6 +80,7 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 			_ = encoder.Encode(CentralizedResponse{Status: "OK"})
 
 		case "QUERY":
+			msg.Task = strings.TrimSpace(msg.Task)
 			if msg.Task == "" {
 				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task required"})
 				continue

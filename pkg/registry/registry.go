@@ -8,6 +8,8 @@ import (
 
 var ErrNotFound = errors.New("service not found")
 var ErrNoAllowedService = errors.New("no service allowed by firewall")
+var ErrInvalidTaskName = errors.New("invalid task name")
+var ErrInvalidAddress = errors.New("invalid service address")
 
 type ServiceEntry struct {
 	Address       string

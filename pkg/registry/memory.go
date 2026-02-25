@@ -3,6 +3,7 @@ package registry
 import (
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"tds/pkg/firewall"
@@ -34,6 +35,12 @@ func (registry *MemoryRegistry) SetFirewall(fw *firewall.Firewall) {
 }
 
 func (registry *MemoryRegistry) Register(task, addr string) {
+	task = strings.TrimSpace(task)
+	addr = strings.TrimSpace(addr)
+	if task == "" || addr == "" {
+		return
+	}
+
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	now := time.Now()
@@ -59,6 +66,12 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 }
 
 func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity int) {
+	task = strings.TrimSpace(task)
+	addr = strings.TrimSpace(addr)
+	if task == "" || addr == "" {
+		return
+	}
+
 	if capacity <= 0 {
 		capacity = 1
 	}
@@ -92,6 +105,11 @@ func (registry *MemoryRegistry) GetService(task string) (string, error) {
 }
 
 func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP net.IP) (string, error) {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return "", ErrInvalidTaskName
+	}
+
 	// Copy current addresses under RLock so we don't hold the lock while
 	// doing parsing / firewall checks.
 	registry.mutex.RLock()

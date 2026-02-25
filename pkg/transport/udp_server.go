@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"tds/pkg/registry"
 )
@@ -60,6 +61,8 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 
 	switch msg.Command {
 	case "REGISTER":
+		msg.Task = strings.TrimSpace(msg.Task)
+		msg.Address = strings.TrimSpace(msg.Address)
 		if msg.Task == "" || msg.Address == "" {
 			respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "task and address required"})
 			_, _ = conn.WriteToUDP(respData, remote)
@@ -82,6 +85,7 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 		return
 
 	case "QUERY":
+		msg.Task = strings.TrimSpace(msg.Task)
 		if msg.Task == "" {
 			respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "task required"})
 			_, _ = conn.WriteToUDP(respData, remote)
