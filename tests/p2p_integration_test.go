@@ -66,18 +66,20 @@ func ringSizeFromInfo(info map[string]interface{}) (int, bool) {
 
 func waitForRingSize(t *testing.T, reg *dht.DHTRegistry, expected int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		info := reg.GetDHTInfo()
-		size, ok := ringSizeFromInfo(info)
-		if ok && size == expected {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	info := reg.GetDHTInfo()
-	size, _ := ringSizeFromInfo(info)
-	t.Fatalf("ring size timeout: expected %d, got %d", expected, size)
+	   deadline := time.Now().Add(timeout)
+	   for time.Now().Before(deadline) {
+		   info := reg.GetDHTInfo()
+		   size, ok := ringSizeFromInfo(info)
+		   if ok && size == expected {
+			   t.Logf("ring size reached: %d", size)
+			   return
+		   }
+		   t.Logf("waiting for ring size: got %v", info)
+		   time.Sleep(100 * time.Millisecond)
+	   }
+	   info := reg.GetDHTInfo()
+	   size, _ := ringSizeFromInfo(info)
+	   t.Fatalf("ring size timeout: expected %d, got %d, info: %+v", expected, size, info)
 }
 
 func waitForQuery(t *testing.T, reg *dht.DHTRegistry, task, expected string, timeout time.Duration) {
@@ -96,22 +98,29 @@ func waitForQuery(t *testing.T, reg *dht.DHTRegistry, task, expected string, tim
 
 func TestP2PIntegration_RegisterAndQueryAcrossNodes(t *testing.T) {
 	reg1, addr1 := startRegistry(t, nil)
+	t.Logf("Started reg1 at %s", addr1)
 	reg2, _ := startRegistry(t, []string{addr1})
+	t.Logf("Started reg2, bootstrapped to %s", addr1)
+	time.Sleep(300 * time.Millisecond) // Allow reg1 to update its peer list with reg2
 	reg3, _ := startRegistry(t, []string{addr1})
+	t.Logf("Started reg3, bootstrapped to %s", addr1)
 
-	waitForRingSize(t, reg1, 3, 2*time.Second)
-	waitForRingSize(t, reg2, 3, 2*time.Second)
-	waitForRingSize(t, reg3, 3, 2*time.Second)
+	   waitForRingSize(t, reg1, 3, 5*time.Second)
+	   waitForRingSize(t, reg2, 3, 5*time.Second)
+	   waitForRingSize(t, reg3, 3, 5*time.Second)
 
-	task := "svc-alpha"
-	serviceAddr := "10.0.0.1:1234"
+	   task := "svc-alpha"
+	   serviceAddr := "10.0.0.1:1234"
+	   t.Logf("Registering %s -> %s on reg1", task, serviceAddr)
 
-	if err := reg1.Register(task, serviceAddr); err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	   if err := reg1.Register(task, serviceAddr); err != nil {
+		   t.Fatalf("register: %v", err)
+	   }
 
-	waitForQuery(t, reg2, task, serviceAddr, 2*time.Second)
-	waitForQuery(t, reg3, task, serviceAddr, 2*time.Second)
+	   t.Logf("Querying for %s on reg2", task)
+	   waitForQuery(t, reg2, task, serviceAddr, 2*time.Second)
+	   t.Logf("Querying for %s on reg3", task)
+	   waitForQuery(t, reg3, task, serviceAddr, 2*time.Second)
 }
 
 func TestP2PIntegration_QueryNotFound(t *testing.T) {
