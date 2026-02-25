@@ -1,3 +1,4 @@
+
 package dht
 
 import (
@@ -10,6 +11,11 @@ import (
 	"sync"
 	"time"
 )
+
+// NotResponsiblePayload is the payload for NOT_RESPONSIBLE replies
+type NotResponsiblePayload struct {
+	Closest []string `json:"closest"`
+}
 
 var netLogger = log.New(os.Stdout, "[dht] ", log.LstdFlags)
 
@@ -203,12 +209,21 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			}
 		}
 
-		// Not in k-closest, reject (no forwarding)
-		netLogger.Printf("rejected store for %s (not in k-closest)", sp.Task)
-		return &Message{
-			Type:   "NOT_RESPONSIBLE",
-			Sender: dn.dht.self.Address,
-		}
+		   // Not in k-closest, reject but suggest closest known nodes
+		   closestNodes := dn.dht.FindKClosestNodes(sp.Task, ReplicationFactor)
+		   closestAddrs := make([]string, 0, len(closestNodes))
+		   for _, n := range closestNodes {
+			   if n != nil {
+				   closestAddrs = append(closestAddrs, n.Address)
+			   }
+		   }
+		   payload, _ := json.Marshal(NotResponsiblePayload{Closest: closestAddrs})
+		   netLogger.Printf("rejected store for %s (not in k-closest), suggesting: %v", sp.Task, closestAddrs)
+		   return &Message{
+			   Type:    "NOT_RESPONSIBLE",
+			   Sender:  dn.dht.self.Address,
+			   Payload: payload,
+		   }
 
 	case MsgFind:
 		var fp FindPayload
@@ -361,49 +376,77 @@ func (dn *DHTNetwork) sendMessage(addr string, msg *Message) (*Message, error) {
 
 // Store sends a STORE request to the k-closest nodes (no forwarding)
 func (dn *DHTNetwork) Store(task, address string) error {
-	kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
+	   // To avoid infinite loops, keep track of attempted nodes
+	   attempted := make(map[string]struct{})
+	   queue := make([]string, 0)
+	   kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
+	   for _, node := range kClosest {
+		   if node != nil {
+			   queue = append(queue, node.Address)
+		   }
+	   }
 
-	successCount := 0
-	var lastErr error
+	   successCount := 0
+	   var lastErr error
 
-	// Store on all k-closest nodes
-	for _, node := range kClosest {
-		if node.ID == dn.dht.self.ID {
-			// Store locally
-			dn.dht.StoreTask(task, address)
-			netLogger.Printf("stored locally (k=%d): %s -> %s", ReplicationFactor, task, address)
-			successCount++
-		} else {
-			// Send to peer
-			payload, _ := json.Marshal(StorePayload{
-				Task:    task,
-				Address: address,
-			})
+	   for len(queue) > 0 {
+		   addr := queue[0]
+		   queue = queue[1:]
+		   if _, seen := attempted[addr]; seen {
+			   continue
+		   }
+		   attempted[addr] = struct{}{}
 
-			msg := Message{
-				Type:    MsgStore,
-				Sender:  dn.dht.self.Address,
-				Payload: payload,
-			}
+		   if addr == dn.dht.self.Address {
+			   dn.dht.StoreTask(task, address)
+			   netLogger.Printf("stored locally (k=%d): %s -> %s", ReplicationFactor, task, address)
+			   successCount++
+			   continue
+		   }
 
-			_, err := dn.sendMessage(node.Address, &msg)
-			if err != nil {
-				netLogger.Printf("failed to store on %s: %v", node.Address, err)
-				lastErr = err
-			} else {
-				netLogger.Printf("stored on %s (k=%d): %s -> %s", node.Address, ReplicationFactor, task, address)
-				successCount++
-			}
-		}
-	}
+		   payload, _ := json.Marshal(StorePayload{
+			   Task:    task,
+			   Address: address,
+		   })
+		   msg := Message{
+			   Type:    MsgStore,
+			   Sender:  dn.dht.self.Address,
+			   Payload: payload,
+		   }
 
-	// Require at least one successful store
-	if successCount == 0 {
-		return fmt.Errorf("failed to store on any node: %w", lastErr)
-	}
+		   resp, err := dn.sendMessage(addr, &msg)
+		   if err != nil {
+			   netLogger.Printf("failed to store on %s: %v", addr, err)
+			   lastErr = err
+			   continue
+		   }
 
-	netLogger.Printf("store complete: %d/%d replicas for %s", successCount, len(kClosest), task)
-	return nil
+		   if resp.Type == "OK" {
+			   netLogger.Printf("stored on %s (k=%d): %s -> %s", addr, ReplicationFactor, task, address)
+			   successCount++
+		   } else if resp.Type == "NOT_RESPONSIBLE" && len(resp.Payload) > 0 {
+			   var nr NotResponsiblePayload
+			   if err := json.Unmarshal(resp.Payload, &nr); err == nil {
+				   for _, newAddr := range nr.Closest {
+					   // Add new nodes to peer list
+					   dn.dht.AddPeer(newAddr)
+					   if _, seen := attempted[newAddr]; !seen {
+						   queue = append(queue, newAddr)
+					   }
+				   }
+				   netLogger.Printf("NOT_RESPONSIBLE from %s, suggested: %v", addr, nr.Closest)
+			   }
+		   } else {
+			   netLogger.Printf("unexpected response from %s: %s", addr, resp.Type)
+		   }
+	   }
+
+	   if successCount == 0 {
+		   return fmt.Errorf("failed to store on any node: %w", lastErr)
+	   }
+
+	   netLogger.Printf("store complete: %d replicas for %s", successCount, task)
+	   return nil
 }
 
 // Find sends a FIND request to retrieve task addresses from k-closest nodes

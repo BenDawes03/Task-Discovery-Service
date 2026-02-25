@@ -101,7 +101,6 @@ func TestP2PIntegration_RegisterAndQueryAcrossNodes(t *testing.T) {
 	t.Logf("Started reg1 at %s", addr1)
 	reg2, _ := startRegistry(t, []string{addr1})
 	t.Logf("Started reg2, bootstrapped to %s", addr1)
-	time.Sleep(300 * time.Millisecond) // Allow reg1 to update its peer list with reg2
 	reg3, _ := startRegistry(t, []string{addr1})
 	t.Logf("Started reg3, bootstrapped to %s", addr1)
 
