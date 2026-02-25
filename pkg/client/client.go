@@ -16,15 +16,32 @@ import (
 // Register sends a REGISTER command to the server. Protocol is selected via
 // the TDS_SERVER_PROTO environment variable ("tcp" or "udp", default "udp").
 func Register(serverAddr, task, address string) error {
+	return RegisterWithCapacity(serverAddr, task, address, 1)
+}
+
+// RegisterWithCapacity sends a REGISTER command with an optional capacity hint.
+// capacity <= 0 is treated as 1.
+func RegisterWithCapacity(serverAddr, task, address string, capacity int) error {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	proto := strings.ToLower(os.Getenv("TDS_SERVER_PROTO"))
 	if proto == "tcp" {
-		return RegisterTCP(serverAddr, task, address)
+		return RegisterTCPWithCapacity(serverAddr, task, address, capacity)
 	}
-	return RegisterUDP(serverAddr, task, address)
+	return RegisterUDPWithCapacity(serverAddr, task, address, capacity)
 }
 
 // RegisterUDP performs a UDP register using JSON protocol.
 func RegisterUDP(serverAddr, task, address string) error {
+	return RegisterUDPWithCapacity(serverAddr, task, address, 1)
+}
+
+// RegisterUDPWithCapacity performs a UDP register using JSON protocol.
+func RegisterUDPWithCapacity(serverAddr, task, address string, capacity int) error {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	conn, err := net.DialTimeout("udp", serverAddr, 2*time.Second)
 	if err != nil {
 		return err
@@ -33,9 +50,10 @@ func RegisterUDP(serverAddr, task, address string) error {
 
 	// Send JSON request
 	msg := transport.CentralizedMessage{
-		Command: "REGISTER",
-		Task:    task,
-		Address: address,
+		Command:  "REGISTER",
+		Task:     task,
+		Address:  address,
+		Capacity: capacity,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -68,6 +86,14 @@ func RegisterUDP(serverAddr, task, address string) error {
 
 // RegisterTCP performs a TCP register using JSON protocol and reads the server response.
 func RegisterTCP(serverAddr, task, address string) error {
+	return RegisterTCPWithCapacity(serverAddr, task, address, 1)
+}
+
+// RegisterTCPWithCapacity performs a TCP register using JSON protocol and reads the server response.
+func RegisterTCPWithCapacity(serverAddr, task, address string, capacity int) error {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	conn, err := net.DialTimeout("tcp", serverAddr, 2*time.Second)
 	if err != nil {
 		return err
@@ -76,9 +102,10 @@ func RegisterTCP(serverAddr, task, address string) error {
 
 	// Send JSON request (one line)
 	msg := transport.CentralizedMessage{
-		Command: "REGISTER",
-		Task:    task,
-		Address: address,
+		Command:  "REGISTER",
+		Task:     task,
+		Address:  address,
+		Capacity: capacity,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -235,9 +262,10 @@ func RegisterTLS(serverAddr, task, address, certFile, keyFile, caFile string) er
 	dec := json.NewDecoder(conn)
 
 	msg := transport.CentralizedMessage{
-		Command: "REGISTER",
-		Task:    task,
-		Address: address,
+		Command:  "REGISTER",
+		Task:     task,
+		Address:  address,
+		Capacity: 1,
 	}
 	if err := enc.Encode(msg); err != nil {
 		return fmt.Errorf("encode request: %w", err)

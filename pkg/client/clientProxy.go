@@ -78,14 +78,22 @@ func handlePacket(conn *net.UDPConn, src *net.UDPAddr, data string, serverAddr s
 	switch cmd {
 	case "REGISTER":
 		if len(parts) < 3 {
-			writeUDP(conn, src, "ERR usage: REGISTER <task> <address>")
+			writeUDP(conn, src, "ERR usage: REGISTER <task> <address> [capacity]")
 			atomic.AddUint64(&errorCount, 1)
 			return
 		}
 		task := parts[1]
 		address := parts[2]
-		logger.Printf("REGISTER %s -> %s (from %s)", task, address, src.String())
-		if err := Register(serverAddr, task, address); err != nil {
+		capacity := 1
+		if len(parts) >= 4 {
+			if _, err := fmt.Sscanf(parts[3], "%d", &capacity); err != nil || capacity <= 0 {
+				writeUDP(conn, src, "ERR capacity must be a positive integer")
+				atomic.AddUint64(&errorCount, 1)
+				return
+			}
+		}
+		logger.Printf("REGISTER %s -> %s cap=%d (from %s)", task, address, capacity, src.String())
+		if err := RegisterWithCapacity(serverAddr, task, address, capacity); err != nil {
 			writeUDP(conn, src, "ERR "+err.Error())
 			atomic.AddUint64(&errorCount, 1)
 			return
@@ -270,7 +278,7 @@ func handlePacketP2P(conn *net.UDPConn, src *net.UDPAddr, data string, dhtRegist
 	switch cmd {
 	case "REGISTER":
 		if len(parts) < 3 {
-			writeUDP(conn, src, "ERR usage: REGISTER <task> <address>")
+			writeUDP(conn, src, "ERR usage: REGISTER <task> <address> [capacity]")
 			atomic.AddUint64(&errorCount, 1)
 			return
 		}

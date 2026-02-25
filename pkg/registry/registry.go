@@ -13,6 +13,7 @@ type ServiceEntry struct {
 	Address       string
 	LastHeartbeat time.Time
 	QueryCount    int64
+	Capacity      int
 }
 
 type Stats struct {

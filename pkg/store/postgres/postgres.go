@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -54,37 +55,40 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 	if entry.QueryCount > 0 {
 		// Sync query count as well (used when syncing from cache).
 		query = `
-			INSERT INTO services (task, address, last_heartbeat, query_count, is_active, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, TRUE, NOW(), NOW())
+			INSERT INTO services (task, address, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
 			ON CONFLICT (task, address) DO UPDATE
 			SET last_heartbeat = EXCLUDED.last_heartbeat,
 			    query_count = EXCLUDED.query_count,
+			    capacity = EXCLUDED.capacity,
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, entry.Address, entry.LastHeartbeat, entry.QueryCount}
+		args = []any{task, entry.Address, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
 	} else {
 		// Normal registration: preserve existing query count if record already exists.
 		query = `
-			INSERT INTO services (task, address, last_heartbeat, query_count, is_active, created_at, updated_at)
-			VALUES ($1, $2, $3, 0, TRUE, NOW(), NOW())
+			INSERT INTO services (task, address, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, 0, $4, TRUE, NOW(), NOW())
 			ON CONFLICT (task, address) DO UPDATE
 			SET last_heartbeat = EXCLUDED.last_heartbeat,
+			    capacity = EXCLUDED.capacity,
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, entry.Address, entry.LastHeartbeat}
+		args = []any{task, entry.Address, entry.LastHeartbeat, normalizedCapacity(entry.Capacity)}
 	}
 
 	_, err := ps.db.ExecContext(ctx, query, args...)
 	return err
 }
 
-// GetService retrieves a single service by task using round-robin selection and increments query count.
+// GetService retrieves a single service by task using weighted round-robin selection
+// (capacity and heartbeat recency) and increments query count.
 func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.ServiceEntry, error) {
 	// Retrieve all active entries for the task
 	query := `
-		SELECT address, last_heartbeat, query_count
+		SELECT address, last_heartbeat, query_count, capacity
 		FROM services
 		WHERE task = $1 AND is_active = TRUE
 		ORDER BY address ASC
@@ -98,9 +102,10 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 	var entries []store.ServiceEntry
 	for rows.Next() {
 		var e store.ServiceEntry
-		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount); err != nil {
+		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity); err != nil {
 			return nil, err
 		}
+		e.Capacity = normalizedCapacity(e.Capacity)
 		entries = append(entries, e)
 	}
 
@@ -112,13 +117,18 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 		return nil, ErrNotFound
 	}
 
-	// Round-robin selection
+	weightedPool := buildWeightedIndexPool(entries, time.Now())
+	if len(weightedPool) == 0 {
+		return nil, ErrNotFound
+	}
+
+	// Weighted round-robin selection
 	ps.roundRobinIndexMu.Lock()
-	idx := ps.roundRobinIndex[task] % len(entries)
-	ps.roundRobinIndex[task] = (idx + 1) % len(entries)
+	idx := ps.roundRobinIndex[task] % len(weightedPool)
+	ps.roundRobinIndex[task] = (idx + 1) % len(weightedPool)
 	ps.roundRobinIndexMu.Unlock()
 
-	selected := &entries[idx]
+	selected := &entries[weightedPool[idx]]
 
 	// Increment query count in database
 	updateQuery := `
@@ -139,7 +149,7 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 // ListServices returns all active services grouped by task.
 func (ps *PostgresStore) ListServices(ctx context.Context) (map[string][]store.ServiceEntry, error) {
 	query := `
-		SELECT task, address, last_heartbeat, query_count
+		SELECT task, address, last_heartbeat, query_count, capacity
 		FROM services
 		WHERE is_active = TRUE
 		ORDER BY task, address ASC
@@ -154,9 +164,10 @@ func (ps *PostgresStore) ListServices(ctx context.Context) (map[string][]store.S
 	for rows.Next() {
 		var task string
 		var e store.ServiceEntry
-		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount); err != nil {
+		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity); err != nil {
 			return nil, err
 		}
+		e.Capacity = normalizedCapacity(e.Capacity)
 		result[task] = append(result[task], e)
 	}
 
@@ -209,6 +220,7 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 			address TEXT NOT NULL,
 			last_heartbeat TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			query_count BIGINT NOT NULL DEFAULT 0,
+			capacity INTEGER NOT NULL DEFAULT 1,
 			is_active BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -217,6 +229,7 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 
 		// Backfill/upgrade path (existing installs)
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS query_count BIGINT NOT NULL DEFAULT 0;`,
+		`ALTER TABLE services ADD COLUMN IF NOT EXISTS capacity INTEGER NOT NULL DEFAULT 1;`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
@@ -248,7 +261,7 @@ func (ps *PostgresStore) Close() error {
 // These are services that have been marked inactive by cleanup but preserved in the database.
 func (ps *PostgresStore) ListInactiveServices(ctx context.Context) (map[string][]store.ServiceEntry, error) {
 	query := `
-		SELECT task, address, last_heartbeat, query_count
+		SELECT task, address, last_heartbeat, query_count, capacity
 		FROM services
 		WHERE is_active = FALSE
 		ORDER BY updated_at DESC, task, address ASC
@@ -263,9 +276,10 @@ func (ps *PostgresStore) ListInactiveServices(ctx context.Context) (map[string][
 	for rows.Next() {
 		var task string
 		var e store.ServiceEntry
-		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount); err != nil {
+		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity); err != nil {
 			return nil, err
 		}
+		e.Capacity = normalizedCapacity(e.Capacity)
 		result[task] = append(result[task], e)
 	}
 
@@ -280,7 +294,7 @@ func (ps *PostgresStore) ListInactiveServices(ctx context.Context) (map[string][
 // Useful for debugging and historical analysis.
 func (ps *PostgresStore) GetServiceHistory(ctx context.Context, task string) ([]store.ServiceEntry, error) {
 	query := `
-		SELECT address, last_heartbeat, query_count, is_active
+		SELECT address, last_heartbeat, query_count, capacity, is_active
 		FROM services
 		WHERE task = $1
 		ORDER BY is_active DESC, last_heartbeat DESC
@@ -295,9 +309,10 @@ func (ps *PostgresStore) GetServiceHistory(ctx context.Context, task string) ([]
 	for rows.Next() {
 		var e store.ServiceEntry
 		var isActive bool
-		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount, &isActive); err != nil {
+		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity, &isActive); err != nil {
 			return nil, err
 		}
+		e.Capacity = normalizedCapacity(e.Capacity)
 		// You could add a field to ServiceEntry to track active status if needed for display
 		entries = append(entries, e)
 	}
@@ -311,3 +326,42 @@ func (ps *PostgresStore) GetServiceHistory(ctx context.Context, task string) ([]
 
 // Ensure PostgresStore implements store.Store.
 var _ store.Store = (*PostgresStore)(nil)
+
+func normalizedCapacity(capacity int) int {
+	if capacity <= 0 {
+		return 1
+	}
+	return capacity
+}
+
+func buildWeightedIndexPool(entries []store.ServiceEntry, now time.Time) []int {
+	total := 0
+	weights := make([]int, len(entries))
+	for i, entry := range entries {
+		weight := storeServiceWeight(entry, now)
+		weights[i] = weight
+		total += weight
+	}
+
+	pool := make([]int, 0, total)
+	for i := range entries {
+		for j := 0; j < weights[i]; j++ {
+			pool = append(pool, i)
+		}
+	}
+	return pool
+}
+
+func storeServiceWeight(entry store.ServiceEntry, now time.Time) int {
+	capacity := normalizedCapacity(entry.Capacity)
+	ageSeconds := now.Sub(entry.LastHeartbeat).Seconds()
+	if ageSeconds < 0 {
+		ageSeconds = 0
+	}
+	freshness := 1.0 / (1.0 + ageSeconds/30.0)
+	effectiveWeight := int(math.Round(float64(capacity) * freshness))
+	if effectiveWeight < 1 {
+		return 1
+	}
+	return effectiveWeight
+}

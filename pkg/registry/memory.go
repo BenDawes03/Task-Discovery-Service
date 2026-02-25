@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 type MemoryRegistry struct {
 	mutex           sync.RWMutex
 	services        map[string][]ServiceEntry
-	roundRobinIndex sync.Map // map[string]*atomic.Int64 for lock-free round-robin
+	roundRobinIndex sync.Map // map[string]*atomic.Int64 for lock-free weighted round-robin cursor
 	queryCounters   sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
 	totalQueries    atomic.Int64
 	firewall        *firewall.Firewall
@@ -39,8 +40,37 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 	entries := registry.services[task]
 	for i, e := range entries {
 		if e.Address == addr {
+			// Heartbeat-only update: preserve configured capacity.
+			entries[i].LastHeartbeat = now
+			registry.services[task] = entries
+			return
+		}
+	}
+
+	// New entry via legacy register path defaults to capacity 1.
+	newEntry := ServiceEntry{
+		Address:       addr,
+		LastHeartbeat: now,
+		QueryCount:    0,
+		Capacity:      1,
+	}
+	registry.services[task] = append(entries, newEntry)
+	registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
+}
+
+func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity int) {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	now := time.Now()
+	entries := registry.services[task]
+	for i, e := range entries {
+		if e.Address == addr {
 			// update heartbeat
 			entries[i].LastHeartbeat = now
+			entries[i].Capacity = capacity
 			registry.services[task] = entries
 			return
 		}
@@ -50,6 +80,7 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 		Address:       addr,
 		LastHeartbeat: now,
 		QueryCount:    0,
+		Capacity:      capacity,
 	}
 	registry.services[task] = append(entries, newEntry)
 	// Ensure a round-robin index exists for the task.
@@ -69,36 +100,47 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 		registry.mutex.RUnlock()
 		return "", ErrNotFound
 	}
-	addrs := make([]string, len(entries))
+	entryCopy := make([]ServiceEntry, len(entries))
 	for i, e := range entries {
-		addrs[i] = e.Address
+		entryCopy[i] = e
 	}
 	registry.mutex.RUnlock()
 
 	// Filter allowed addresses (if firewall is configured and we know requestor IP).
-	allowedAddrs := addrs
+	allowedEntries := entryCopy
 	if registry.firewall != nil && requestorIP != nil {
-		allowedAddrs = allowedAddrs[:0]
-		for _, addr := range addrs {
+		allowedEntries = allowedEntries[:0]
+		for _, entry := range entryCopy {
+			addr := entry.Address
 			hostPart, _, err := net.SplitHostPort(addr)
 			if err != nil {
 				hostPart = addr
 			}
 			destIP := net.ParseIP(hostPart)
 			if destIP != nil && registry.firewall.IsAllowed(requestorIP, destIP) {
-				allowedAddrs = append(allowedAddrs, addr)
+				allowedEntries = append(allowedEntries, entry)
 			}
 		}
-		if len(allowedAddrs) == 0 {
+		if len(allowedEntries) == 0 {
 			return "", ErrNoAllowedService
 		}
 	}
 
-	// Atomic round-robin selection over the allowed set.
+	now := time.Now()
+	totalWeight := totalServiceWeight(allowedEntries, now)
+	if totalWeight <= 0 {
+		return "", ErrNotFound
+	}
+
+	// Atomic weighted round-robin selection over the allowed set without
+	// materializing an expanded weighted address pool.
 	idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 	idxPtr := idxVal.(*atomic.Int64)
-	idx := int(idxPtr.Add(1)-1) % len(allowedAddrs)
-	selectedAddr := allowedAddrs[idx]
+	slot := int(idxPtr.Add(1)-1) % totalWeight
+	selectedAddr, ok := selectWeightedAddress(allowedEntries, now, slot)
+	if !ok {
+		return "", ErrNotFound
+	}
 
 	// Increment query count atomically (lock-free).
 	counterKey := task + ":" + selectedAddr
@@ -112,6 +154,47 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	return selectedAddr, nil
 }
 
+func totalServiceWeight(entries []ServiceEntry, now time.Time) int {
+	total := 0
+	for _, entry := range entries {
+		weight := serviceWeight(entry, now)
+		total += weight
+	}
+	return total
+}
+
+func selectWeightedAddress(entries []ServiceEntry, now time.Time, slot int) (string, bool) {
+	running := 0
+	for _, entry := range entries {
+		running += serviceWeight(entry, now)
+		if slot < running {
+			return entry.Address, true
+		}
+	}
+	return "", false
+}
+
+func serviceWeight(entry ServiceEntry, now time.Time) int {
+	capacity := entry.Capacity
+	if capacity <= 0 {
+		capacity = 1
+	}
+
+	ageSeconds := now.Sub(entry.LastHeartbeat).Seconds()
+	if ageSeconds < 0 {
+		ageSeconds = 0
+	}
+
+	// Decay weight with heartbeat age so fresher instances receive more traffic.
+	// Age 0s => factor 1.0, 30s => 0.5, 60s => 0.33, etc.
+	freshness := 1.0 / (1.0 + ageSeconds/30.0)
+	effectiveWeight := int(math.Round(float64(capacity) * freshness))
+	if effectiveWeight < 1 {
+		return 1
+	}
+	return effectiveWeight
+}
+
 func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
@@ -123,6 +206,8 @@ func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 			if e.LastHeartbeat.Add(timeout).After(now) {
 				kept = append(kept, e)
 			} else {
+				counterKey := task + ":" + e.Address
+				registry.queryCounters.Delete(counterKey)
 				removed++
 			}
 		}
@@ -131,13 +216,6 @@ func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 			registry.roundRobinIndex.Delete(task)
 		} else {
 			registry.services[task] = kept
-			// Reset round-robin index if it's out of bounds
-			if idxVal, ok := registry.roundRobinIndex.Load(task); ok {
-				idxPtr := idxVal.(*atomic.Int64)
-				if int(idxPtr.Load()) >= len(kept) {
-					idxPtr.Store(0)
-				}
-			}
 		}
 	}
 	return removed

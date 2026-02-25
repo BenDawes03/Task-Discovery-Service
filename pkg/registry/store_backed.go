@@ -50,6 +50,7 @@ func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 					Address:       entry.Address,
 					LastHeartbeat: entry.LastHeartbeat,
 					QueryCount:    entry.QueryCount,
+					Capacity:      entry.Capacity,
 				}
 				if err := sr.store.Register(ctx, task, storeEntry); err != nil {
 					fmt.Fprintf(os.Stderr, "[STORE] Failed to sync query count for %s/%s: %v\n", task, entry.Address, err)
@@ -83,7 +84,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 		for task, entries := range services {
 			for _, e := range entries {
 				// Directly populate cache with query counts from DB
-				sr.populateCacheEntry(task, e.Address, e.QueryCount, e.LastHeartbeat)
+				sr.populateCacheEntry(task, e.Address, e.QueryCount, e.LastHeartbeat, e.Capacity)
 			}
 		}
 	} else {
@@ -126,7 +127,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 			ts := taskList[i]
 			for _, e := range ts.entries {
 				// Directly populate cache with query counts from DB
-				sr.populateCacheEntry(ts.task, e.Address, e.QueryCount, e.LastHeartbeat)
+				sr.populateCacheEntry(ts.task, e.Address, e.QueryCount, e.LastHeartbeat, e.Capacity)
 			}
 		}
 
@@ -142,7 +143,10 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 
 // populateCacheEntry directly adds an entry to cache with existing query count and heartbeat.
 // This is used during cache warming to preserve query counts from the database.
-func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount int64, lastHeartbeat time.Time) {
+func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount int64, lastHeartbeat time.Time, capacity int) {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	sr.memCache.mutex.Lock()
 	defer sr.memCache.mutex.Unlock()
 
@@ -152,6 +156,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 		if e.Address == addr {
 			// Update with DB values
 			entries[i].LastHeartbeat = lastHeartbeat
+			entries[i].Capacity = capacity
 			sr.memCache.services[task] = entries
 			// Set atomic query counter
 			counterKey := task + ":" + addr
@@ -166,6 +171,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 	newEntry := ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: lastHeartbeat,
+		Capacity:      capacity,
 	}
 	sr.memCache.services[task] = append(entries, newEntry)
 	sr.memCache.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
@@ -179,8 +185,15 @@ func (sr *StoreBackedRegistry) populateCacheEntry(task, addr string, queryCount 
 
 // Register adds or updates a service entry in both the cache and the store.
 func (sr *StoreBackedRegistry) Register(task, addr string) {
+	sr.RegisterWithCapacity(task, addr, 1)
+}
+
+func (sr *StoreBackedRegistry) RegisterWithCapacity(task, addr string, capacity int) {
+	if capacity <= 0 {
+		capacity = 1
+	}
 	// Write to in-memory cache immediately for fast access
-	sr.memCache.Register(task, addr)
+	sr.memCache.RegisterWithCapacity(task, addr, capacity)
 
 	// Also write to persistent store synchronously
 	// Note: QueryCount is not set here - it defaults to 0 for new entries
@@ -188,6 +201,7 @@ func (sr *StoreBackedRegistry) Register(task, addr string) {
 	entry := &store.ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: time.Now(),
+		Capacity:      capacity,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -224,7 +238,7 @@ func (sr *StoreBackedRegistry) GetServiceForRequestor(task string, requestorIP n
 	}
 
 	// Add to cache (will be included in next sync if frequently used)
-	sr.memCache.Register(task, entry.Address)
+	sr.memCache.RegisterWithCapacity(task, entry.Address, entry.Capacity)
 	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', fetched from DB: %s\n", task, entry.Address)
 
 	// Now check firewall rules if requestor IP is provided

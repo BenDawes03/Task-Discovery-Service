@@ -62,10 +62,17 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task and address required"})
 				continue
 			}
-
-			reg.Register(msg.Task, msg.Address)
+			capacity := msg.Capacity
+			if capacity <= 0 {
+				capacity = 1
+			}
+			if capReg, ok := reg.(capacityAwareRegistry); ok {
+				capReg.RegisterWithCapacity(msg.Task, msg.Address, capacity)
+			} else {
+				reg.Register(msg.Task, msg.Address)
+			}
 			if onEvent != nil {
-				onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", msg.Task, msg.Address, remote))
+				onEvent(fmt.Sprintf("REGISTER %s -> %s cap=%d from %v", msg.Task, msg.Address, capacity, remote))
 			}
 			_ = encoder.Encode(CentralizedResponse{Status: "OK"})
 

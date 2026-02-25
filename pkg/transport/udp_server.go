@@ -8,16 +8,22 @@ import (
 	"tds/pkg/registry"
 )
 
+type capacityAwareRegistry interface {
+	RegisterWithCapacity(taskName, address string, capacity int)
+}
+
 // StartUDPServer starts a JSON-based UDP server that accepts commands:
-//   {"cmd": "REGISTER", "task": "taskname", "address": "ip:port"}
-//   {"cmd": "QUERY", "task": "taskname"}
+//
+//	{"cmd": "REGISTER", "task": "taskname", "address": "ip:port"}
+//	{"cmd": "QUERY", "task": "taskname"}
 //
 // Responds with JSON:
-//   {"status": "OK"}
-//   {"status": "NOTFOUND"}
-//   {"status": "FORBIDDEN"}
-//   {"status": "ERR", "error": "..."}
-//   {"status": "OK", "address": "ip:port"}
+//
+//	{"status": "OK"}
+//	{"status": "NOTFOUND"}
+//	{"status": "FORBIDDEN"}
+//	{"status": "ERR", "error": "..."}
+//	{"status": "OK", "address": "ip:port"}
 //
 // onEvent, if non-nil, will be called with short human-readable messages for UI/logging.
 func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error {
@@ -59,10 +65,17 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 			_, _ = conn.WriteToUDP(respData, remote)
 			return
 		}
-
-		reg.Register(msg.Task, msg.Address)
+		capacity := msg.Capacity
+		if capacity <= 0 {
+			capacity = 1
+		}
+		if capReg, ok := reg.(capacityAwareRegistry); ok {
+			capReg.RegisterWithCapacity(msg.Task, msg.Address, capacity)
+		} else {
+			reg.Register(msg.Task, msg.Address)
+		}
 		if onEvent != nil {
-			onEvent(fmt.Sprintf("REGISTER %s -> %s from %v", msg.Task, msg.Address, remote))
+			onEvent(fmt.Sprintf("REGISTER %s -> %s cap=%d from %v", msg.Task, msg.Address, capacity, remote))
 		}
 		respData, _ := json.Marshal(CentralizedResponse{Status: "OK"})
 		_, _ = conn.WriteToUDP(respData, remote)
