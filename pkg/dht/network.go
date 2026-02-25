@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -94,8 +96,27 @@ func (dn *DHTNetwork) Start() error {
 	}
 	dn.listener = ln
 
+	// Update DHT's self address with actual bound address (important for port 0)
+	actualAddr := ln.Addr().String()
+	dn.dht.mutex.Lock()
+	dn.dht.self.Address = actualAddr
+	dn.dht.self.ID = HashAddress(actualAddr)
+	// Rebuild ring with updated self ID
+	dn.dht.ring = make([]NodeID, 0, len(dn.dht.peers)+1)
+	dn.dht.ring = append(dn.dht.ring, dn.dht.self.ID)
+	for id := range dn.dht.peers {
+		dn.dht.ring = append(dn.dht.ring, id)
+	}
+	sort.Slice(dn.dht.ring, func(i, j int) bool {
+		return CompareNodeID(dn.dht.ring[i], dn.dht.ring[j]) < 0
+	})
+	dn.dht.mutex.Unlock()
+
+	// Set network reference on DHT for query forwarding
+	dn.dht.SetNetwork(dn)
+
 	netLogger.Printf("DHT listening on %s (advertise %s, node ID: %s)",
-		dn.dht.listenAddr, dn.dht.self.Address, NodeIDToString(dn.dht.self.ID))
+		dn.dht.listenAddr, actualAddr, NodeIDToString(dn.dht.self.ID))
 
 	// start accepting connections
 	dn.wg.Add(1)
@@ -105,6 +126,9 @@ func (dn *DHTNetwork) Start() error {
 	if len(dn.bootstraps) > 0 {
 		dn.wg.Add(1)
 		go dn.joinNetwork()
+		// also start periodic peer discovery in case new nodes join after we bootstrap
+		dn.wg.Add(1)
+		go dn.peerDiscoveryLoop()
 	}
 
 	// periodic peer maintenance
@@ -307,6 +331,54 @@ func (dn *DHTNetwork) joinNetwork() {
 	netLogger.Printf("joined network, %d peers known", dn.dht.GetRingSize()-1)
 }
 
+// peerDiscoveryLoop periodically queries bootstrap nodes for updated peer lists
+// This allows nodes to discover peers that joined after the initial bootstrap
+func (dn *DHTNetwork) peerDiscoveryLoop() {
+	defer dn.wg.Done()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-dn.ctx.Done():
+			return
+		case <-ticker.C:
+			// query bootstrap nodes for updated peer lists
+			for _, bootstrap := range dn.bootstraps {
+				if bootstrap == dn.dht.self.Address {
+					continue
+				}
+
+				msg := Message{
+					Type:   MsgJoin,
+					Sender: dn.dht.self.Address,
+				}
+
+				resp, err := dn.sendMessage(bootstrap, &msg)
+				if err != nil {
+					// bootstrap node may be down, skip
+					continue
+				}
+
+				if resp.Type == MsgPeerList {
+					var pl PeerListPayload
+					if err := json.Unmarshal(resp.Payload, &pl); err != nil {
+						continue
+					}
+
+					// add any new peers we discover
+					for _, peer := range pl.Peers {
+						if peer != dn.dht.self.Address {
+							dn.dht.AddPeer(peer)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // maintenanceLoop performs periodic DHT maintenance
 func (dn *DHTNetwork) maintenanceLoop() {
 	defer dn.wg.Done()
@@ -374,79 +446,109 @@ func (dn *DHTNetwork) sendMessage(addr string, msg *Message) (*Message, error) {
 	return &resp, nil
 }
 
-// Store sends a STORE request to the k-closest nodes (no forwarding)
+// Store sends a STORE request to the k-closest nodes
+// If a node responds NOT_RESPONSIBLE, only retry on suggested nodes that are closer
 func (dn *DHTNetwork) Store(task, address string) error {
-	   // To avoid infinite loops, keep track of attempted nodes
-	   attempted := make(map[string]struct{})
-	   queue := make([]string, 0)
-	   kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
-	   for _, node := range kClosest {
-		   if node != nil {
-			   queue = append(queue, node.Address)
-		   }
-	   }
+	// Track attempted nodes and their distances
+	attempted := make(map[string]struct{})
+	taskHash := HashTask(task)
+	
+	// Priority queue: start with k-closest from local view
+	queue := make([]string, 0)
+	kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
+	for _, node := range kClosest {
+		if node != nil {
+			queue = append(queue, node.Address)
+		}
+	}
 
-	   successCount := 0
-	   var lastErr error
+	successCount := 0
+	var lastErr error
 
-	   for len(queue) > 0 {
-		   addr := queue[0]
-		   queue = queue[1:]
-		   if _, seen := attempted[addr]; seen {
-			   continue
-		   }
-		   attempted[addr] = struct{}{}
+	for len(queue) > 0 {
+		addr := queue[0]
+		queue = queue[1:]
+		
+		if _, seen := attempted[addr]; seen {
+			continue
+		}
+		attempted[addr] = struct{}{}
 
-		   if addr == dn.dht.self.Address {
-			   dn.dht.StoreTask(task, address)
-			   netLogger.Printf("stored locally (k=%d): %s -> %s", ReplicationFactor, task, address)
-			   successCount++
-			   continue
-		   }
+		if addr == dn.dht.self.Address {
+			dn.dht.StoreTask(task, address)
+			netLogger.Printf("stored locally (k=%d): %s -> %s", ReplicationFactor, task, address)
+			successCount++
+			continue
+		}
 
-		   payload, _ := json.Marshal(StorePayload{
-			   Task:    task,
-			   Address: address,
-		   })
-		   msg := Message{
-			   Type:    MsgStore,
-			   Sender:  dn.dht.self.Address,
-			   Payload: payload,
-		   }
+		payload, _ := json.Marshal(StorePayload{
+			Task:    task,
+			Address: address,
+		})
+		msg := Message{
+			Type:    MsgStore,
+			Sender:  dn.dht.self.Address,
+			Payload: payload,
+		}
 
-		   resp, err := dn.sendMessage(addr, &msg)
-		   if err != nil {
-			   netLogger.Printf("failed to store on %s: %v", addr, err)
-			   lastErr = err
-			   continue
-		   }
+		resp, err := dn.sendMessage(addr, &msg)
+		if err != nil {
+			netLogger.Printf("failed to store on %s: %v", addr, err)
+			lastErr = err
+			continue
+		}
 
-		   if resp.Type == "OK" {
-			   netLogger.Printf("stored on %s (k=%d): %s -> %s", addr, ReplicationFactor, task, address)
-			   successCount++
-		   } else if resp.Type == "NOT_RESPONSIBLE" && len(resp.Payload) > 0 {
-			   var nr NotResponsiblePayload
-			   if err := json.Unmarshal(resp.Payload, &nr); err == nil {
-				   for _, newAddr := range nr.Closest {
-					   // Add new nodes to peer list
-					   dn.dht.AddPeer(newAddr)
-					   if _, seen := attempted[newAddr]; !seen {
-						   queue = append(queue, newAddr)
-					   }
-				   }
-				   netLogger.Printf("NOT_RESPONSIBLE from %s, suggested: %v", addr, nr.Closest)
-			   }
-		   } else {
-			   netLogger.Printf("unexpected response from %s: %s", addr, resp.Type)
-		   }
-	   }
+		if resp.Type == "OK" {
+			netLogger.Printf("stored on %s (k=%d): %s -> %s", addr, ReplicationFactor, task, address)
+			successCount++
+		} else if resp.Type == "NOT_RESPONSIBLE" && len(resp.Payload) > 0 {
+			var nr NotResponsiblePayload
+			if err := json.Unmarshal(resp.Payload, &nr); err == nil {
+				// Only queue suggested nodes that are closer than ANY node we've tried
+				farthestAttempted := dn.getFarthestDistance(taskHash, attempted)
+				
+				for _, newAddr := range nr.Closest {
+					dn.dht.AddPeer(newAddr)
+					
+					if _, seen := attempted[newAddr]; seen {
+						continue
+					}
+					
+					// Check if this node is closer than the farthest we've tried
+					newDist := Distance(taskHash, HashAddress(newAddr))
+					if newDist.Cmp(farthestAttempted) < 0 {
+						queue = append(queue, newAddr)
+						netLogger.Printf("queuing closer node %s (from NOT_RESPONSIBLE)", newAddr)
+					}
+				}
+			}
+		} else {
+			netLogger.Printf("unexpected response from %s: %s", addr, resp.Type)
+		}
+	}
 
-	   if successCount == 0 {
-		   return fmt.Errorf("failed to store on any node: %w", lastErr)
-	   }
+	if successCount == 0 {
+		return fmt.Errorf("failed to store on any node: %w", lastErr)
+	}
 
-	   netLogger.Printf("store complete: %d replicas for %s", successCount, task)
-	   return nil
+	netLogger.Printf("store complete: %d replicas for %s", successCount, task)
+	return nil
+}
+
+// getFarthestDistance returns the distance to the farthest attempted node
+func (dn *DHTNetwork) getFarthestDistance(taskHash NodeID, attempted map[string]struct{}) *big.Int {
+	var farthest *big.Int
+	for addr := range attempted {
+		dist := Distance(taskHash, HashAddress(addr))
+		if farthest == nil || dist.Cmp(farthest) > 0 {
+			farthest = dist
+		}
+	}
+	if farthest == nil {
+		// Return max distance if nothing attempted yet
+		farthest = new(big.Int).Lsh(big.NewInt(1), 256)
+	}
+	return farthest
 }
 
 // Find sends a FIND request to retrieve task addresses from k-closest nodes
@@ -499,6 +601,41 @@ func (dn *DHTNetwork) Find(task string) ([]string, error) {
 
 	netLogger.Printf("not found on any k-closest node: %s", task)
 	return nil, nil
+}
+
+// QueryPeerForTask queries a specific peer for a task's addresses
+// Used by LookupTask for query forwarding when local node is not in k-nearest
+func (dn *DHTNetwork) QueryPeerForTask(peerAddr string, task string) []string {
+	payload, err := json.Marshal(FindPayload{Task: task})
+	if err != nil {
+		return nil
+	}
+
+	msg := Message{
+		Type:    MsgFind,
+		Sender:  dn.dht.self.Address,
+		Payload: payload,
+	}
+
+	resp, err := dn.sendMessage(peerAddr, &msg)
+	if err != nil {
+		netLogger.Printf("query peer %s for task %s failed: %v", peerAddr, task, err)
+		return nil
+	}
+
+	if resp.Type == MsgFoundData {
+		var fp FoundPayload
+		if err := json.Unmarshal(resp.Payload, &fp); err != nil {
+			netLogger.Printf("unmarshal found error: %v", err)
+			return nil
+		}
+		if len(fp.Addresses) > 0 {
+			netLogger.Printf("query forwarding: found %s on %s -> %d addresses", task, peerAddr, len(fp.Addresses))
+			return fp.Addresses
+		}
+	}
+
+	return nil
 }
 
 // ListenForBroadcasts listens for server broadcasts on the discovery port

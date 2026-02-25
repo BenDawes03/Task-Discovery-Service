@@ -32,6 +32,7 @@ type DHT struct {
 	ring       []NodeID            // Sorted ring of all node IDs (including self)
 	storage    map[string][]string // task -> addresses (data stored on this node)
 	listenAddr string              // Address this node listens on
+	network    *DHTNetwork         // Network layer reference (set after creation)
 }
 
 // NewDHT creates a new DHT node
@@ -56,9 +57,15 @@ func NewDHT(listenAddr string) (*DHT, error) {
 		ring:       []NodeID{nodeID},
 		storage:    make(map[string][]string),
 		listenAddr: listenAddr,
+		network:    nil, // Set by DHTNetwork after creation
 	}
 
 	return dht, nil
+}
+
+// SetNetwork sets the network layer reference (called by DHTNetwork)
+func (dht *DHT) SetNetwork(network *DHTNetwork) {
+	dht.network = network
 }
 
 // HashAddress computes a SHA256 hash of an address string to create a NodeID.
@@ -228,14 +235,88 @@ func (dht *DHT) StoreTask(taskName, address string) {
 	dht.storage[taskName] = append(addrs, address)
 }
 
-// LookupTask retrieves addresses for a task stored on this node
+// LookupTask retrieves addresses for a task from the DHT
+// If not stored locally and this node is not in k-nearest, forwards to k-nearest nodes
 func (dht *DHT) LookupTask(taskName string) []string {
 	dht.mutex.RLock()
-	defer dht.mutex.RUnlock()
 
+	// Try local storage first
 	addrs := dht.storage[taskName]
-	result := make([]string, len(addrs))
-	copy(result, addrs)
+	if len(addrs) > 0 {
+		result := make([]string, len(addrs))
+		copy(result, addrs)
+		dht.mutex.RUnlock()
+		return result
+	}
+
+	// Check if we're in k-nearest for this task
+	kClosest := dht.findKClosestNodesLocked(taskName, ReplicationFactor)
+	isResponsible := false
+	for _, node := range kClosest {
+		if node.ID == dht.self.ID {
+			isResponsible = true
+			break
+		}
+	}
+
+	// If not responsible and we have a network layer, forward the query
+	if !isResponsible && dht.network != nil {
+		// Release read lock before network IO
+		dht.mutex.RUnlock()
+		return dht.forwardLookup(taskName, kClosest)
+	}
+
+	dht.mutex.RUnlock()
+	return nil
+}
+
+// forwardLookup forwards a lookup query to k-nearest nodes
+func (dht *DHT) forwardLookup(taskName string, kClosest []*Node) []string {
+	for _, node := range kClosest {
+		if node.ID == dht.self.ID {
+			continue // skip self
+		}
+
+		// Query peer via network layer
+		if addrs := dht.network.QueryPeerForTask(node.Address, taskName); len(addrs) > 0 {
+			return addrs
+		}
+	}
+	return nil
+}
+
+// findKClosestNodesLocked finds k-closest nodes without taking lock (must hold lock)
+func (dht *DHT) findKClosestNodesLocked(taskName string, k int) []*Node {
+	taskID := HashTask(taskName)
+	
+	if len(dht.ring) == 0 {
+		return []*Node{dht.self}
+	}
+
+	type nodeDistance struct {
+		node *Node
+		dist *big.Int
+	}
+
+	distances := make([]nodeDistance, 0, len(dht.ring))
+	for _, nodeID := range dht.ring {
+		dist := Distance(taskID, nodeID)
+		if nodeID == dht.self.ID {
+			distances = append(distances, nodeDistance{dht.self, dist})
+		} else {
+			distances = append(distances, nodeDistance{dht.peers[nodeID], dist})
+		}
+	}
+
+	sort.Slice(distances, func(i, j int) bool {
+		return distances[i].dist.Cmp(distances[j].dist) < 0
+	})
+
+	result := make([]*Node, 0, k)
+	for i := 0; i < k && i < len(distances); i++ {
+		result = append(result, distances[i].node)
+	}
+
 	return result
 }
 
