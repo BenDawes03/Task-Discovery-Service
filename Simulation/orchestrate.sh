@@ -370,24 +370,30 @@ case "${1:-}" in
       [[ -z "${host}" ]] && continue
       echo "Stopping on ${host} (ssh user: $(ssh_user_for_host "${host}"))"
 
-      remote_down_cmd="set -euo pipefail; \
-        if compgen -G ~/tds_sim_logs/*.pid >/dev/null 2>&1; then \
-          for f in ~/tds_sim_logs/*.pid; do \
-            pid=\$(cat \"\$f\" 2>/dev/null || true); \
-            if [[ -n \"\$pid\" ]]; then \
-              kill \"\$pid\" >/dev/null 2>&1 || true; \
-            fi; \
-            rm -f \"\$f\" || true; \
-          done; \
-        fi; \
-        pkill -f 'go run -mod=vendor' >/dev/null 2>&1 || true; \
-        pkill -f 'tail -f /dev/null | go run' >/dev/null 2>&1 || true; \
-        echo stopped"
+      remote_down_cmd='set +e;
+        for f in "$HOME"/tds_sim_logs/*.pid; do
+          [ -f "$f" ] || continue
+          pid=$(cat "$f" 2>/dev/null)
+          if [ -n "$pid" ]; then
+            kill "$pid" >/dev/null 2>&1 || true
+          fi
+          rm -f "$f" || true
+        done
+
+        # fallback: try to stop any go-run processes started by this orchestrator
+        pkill -f "go run -mod=vendor" >/dev/null 2>&1 || true
+        pkill -f "tail -f /dev/null | go run" >/dev/null 2>&1 || true
+        echo stopped
+        exit 0'
       quoted_remote_down_cmd="$(printf '%q' "${remote_down_cmd}")"
 
-      if ! ssh_run "${host}" "bash -lc ${quoted_remote_down_cmd}"; then
+      down_output=""
+      if ! down_output="$(ssh_run "${host}" "bash -lc ${quoted_remote_down_cmd}" 2>&1)"; then
         echo "WARN: failed to stop cleanly on ${host}" >&2
+        [[ -n "${down_output}" ]] && echo "${down_output}" >&2
         down_failures=$((down_failures+1))
+      else
+        [[ -n "${down_output}" ]] && echo "${down_output}"
       fi
     done < <(collect_all_hosts)
 
