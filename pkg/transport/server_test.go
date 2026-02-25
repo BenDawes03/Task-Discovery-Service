@@ -3,9 +3,11 @@ package transport
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -313,4 +315,812 @@ func TestHandleTCPConnForbiddenMapping(t *testing.T) {
 	if responses[0].Status != "FORBIDDEN" {
 		t.Fatalf("expected FORBIDDEN, got %+v", responses[0])
 	}
+}
+
+// ========================================================================
+// Test Infrastructure Helpers
+// ========================================================================
+
+// slowRegistry simulates a slow-processing registry for concurrency tests
+type slowRegistry struct {
+	fakeRegistry
+	delay        time.Duration
+	activeCount  int32
+	peakCount    int32
+	registerCall int32
+	queryCall    int32
+}
+
+func (s *slowRegistry) RegisterWithCapacity(taskName, address string, capacity int) {
+	atomic.AddInt32(&s.registerCall, 1)
+	current := atomic.AddInt32(&s.activeCount, 1)
+	defer atomic.AddInt32(&s.activeCount, -1)
+	
+	// Track peak concurrency
+	for {
+		peak := atomic.LoadInt32(&s.peakCount)
+		if current <= peak {
+			break
+		}
+		if atomic.CompareAndSwapInt32(&s.peakCount, peak, current) {
+			break
+		}
+	}
+	
+	time.Sleep(s.delay)
+	s.fakeRegistry.RegisterWithCapacity(taskName, address, capacity)
+}
+
+func (s *slowRegistry) GetServiceForRequestor(taskName string, requestorIP net.IP) (string, error) {
+	atomic.AddInt32(&s.queryCall, 1)
+	current := atomic.AddInt32(&s.activeCount, 1)
+	defer atomic.AddInt32(&s.activeCount, -1)
+	
+	for {
+		peak := atomic.LoadInt32(&s.peakCount)
+		if current <= peak {
+			break
+		}
+		if atomic.CompareAndSwapInt32(&s.peakCount, peak, current) {
+			break
+		}
+	}
+	
+	time.Sleep(s.delay)
+	return s.fakeRegistry.GetServiceForRequestor(taskName, requestorIP)
+}
+
+// startTestUDPServer starts a UDP server on a random port and returns the address
+func startTestUDPServer(t *testing.T, reg registry.Registry, maxConcurrent int64) (string, func()) {
+	t.Helper()
+	
+	// Find a free port
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	addr := listener.LocalAddr().String()
+	listener.Close()
+	
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	
+	go func() {
+		StartUDPServer(reg, port, maxConcurrent, nil)
+	}()
+	
+	time.Sleep(50 * time.Millisecond) // Let server start
+	
+	return addr, func() {
+		// UDP server runs in infinite loop, cleanup is a no-op
+		// In production this would need context-based cancellation
+	}
+}
+
+// startTestTCPServer starts a TCP server on a random port and returns the address
+func startTestTCPServer(t *testing.T, reg registry.Registry, maxConcurrent int64) (string, func()) {
+	t.Helper()
+	
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	
+	go func() {
+		StartTCPServer(reg, port, maxConcurrent, nil)
+	}()
+	
+	time.Sleep(50 * time.Millisecond)
+	
+	return addr, func() {
+		// TCP server runs in infinite loop, cleanup is a no-op
+		// In production this would need context-based cancellation
+	}
+}
+
+// sendUDPMessage sends a message and returns the response
+func sendUDPMessage(t *testing.T, serverAddr string, msg CentralizedMessage) (CentralizedResponse, error) {
+	t.Helper()
+	
+	conn, err := net.Dial("udp", serverAddr)
+	if err != nil {
+		return CentralizedResponse{}, err
+	}
+	defer conn.Close()
+	
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	if _, err := conn.Write(data); err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	var resp CentralizedResponse
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	return resp, nil
+}
+
+// sendTCPMessage sends a message over TCP and returns the response
+func sendTCPMessage(t *testing.T, serverAddr string, msg CentralizedMessage) (CentralizedResponse, error) {
+	t.Helper()
+	
+	conn, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		return CentralizedResponse{}, err
+	}
+	defer conn.Close()
+	
+	encoder := json.NewEncoder(conn)
+	if err := encoder.Encode(msg); err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	decoder := json.NewDecoder(conn)
+	var resp CentralizedResponse
+	if err := decoder.Decode(&resp); err != nil {
+		return CentralizedResponse{}, err
+	}
+	
+	return resp, nil
+}
+
+// ========================================================================
+// Server Lifecycle Tests
+// ========================================================================
+
+func TestUDPServerLifecycle(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	addr, stop := startTestUDPServer(t, reg, 100)
+	defer stop()
+	
+	// Register a service
+	regMsg := CentralizedMessage{
+		Command:  "REGISTER",
+		Task:     "ticket",
+		Address:  "10.0.0.1:8000",
+		Capacity: 5,
+	}
+	resp, err := sendUDPMessage(t, addr, regMsg)
+	if err != nil {
+		t.Fatalf("failed to send register: %v", err)
+	}
+	if resp.Status != "OK" {
+		t.Errorf("register failed: %+v", resp)
+	}
+	
+	// Query the service
+	queryMsg := CentralizedMessage{
+		Command: "QUERY",
+		Task:    "ticket",
+	}
+	resp, err = sendUDPMessage(t, addr, queryMsg)
+	if err != nil {
+		t.Fatalf("failed to send query: %v", err)
+	}
+	if resp.Status != "OK" || resp.Address != "10.0.0.1:8000" {
+		t.Errorf("query failed: %+v", resp)
+	}
+}
+
+func TestTCPServerLifecycle(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	addr, stop := startTestTCPServer(t, reg, 100)
+	defer stop()
+	
+	// Register a service
+	regMsg := CentralizedMessage{
+		Command:  "REGISTER",
+		Task:     "ticket",
+		Address:  "10.0.0.2:9000",
+		Capacity: 3,
+	}
+	resp, err := sendTCPMessage(t, addr, regMsg)
+	if err != nil {
+		t.Fatalf("failed to send register: %v", err)
+	}
+	if resp.Status != "OK" {
+		t.Errorf("register failed: %+v", resp)
+	}
+	
+	// Query the service
+	queryMsg := CentralizedMessage{
+		Command: "QUERY",
+		Task:    "ticket",
+	}
+	resp, err = sendTCPMessage(t, addr, queryMsg)
+	if err != nil {
+		t.Fatalf("failed to send query: %v", err)
+	}
+	if resp.Status != "OK" || resp.Address != "10.0.0.2:9000" {
+		t.Errorf("query failed: %+v", resp)
+	}
+}
+
+func TestTCPServerPersistentConnection(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	addr, stop := startTestTCPServer(t, reg, 100)
+	defer stop()
+	
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+	
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+	
+	// Send multiple commands on same connection
+	for i := 0; i < 5; i++ {
+		regMsg := CentralizedMessage{
+			Command:  "REGISTER",
+			Task:     fmt.Sprintf("task%d", i),
+			Address:  fmt.Sprintf("10.0.0.%d:8000", i),
+			Capacity: i + 1,
+		}
+		if err := encoder.Encode(regMsg); err != nil {
+			t.Fatalf("encode failed: %v", err)
+		}
+		
+		var resp CentralizedResponse
+		if err := decoder.Decode(&resp); err != nil {
+			t.Fatalf("decode failed: %v", err)
+		}
+		if resp.Status != "OK" {
+			t.Errorf("request %d failed: %+v", i, resp)
+		}
+	}
+}
+
+// ========================================================================
+// Concurrency Limit Tests
+// ========================================================================
+
+func TestUDPServerConcurrencyLimit(t *testing.T) {
+	slow := &slowRegistry{
+		delay: 100 * time.Millisecond,
+	}
+	slow.queryAddress = "10.0.0.1:8000"
+	
+	// Start with limit of 10 concurrent handlers
+	addr, stop := startTestUDPServer(t, slow, 10)
+	defer stop()
+	
+	// Send 50 requests rapidly
+	var wg sync.WaitGroup
+	successCount := int32(0)
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			msg := CentralizedMessage{Command: "QUERY", Task: "test"}
+			_, err := sendUDPMessage(t, addr, msg)
+			if err == nil {
+				atomic.AddInt32(&successCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	
+	// Should have received most responses (some may be dropped due to overload)
+	if successCount < 40 {
+		t.Errorf("too many dropped requests: only %d/50 succeeded", successCount)
+	}
+	
+	// Peak concurrency should not exceed limit significantly
+	peak := atomic.LoadInt32(&slow.peakCount)
+	if peak > 15 { // Allow small overshoot due to timing
+		t.Errorf("concurrency limit violated: peak=%d, limit=10", peak)
+	}
+	
+	t.Logf("Processed %d/50 requests with peak concurrency %d", successCount, peak)
+}
+
+func TestTCPServerConnectionLimit(t *testing.T) {
+	slow := &slowRegistry{
+		delay: 200 * time.Millisecond,
+	}
+	slow.queryAddress = "10.0.0.1:8000"
+	
+	// Start with limit of 5 concurrent connections
+	addr, stop := startTestTCPServer(t, slow, 5)
+	defer stop()
+	
+	// Open 5 connections and hold them
+	conns := make([]net.Conn, 5)
+	for i := 0; i < 5; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("failed to open connection %d: %v", i, err)
+		}
+		conns[i] = conn
+		defer conn.Close()
+		
+		// Send a slow query on each
+		go func(c net.Conn) {
+			encoder := json.NewEncoder(c)
+			encoder.Encode(CentralizedMessage{Command: "QUERY", Task: "test"})
+		}(conn)
+	}
+	
+	time.Sleep(50 * time.Millisecond)
+	
+	// Try to open 6th connection - should be rejected or timeout quickly
+	conn6, err := net.DialTimeout("tcp", addr, 1500*time.Millisecond)
+	if err == nil {
+		defer conn6.Close()
+		// Connection succeeded - it will be accepted after one of the 5 finishes
+		// This is acceptable behavior
+		t.Logf("6th connection accepted (one of first 5 likely finished)")
+	}
+	
+	// Verify peak concurrency doesn't exceed limit significantly
+	peak := atomic.LoadInt32(&slow.peakCount)
+	if peak > 7 {
+		t.Errorf("concurrency limit violated: peak=%d, limit=5", peak)
+	}
+	
+	t.Logf("Peak concurrency: %d", peak)
+}
+
+func TestServerConcurrencyLimitDefaults(t *testing.T) {
+	reg := &fakeRegistry{}
+	reg.queryAddress = "10.0.0.1:8000"
+	
+	// Test UDP with 0 (should default to 1000)
+	udpAddr, udpStop := startTestUDPServer(t, reg, 0)
+	defer udpStop()
+	
+	resp, err := sendUDPMessage(t, udpAddr, CentralizedMessage{Command: "QUERY", Task: "test"})
+	if err != nil {
+		t.Fatalf("UDP with default limit failed: %v", err)
+	}
+	if resp.Status != "OK" {
+		t.Errorf("UDP query failed: %+v", resp)
+	}
+	
+	// Test TCP with 0 (should default to 5000)
+	tcpAddr, tcpStop := startTestTCPServer(t, reg, 0)
+	defer tcpStop()
+	
+	resp, err = sendTCPMessage(t, tcpAddr, CentralizedMessage{Command: "QUERY", Task: "test"})
+	if err != nil {
+		t.Fatalf("TCP with default limit failed: %v", err)
+	}
+	if resp.Status != "OK" {
+		t.Errorf("TCP query failed: %+v", resp)
+	}
+}
+
+// ========================================================================
+// Race Condition Tests (run with -race flag)
+// ========================================================================
+
+func TestUDPServerConcurrentRequests(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	addr, stop := startTestUDPServer(t, reg, 100)
+	defer stop()
+	
+	var wg sync.WaitGroup
+	errors := int32(0)
+	
+	// Send 100 concurrent REGISTER requests
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			msg := CentralizedMessage{
+				Command:  "REGISTER",
+				Task:     fmt.Sprintf("task%d", id),
+				Address:  fmt.Sprintf("10.0.0.%d:8000", id%256),
+				Capacity: id%10 + 1,
+			}
+			resp, err := sendUDPMessage(t, addr, msg)
+			if err != nil || resp.Status != "OK" {
+				atomic.AddInt32(&errors, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	
+	if errors > 10 {
+		t.Errorf("too many errors: %d/100", errors)
+	}
+	
+	// Send 100 concurrent QUERY requests
+	errors = 0
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			msg := CentralizedMessage{
+				Command: "QUERY",
+				Task:    fmt.Sprintf("task%d", id),
+			}
+			_, err := sendUDPMessage(t, addr, msg)
+			if err != nil {
+				atomic.AddInt32(&errors, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	
+	if errors > 10 {
+		t.Errorf("too many query errors: %d/100", errors)
+	}
+}
+
+func TestTCPServerConcurrentConnections(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	addr, stop := startTestTCPServer(t, reg, 200)
+	defer stop()
+	
+	var wg sync.WaitGroup
+	errors := int32(0)
+	
+	// Open 50 concurrent connections, each sends 10 commands
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(connID int) {
+			defer wg.Done()
+			
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				atomic.AddInt32(&errors, 1)
+				return
+			}
+			defer conn.Close()
+			
+			encoder := json.NewEncoder(conn)
+			decoder := json.NewDecoder(conn)
+			
+			for j := 0; j < 10; j++ {
+				msg := CentralizedMessage{
+					Command:  "REGISTER",
+					Task:     fmt.Sprintf("conn%d_task%d", connID, j),
+					Address:  fmt.Sprintf("10.0.%d.%d:8000", connID%256, j%256),
+					Capacity: j + 1,
+				}
+				if err := encoder.Encode(msg); err != nil {
+					atomic.AddInt32(&errors, 1)
+					return
+				}
+				
+				var resp CentralizedResponse
+				if err := decoder.Decode(&resp); err != nil {
+					atomic.AddInt32(&errors, 1)
+					return
+				}
+				if resp.Status != "OK" {
+					atomic.AddInt32(&errors, 1)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	
+	if errors > 5 {
+		t.Errorf("too many errors: %d", errors)
+	}
+}
+
+// ========================================================================
+// HandleMessage Unit Tests
+// ========================================================================
+
+func TestHandleMessageRegister(t *testing.T) {
+	reg := &fakeRegistry{}
+	msg := CentralizedMessage{
+		Command:  "REGISTER",
+		Task:     "ticket",
+		Address:  "10.0.0.1:8000",
+		Capacity: 5,
+	}
+	
+	resp := HandleMessage(reg, msg, nil, &net.UDPAddr{}, nil)
+	
+	if resp.Status != "OK" {
+		t.Errorf("expected OK, got %+v", resp)
+	}
+	
+	task, addr, cap := reg.snapshotRegister()
+	if task != "ticket" || addr != "10.0.0.1:8000" || cap != 5 {
+		t.Errorf("unexpected registry values: task=%q addr=%q cap=%d", task, addr, cap)
+	}
+}
+
+func TestHandleMessageQuery(t *testing.T) {
+	reg := &fakeRegistry{queryAddress: "10.0.0.2:9000"}
+	msg := CentralizedMessage{
+		Command: "QUERY",
+		Task:    "ticket",
+	}
+	
+	resp := HandleMessage(reg, msg, net.ParseIP("192.168.1.100"), &net.UDPAddr{}, nil)
+	
+	if resp.Status != "OK" || resp.Address != "10.0.0.2:9000" {
+		t.Errorf("expected OK with address, got %+v", resp)
+	}
+}
+
+func TestHandleMessageValidation(t *testing.T) {
+	testCases := []struct {
+		name    string
+		msg     CentralizedMessage
+		wantErr string
+	}{
+		{
+			name:    "empty task on REGISTER",
+			msg:     CentralizedMessage{Command: "REGISTER", Task: "", Address: "10.0.0.1:8000"},
+			wantErr: "task and address required",
+		},
+		{
+			name:    "whitespace task on REGISTER",
+			msg:     CentralizedMessage{Command: "REGISTER", Task: "   ", Address: "10.0.0.1:8000"},
+			wantErr: "task and address required",
+		},
+		{
+			name:    "empty address on REGISTER",
+			msg:     CentralizedMessage{Command: "REGISTER", Task: "ticket", Address: ""},
+			wantErr: "task and address required",
+		},
+		{
+			name:    "whitespace address on REGISTER",
+			msg:     CentralizedMessage{Command: "REGISTER", Task: "ticket", Address: "   "},
+			wantErr: "task and address required",
+		},
+		{
+			name:    "empty task on QUERY",
+			msg:     CentralizedMessage{Command: "QUERY", Task: ""},
+			wantErr: "task required",
+		},
+		{
+			name:    "whitespace task on QUERY",
+			msg:     CentralizedMessage{Command: "QUERY", Task: "   "},
+			wantErr: "task required",
+		},
+		{
+			name:    "unknown command",
+			msg:     CentralizedMessage{Command: "FOOBAR"},
+			wantErr: "unknown command",
+		},
+	}
+	
+	reg := &fakeRegistry{}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := HandleMessage(reg, tc.msg, nil, &net.UDPAddr{}, nil)
+			if resp.Status != "ERR" {
+				t.Errorf("expected ERR status, got %s", resp.Status)
+			}
+			if !strings.Contains(resp.Error, tc.wantErr) {
+				t.Errorf("expected error %q, got %q", tc.wantErr, resp.Error)
+			}
+		})
+	}
+}
+
+func TestHandleMessageDefaultCapacity(t *testing.T) {
+	reg := &fakeRegistry{}
+	
+	// Capacity = 0 should default to 1
+	msg := CentralizedMessage{
+		Command:  "REGISTER",
+		Task:     "ticket",
+		Address:  "10.0.0.1:8000",
+		Capacity: 0,
+	}
+	
+	resp := HandleMessage(reg, msg, nil, &net.UDPAddr{}, nil)
+	if resp.Status != "OK" {
+		t.Errorf("register failed: %+v", resp)
+	}
+	
+	_, _, cap := reg.snapshotRegister()
+	if cap != 1 {
+		t.Errorf("expected default capacity 1, got %d", cap)
+	}
+}
+
+func TestHandleMessageErrorStatuses(t *testing.T) {
+	testCases := []struct {
+		name       string
+		queryError error
+		queryAddr  string
+		wantStatus string
+	}{
+		{
+			name:       "success",
+			queryError: nil,
+			queryAddr:  "10.0.0.1:8000",
+			wantStatus: "OK",
+		},
+		{
+			name:       "not found",
+			queryError: registry.ErrNotFound,
+			queryAddr:  "",
+			wantStatus: "NOTFOUND",
+		},
+		{
+			name:       "no allowed service",
+			queryError: registry.ErrNoAllowedService,
+			queryAddr:  "10.0.0.1:8000",
+			wantStatus: "FORBIDDEN",
+		},
+		{
+			name:       "empty address treated as not found",
+			queryError: nil,
+			queryAddr:  "",
+			wantStatus: "NOTFOUND",
+		},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &fakeRegistry{
+				queryAddress: tc.queryAddr,
+				queryError:   tc.queryError,
+			}
+			
+			msg := CentralizedMessage{Command: "QUERY", Task: "ticket"}
+			resp := HandleMessage(reg, msg, nil, &net.UDPAddr{}, nil)
+			
+			if resp.Status != tc.wantStatus {
+				t.Errorf("expected status %q, got %q", tc.wantStatus, resp.Status)
+			}
+		})
+	}
+}
+
+// ========================================================================
+// Broadcast Tests
+// ========================================================================
+
+func TestGetLocalIPv4(t *testing.T) {
+	ip := getLocalIPv4()
+	
+	if ip == "" {
+		t.Fatal("getLocalIPv4 returned empty string")
+	}
+	
+	if ip == "0.0.0.0" {
+		t.Skip("no network interfaces available")
+	}
+	
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		t.Fatalf("getLocalIPv4 returned invalid IP: %q", ip)
+	}
+	
+	if parsed.To4() == nil {
+		t.Fatalf("getLocalIPv4 returned non-IPv4: %v", parsed)
+	}
+	
+	if parsed.IsLoopback() {
+		t.Logf("Warning: getLocalIPv4 returned loopback: %v", parsed)
+	}
+	
+	t.Logf("Local IPv4: %s", ip)
+}
+
+func TestBroadcastServerInfo(t *testing.T) {
+	// This test is best-effort since UDP broadcast is unreliable
+	// Listen on discovery port
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{
+		IP:   net.IPv4zero,
+		Port: 5001,
+	})
+	if err != nil {
+		t.Skipf("cannot bind port 5001 (may be in use): %v", err)
+	}
+	defer conn.Close()
+	
+	// Trigger broadcast in background
+	startTime := time.Now()
+	done := make(chan struct{})
+	go func() {
+		BroadcastServerInfo(5000, 60*time.Second, startTime)
+		close(done)
+	}()
+	
+	// Try to read broadcast packet (may receive multiple due to retries)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4096)
+	n, _, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		t.Skipf("did not receive broadcast (may be network configuration): %v", err)
+	}
+	
+	// Parse JSON
+	var announcement map[string]interface{}
+	if err := json.Unmarshal(buf[:n], &announcement); err != nil {
+		t.Fatalf("broadcast not valid JSON: %v", err)
+	}
+	
+	// Verify fields
+	if announcement["type"] != "tds_server" {
+		t.Errorf("wrong type: %v", announcement["type"])
+	}
+	if announcement["port"] != float64(5000) {
+		t.Errorf("wrong port: %v", announcement["port"])
+	}
+	if announcement["address"] == nil {
+		t.Errorf("missing address field")
+	}
+	if announcement["heartbeat_timeout_seconds"] != float64(60) {
+		t.Errorf("wrong heartbeat timeout: %v", announcement["heartbeat_timeout_seconds"])
+	}
+	
+	<-done
+	t.Logf("Broadcast successful: %+v", announcement)
+}
+
+// ========================================================================
+// Event Callback Tests
+// ========================================================================
+
+func TestOnEventCallback(t *testing.T) {
+	var events []string
+	var mu sync.Mutex
+	
+	onEvent := func(msg string) {
+		mu.Lock()
+		events = append(events, msg)
+		mu.Unlock()
+	}
+	
+	reg := &fakeRegistry{}
+	reg.queryAddress = "10.0.0.1:8000"
+	
+	// Test REGISTER event
+	regMsg := CentralizedMessage{
+		Command:  "REGISTER",
+		Task:     "ticket",
+		Address:  "10.0.0.1:8000",
+		Capacity: 3,
+	}
+	HandleMessage(reg, regMsg, nil, &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 12345}, onEvent)
+	
+	// Test QUERY event
+	queryMsg := CentralizedMessage{
+		Command: "QUERY",
+		Task:    "ticket",
+	}
+	HandleMessage(reg, queryMsg, net.ParseIP("192.168.1.2"), &net.UDPAddr{IP: net.ParseIP("192.168.1.2"), Port: 23456}, onEvent)
+	
+	mu.Lock()
+	defer mu.Unlock()
+	
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %v", len(events), events)
+	}
+	
+	if !strings.Contains(events[0], "REGISTER") || !strings.Contains(events[0], "ticket") {
+		t.Errorf("unexpected REGISTER event: %q", events[0])
+	}
+	
+	if !strings.Contains(events[1], "QUERY") || !strings.Contains(events[1], "ticket") {
+		t.Errorf("unexpected QUERY event: %q", events[1])
+	}
+	
+	t.Logf("Events: %v", events)
 }

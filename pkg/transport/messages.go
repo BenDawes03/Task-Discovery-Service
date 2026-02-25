@@ -80,7 +80,7 @@ func handleQuery(reg registry.Registry, msg CentralizedMessage, requestorIP net.
 	}
 
 	switch {
-	case err == nil:
+	case err == nil && addrStr != "":
 		return CentralizedResponse{Status: "OK", Address: addrStr}
 	case err == registry.ErrNotFound || addrStr == "":
 		return CentralizedResponse{Status: "NOTFOUND"}

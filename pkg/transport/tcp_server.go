@@ -2,26 +2,38 @@ package transport
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"time"
 
+	"golang.org/x/sync/semaphore"
 	"tds/pkg/registry"
 )
 
 // StartTCPServer starts a JSON-based TCP server that understands the same JSON
 // messages as the UDP server. Each connection is handled concurrently and may
 // send multiple commands (one JSON object per line).
-func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error {
+//
+// maxConcurrent limits the number of concurrent connections. If 0, defaults to 5000.
+func StartTCPServer(reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 5000 // Default limit
+	}
+
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen tcp: %w", err)
 	}
 	defer ln.Close()
+
+	sem := semaphore.NewWeighted(maxConcurrent)
+	const acquireTimeout = 1 * time.Second
 
 	for {
 		conn, err := ln.Accept()
@@ -30,7 +42,17 @@ func StartTCPServer(reg registry.Registry, port int, onEvent func(string)) error
 			fmt.Printf("tcp accept error: %v\n", err)
 			continue
 		}
-		go handleTCPConn(conn, reg, onEvent)
+
+		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+		if err := sem.Acquire(ctx, 1); err == nil {
+			go func(c net.Conn) {
+				defer sem.Release(1)
+				handleTCPConn(c, reg, onEvent)
+			}(conn)
+		} else {
+			conn.Close() // Reject connection due to overload
+		}
+		cancel()
 	}
 }
 
@@ -74,7 +96,11 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 
 // StartTCPServerTLS starts a TLS-enabled TCP server with mutual authentication.
 // Requires server certificate/key and CA cert to verify client certificates.
-func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clientCAFile string, onEvent func(string)) error {
+//
+// maxConcurrent limits the number of concurrent connections. If 0, defaults to 5000.
+func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, certFile, keyFile, clientCAFile string, onEvent func(string)) error {	if maxConcurrent <= 0 {
+		maxConcurrent = 5000 // Default limit
+	}
 	// Load server certificate
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -116,6 +142,9 @@ func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clien
 		onEvent(fmt.Sprintf("TLS server started on %s (mutual auth enabled)", addr))
 	}
 
+	sem := semaphore.NewWeighted(maxConcurrent)
+	const acquireTimeout = 1 * time.Second
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -135,6 +164,15 @@ func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clien
 			}
 		}
 
-		go handleTCPConn(conn, reg, onEvent)
+		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+		if err := sem.Acquire(ctx, 1); err == nil {
+			go func(c net.Conn) {
+				defer sem.Release(1)
+				handleTCPConn(c, reg, onEvent)
+			}(conn)
+		} else {
+			conn.Close() // Reject connection due to overload
+		}
+		cancel()
 	}
 }

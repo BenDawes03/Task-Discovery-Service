@@ -1,10 +1,13 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 
+	"golang.org/x/sync/semaphore"
 	"tds/pkg/registry"
 )
 
@@ -21,14 +24,22 @@ import (
 //	{"status": "ERR", "error": "..."}
 //	{"status": "OK", "address": "ip:port"}
 //
+// maxConcurrent limits the number of concurrent request handlers. If 0, defaults to 1000.
 // onEvent, if non-nil, will be called with short human-readable messages for UI/logging.
-func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error {
+func StartUDPServer(reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1000 // Default limit
+	}
+
 	addr := net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: port}
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
 		return fmt.Errorf("listen udp: %w", err)
 	}
 	defer conn.Close()
+
+	sem := semaphore.NewWeighted(maxConcurrent)
+	const acquireTimeout = 100 * time.Millisecond
 
 	for {
 		buf := make([]byte, 4096)
@@ -39,10 +50,18 @@ func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error
 			continue
 		}
 
-		// Handle each request concurrently.
+		// Handle each request concurrently with semaphore limiting.
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		go handleUDPRequest(conn, reg, data, remote, onEvent)
+
+		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+		if err := sem.Acquire(ctx, 1); err == nil {
+			go func(d []byte, r *net.UDPAddr) {
+				defer sem.Release(1)
+				handleUDPRequest(conn, reg, d, r, onEvent)
+			}(data, remote)
+		} // else: drop request due to overload
+		cancel()
 	}
 }
 

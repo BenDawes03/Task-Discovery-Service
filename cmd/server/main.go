@@ -34,6 +34,10 @@ var (
 	heartbeatTimeout time.Duration
 	cleanupInterval  time.Duration
 
+	// Concurrency limits
+	maxConcurrentUDP int64
+	maxConcurrentTCP int64
+
 	// TLS configuration
 	useTLS          bool
 	tlsCertFile     string
@@ -362,6 +366,8 @@ func askTerminalOptions() (string, bool, bool) {
 	portFlagSet := flagProvided("--port")
 	heartbeatTimeoutFlagSet := flagProvided("--heartbeat-timeout")
 	cleanupIntervalFlagSet := flagProvided("--cleanup-interval")
+	maxUDPHandlersFlagSet := flagProvided("--max-udp-handlers")
+	maxTCPConnectionsFlagSet := flagProvided("--max-tcp-connections")
 	logDirFlagSet := flagProvided("--log-dir")
 	tlsCertFlagSet := flagProvided("--tls-cert")
 	tlsKeyFlagSet := flagProvided("--tls-key")
@@ -461,6 +467,43 @@ func askTerminalOptions() (string, bool, bool) {
 				cleanupInterval = parsed
 			} else {
 				fmt.Fprintln(os.Stderr, "Invalid duration; keeping existing value")
+			}
+		}
+	}
+
+	// Concurrency limit prompts
+	if !maxUDPHandlersFlagSet {
+		defaultUDP := int64(1000)
+		if maxConcurrentUDP > 0 {
+			defaultUDP = maxConcurrentUDP
+		}
+		fmt.Fprintf(os.Stderr, "Max concurrent UDP handlers [%d]: ", defaultUDP)
+		udpInput, _ := reader.ReadString('\n')
+		udpInput = strings.TrimSpace(udpInput)
+		if udpInput != "" {
+			var parsed int64
+			if _, err := fmt.Sscanf(udpInput, "%d", &parsed); err == nil && parsed >= 0 {
+				maxConcurrentUDP = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid number; keeping existing value")
+			}
+		}
+	}
+
+	if !maxTCPConnectionsFlagSet {
+		defaultTCP := int64(5000)
+		if maxConcurrentTCP > 0 {
+			defaultTCP = maxConcurrentTCP
+		}
+		fmt.Fprintf(os.Stderr, "Max concurrent TCP connections [%d]: ", defaultTCP)
+		tcpInput, _ := reader.ReadString('\n')
+		tcpInput = strings.TrimSpace(tcpInput)
+		if tcpInput != "" {
+			var parsed int64
+			if _, err := fmt.Sscanf(tcpInput, "%d", &parsed); err == nil && parsed >= 0 {
+				maxConcurrentTCP = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid number; keeping existing value")
 			}
 		}
 	}
@@ -762,23 +805,54 @@ func startTransportServer(transportMode string, runTUI bool) {
 		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	}
 
+	// Log concurrency limits
+	switch transportMode {
+	case "udp":
+		udpLimit := maxConcurrentUDP
+		if udpLimit <= 0 {
+			udpLimit = 1000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d UDP handlers", udpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d UDP handlers\n", udpLimit)
+		}
+	case "tcp":
+		tcpLimit := maxConcurrentTCP
+		if tcpLimit <= 0 {
+			tcpLimit = 5000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d TCP connections", tcpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d TCP connections\n", tcpLimit)
+		}
+	case "tls":
+		tcpLimit := maxConcurrentTCP
+		if tcpLimit <= 0 {
+			tcpLimit = 5000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d TLS connections", tcpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d TLS connections\n", tcpLimit)
+		}
+	}
+
 	switch transportMode {
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
-			if err := transport.StartTCPServerTLS(reg, listenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+			if err := transport.StartTCPServerTLS(reg, listenPort, maxConcurrentTCP, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TLS server error: %v", err))
 			}
 		}()
 	case "tcp":
 		go func() {
-			if err := transport.StartTCPServer(reg, listenPort, logEvent); err != nil {
+			if err := transport.StartTCPServer(reg, listenPort, maxConcurrentTCP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TCP server error: %v", err))
 			}
 		}()
 	default:
 		go func() {
-			if err := transport.StartUDPServer(reg, listenPort, logEvent); err != nil {
+			if err := transport.StartUDPServer(reg, listenPort, maxConcurrentUDP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("UDP server error: %v", err))
 			}
 		}()
@@ -912,6 +986,8 @@ func main() {
 	flag.IntVar(&listenPort, "port", 5000, "Port to listen on")
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
+	flag.Int64Var(&maxConcurrentUDP, "max-udp-handlers", 1000, "Maximum concurrent UDP request handlers (0 = use default)")
+	flag.Int64Var(&maxConcurrentTCP, "max-tcp-connections", 5000, "Maximum concurrent TCP connections (0 = use default)")
 	flag.StringVar(&firewallRulesPath, "firewall-rules", "", "Path to firewall rules file (optional)")
 
 	// Transport mode flags

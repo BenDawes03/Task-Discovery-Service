@@ -41,11 +41,11 @@ func main() {
 		var err error
 		switch strings.ToLower(*mode) {
 		case "udp":
-			err = transport.StartUDPServer(reg, *port, logEvent)
+			err = transport.StartUDPServer(reg, *port, 0, logEvent) // 0 = use default
 		case "tcp":
-			err = transport.StartTCPServer(reg, *port, logEvent)
+			err = transport.StartTCPServer(reg, *port, 0, logEvent) // 0 = use default
 		case "tls":
-			err = transport.StartTCPServerTLS(reg, *port, *certFile, *keyFile, *clientCAFile, logEvent)
+			err = transport.StartTCPServerTLS(reg, *port, 0, *certFile, *keyFile, *clientCAFile, logEvent) // 0 = use default
 		default:
 			err = fmt.Errorf("unsupported mode %q", *mode)
 		}
