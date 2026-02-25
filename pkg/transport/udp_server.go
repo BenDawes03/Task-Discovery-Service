@@ -4,14 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 
 	"tds/pkg/registry"
 )
-
-type capacityAwareRegistry interface {
-	RegisterWithCapacity(taskName, address string, capacity int)
-}
 
 // StartUDPServer starts a JSON-based UDP server that accepts commands:
 //
@@ -54,68 +49,13 @@ func StartUDPServer(reg registry.Registry, port int, onEvent func(string)) error
 func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, remote *net.UDPAddr, onEvent func(string)) {
 	var msg CentralizedMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()})
-		_, _ = conn.WriteToUDP(respData, remote)
-		return
-	}
-
-	switch msg.Command {
-	case "REGISTER":
-		msg.Task = strings.TrimSpace(msg.Task)
-		msg.Address = strings.TrimSpace(msg.Address)
-		if msg.Task == "" || msg.Address == "" {
-			respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "task and address required"})
-			_, _ = conn.WriteToUDP(respData, remote)
-			return
-		}
-		capacity := msg.Capacity
-		if capacity <= 0 {
-			capacity = 1
-		}
-		if capReg, ok := reg.(capacityAwareRegistry); ok {
-			capReg.RegisterWithCapacity(msg.Task, msg.Address, capacity)
-		} else {
-			reg.Register(msg.Task, msg.Address)
-		}
-		if onEvent != nil {
-			onEvent(fmt.Sprintf("REGISTER %s -> %s cap=%d from %v", msg.Task, msg.Address, capacity, remote))
-		}
-		respData, _ := json.Marshal(CentralizedResponse{Status: "OK"})
-		_, _ = conn.WriteToUDP(respData, remote)
-		return
-
-	case "QUERY":
-		msg.Task = strings.TrimSpace(msg.Task)
-		if msg.Task == "" {
-			respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "task required"})
-			_, _ = conn.WriteToUDP(respData, remote)
-			return
-		}
-
-		addrStr, err := reg.GetServiceForRequestor(msg.Task, remote.IP)
-		if onEvent != nil {
-			onEvent(fmt.Sprintf("QUERY %s from %v", msg.Task, remote))
-		}
-
-		var resp CentralizedResponse
-		switch {
-		case err == nil:
-			resp = CentralizedResponse{Status: "OK", Address: addrStr}
-		case err == registry.ErrNotFound || addrStr == "":
-			resp = CentralizedResponse{Status: "NOTFOUND"}
-		case err == registry.ErrNoAllowedService:
-			resp = CentralizedResponse{Status: "FORBIDDEN"}
-		default:
-			resp = CentralizedResponse{Status: "ERR", Error: err.Error()}
-		}
-
+		resp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
 		respData, _ := json.Marshal(resp)
 		_, _ = conn.WriteToUDP(respData, remote)
 		return
-
-	default:
-		respData, _ := json.Marshal(CentralizedResponse{Status: "ERR", Error: "unknown command: " + msg.Command})
-		_, _ = conn.WriteToUDP(respData, remote)
-		return
 	}
+
+	resp := HandleMessage(reg, msg, remote.IP, remote, onEvent)
+	respData, _ := json.Marshal(resp)
+	_, _ = conn.WriteToUDP(respData, remote)
 }

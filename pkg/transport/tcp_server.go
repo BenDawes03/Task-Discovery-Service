@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 
 	"tds/pkg/registry"
 )
@@ -57,54 +56,8 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 			continue
 		}
 
-		switch msg.Command {
-		case "REGISTER":
-			msg.Task = strings.TrimSpace(msg.Task)
-			msg.Address = strings.TrimSpace(msg.Address)
-			if msg.Task == "" || msg.Address == "" {
-				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task and address required"})
-				continue
-			}
-			capacity := msg.Capacity
-			if capacity <= 0 {
-				capacity = 1
-			}
-			if capReg, ok := reg.(capacityAwareRegistry); ok {
-				capReg.RegisterWithCapacity(msg.Task, msg.Address, capacity)
-			} else {
-				reg.Register(msg.Task, msg.Address)
-			}
-			if onEvent != nil {
-				onEvent(fmt.Sprintf("REGISTER %s -> %s cap=%d from %v", msg.Task, msg.Address, capacity, remote))
-			}
-			_ = encoder.Encode(CentralizedResponse{Status: "OK"})
-
-		case "QUERY":
-			msg.Task = strings.TrimSpace(msg.Task)
-			if msg.Task == "" {
-				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "task required"})
-				continue
-			}
-
-			addrStr, err := reg.GetServiceForRequestor(msg.Task, requestorIP)
-			if onEvent != nil {
-				onEvent(fmt.Sprintf("QUERY %s from %v", msg.Task, remote))
-			}
-
-			switch {
-			case err == nil:
-				_ = encoder.Encode(CentralizedResponse{Status: "OK", Address: addrStr})
-			case err == registry.ErrNotFound || addrStr == "":
-				_ = encoder.Encode(CentralizedResponse{Status: "NOTFOUND"})
-			case err == registry.ErrNoAllowedService:
-				_ = encoder.Encode(CentralizedResponse{Status: "FORBIDDEN"})
-			default:
-				_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: err.Error()})
-			}
-
-		default:
-			_ = encoder.Encode(CentralizedResponse{Status: "ERR", Error: "unknown command: " + msg.Command})
-		}
+		resp := HandleMessage(reg, msg, requestorIP, remote, onEvent)
+		_ = encoder.Encode(resp)
 	}
 }
 
@@ -159,13 +112,8 @@ func StartTCPServerTLS(reg registry.Registry, port int, certFile, keyFile, clien
 			continue
 		}
 
-		// Verify TLS connection and extract client certificate info
+		// Extract client certificate info from TLS connection
 		if tlsConn, ok := conn.(*tls.Conn); ok {
-			if err := tlsConn.Handshake(); err != nil {
-				fmt.Printf("tls handshake error: %v\n", err)
-				_ = conn.Close()
-				continue
-			}
 			state := tlsConn.ConnectionState()
 			if len(state.PeerCertificates) > 0 {
 				clientCert := state.PeerCertificates[0]
