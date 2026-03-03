@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 : "${STATION_LISTEN:=:9100}"
-: "${STATION_ID:=station-1}"
+: "${STATION_ID:=1}"
 : "${STATION_PROXY:=localhost:5100}"
 : "${STATION_PROXY_PROTO:=udp}"
 : "${STATION_TASK:=}"

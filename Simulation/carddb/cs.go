@@ -284,6 +284,37 @@ func (s *Store) InsertTicket(ctx context.Context, t Ticket) (int64, error) {
 	return id, nil
 }
 
+// SeedTickets populates the tickets table with tickets for the next 15 minutes.
+// Creates tickets at 1-minute intervals for each station.
+func (s *Store) SeedTickets(ctx context.Context, stationIDs []string) error {
+	if len(stationIDs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	passengerNames := []string{"Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Hank", "Ivy", "Jack"}
+	var tickets []Ticket
+	// Generate tickets for next 15 minutes at 1-minute intervals
+	for min := 1; min <= 15; min++ {
+		trainTime := now.Add(time.Duration(min) * time.Minute)
+		for _, stationID := range stationIDs {
+			passenger := passengerNames[(min+len(stationID))%len(passengerNames)]
+			tickets = append(tickets, Ticket{
+				StationID:  stationID,
+				TrainTime:  trainTime,
+				Passenger:  fmt.Sprintf("%s-%d", passenger, min),
+				CreatedAt:  now,
+				Active:     true,
+			})
+		}
+	}
+	for _, t := range tickets {
+		if _, err := s.InsertTicket(ctx, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetActiveTicketsWithin returns tickets whose train_time is between now and now+window and active=true.
 func (s *Store) GetActiveTicketsWithin(ctx context.Context, now time.Time, window time.Duration) ([]Ticket, error) {
 	q := `SELECT id, station_id, train_time, passenger, created_at, active FROM tickets WHERE active = TRUE AND train_time >= $1 AND train_time <= $2 ORDER BY station_id ASC`

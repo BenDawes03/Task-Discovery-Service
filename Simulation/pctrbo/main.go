@@ -128,10 +128,10 @@ func main() {
 		log.Fatalf("ensure pctr tables: %v", err)
 	}
 	seedCosts := []carddb.StationCost{
-		{FromStation: "station-1", ToStation: "station-1", CostCents: 0},
-		{FromStation: "station-1", ToStation: "station-2", CostCents: 150},
-		{FromStation: "station-2", ToStation: "station-3", CostCents: 200},
-		{FromStation: "station-1", ToStation: "station-3", CostCents: 300},
+		{FromStation: "1", ToStation: "1", CostCents: 0},
+		{FromStation: "1", ToStation: "2", CostCents: 150},
+		{FromStation: "2", ToStation: "3", CostCents: 200},
+		{FromStation: "1", ToStation: "3", CostCents: 300},
 	}
 	if err := store.SeedStationCosts(ctx, seedCosts); err != nil {
 		cancel()

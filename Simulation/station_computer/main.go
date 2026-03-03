@@ -119,8 +119,10 @@ func main() {
 	var oyboTask string
 	var pctrboTask string
 	var batchSize int
+	var distributorTask string
+	var ticketPollInterval time.Duration
 	flag.StringVar(&listen, "listen", ":9100", "listen address")
-	flag.StringVar(&stationID, "station-id", "station-1", "station computer identifier")
+	flag.StringVar(&stationID, "station-id", "1", "station computer identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
 	flag.StringVar(&taskName, "task", "", "task name to register under (default: station-Computer-<station-id>)")
@@ -128,31 +130,12 @@ func main() {
 	flag.StringVar(&oyboTask, "oybo-task", "sim.cs", "task name to query for CS (OY cards)")
 	flag.StringVar(&pctrboTask, "pctrbo-task", "sim.pctrbo", "task name to query for PCTRBO")
 	flag.IntVar(&batchSize, "batch-size", 5, "number of taps per card type before forwarding to BO")
+	flag.StringVar(&distributorTask, "distributor-task", "sim.ticketdistributor", "task name for ticket distributor")
+	flag.DurationVar(&ticketPollInterval, "ticket-poll-interval", 60*time.Second, "how often to poll for new ticket manifests")
 	flag.Parse()
 
-	normalizeStationID := func(v string) string {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return v
-		}
-		allDigits := true
-		for _, r := range v {
-			if r < '0' || r > '9' {
-				allDigits = false
-				break
-			}
-		}
-		if allDigits {
-			return "station-" + v
-		}
-		return v
-	}
-	stationID = normalizeStationID(stationID)
-
-	stationTaskID := strings.TrimSpace(stationID)
-	if strings.HasPrefix(stationTaskID, "station-") {
-		stationTaskID = strings.TrimPrefix(stationTaskID, "station-")
-	}
+	stationID = strings.TrimSpace(stationID)
+	stationTaskID := stationID
 
 	if strings.TrimSpace(advertise) == "" {
 		advertise = strings.TrimSpace(os.Getenv("STATION_ADVERTISE"))
@@ -210,6 +193,50 @@ func main() {
 			}
 		}
 	}()
+
+	// Poll distributor for latest ticket file.
+	if ticketPollInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(ticketPollInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				// Resolve distributor address
+				distAddr, err := proxyClient.Query(distributorTask)
+				if err != nil {
+					logger.Printf("poll tickets: distributor lookup failed (task=%s): %v", distributorTask, err)
+					continue
+				}
+				distBase := simproxy.EnsureHTTPBase(distAddr)
+				latestURL := fmt.Sprintf("%s/latest?station=%s", strings.TrimRight(distBase, "/"), stationID)
+				logger.Printf("polling tickets from %s", latestURL)
+
+				req, err := http.NewRequest(http.MethodGet, latestURL, nil)
+				if err != nil {
+					logger.Printf("poll tickets: request construction failed: %v", err)
+					continue
+				}
+				resp, err := httpClient.Do(req)
+				if err != nil {
+					logger.Printf("poll tickets failed: %v", err)
+					continue
+				}
+				if resp.StatusCode == http.StatusNotFound {
+					// No tickets available yet
+					logger.Printf("poll tickets: no tickets available yet (404)")
+					_ = resp.Body.Close()
+					continue
+				}
+				if resp.StatusCode != http.StatusOK {
+					_ = resp.Body.Close()
+					logger.Printf("poll tickets failed: http %d", resp.StatusCode)
+					continue
+				}
+				ticketData, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				logger.Printf("received tickets: station=%s bytes=%d", stationID, len(ticketData))
+			}
+		}()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {

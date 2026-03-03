@@ -7,10 +7,10 @@ Usage:
   # Generate a shared card list (run once on any machine):
   ./Simulation/tap_cards.sh --generate-cards-file cards_20.txt --from 10000 --to 19999 --count 20
 
-  # Tap those cards ONCE on gate A (station-1):
+  # Tap those cards ONCE on gate A (station 1):
   ./Simulation/tap_cards.sh --gate http://<gateA-host>:9200 --cards-file cards_20.txt --state gateA.state --require-allow
 
-  # Tap the SAME cards ONCE on gate B (station-2):
+  # Tap the SAME cards ONCE on gate B (station 2):
   ./Simulation/tap_cards.sh --gate http://<gateB-host>:9200 --cards-file cards_20.txt --state gateB.state --require-allow
 
   # (CS will pair the 2 taps per card into journeys. Set CS -journey-interval smaller for faster tests.)

@@ -80,9 +80,9 @@ func main() {
     var mu sync.Mutex
     // manifestID -> map[station]path
     manifests := map[string]map[string]string{}
-
-    mux := http.NewServeMux()
-
+	// Track latest manifest ID by generated time
+	var latestManifestID string
+	var latestManifestTime time.Time
     // Poll CS for manifests instead of receiving pushes.
     if pollInterval <= 0 {
         pollInterval = 30 * time.Second
@@ -172,6 +172,11 @@ func main() {
                         if t.After(last) {
                             last = t
                         }
+                        // Track latest manifest by generated time
+                        if t.After(latestManifestTime) {
+                            latestManifestTime = t
+                            latestManifestID = id
+                        }
                     }
                 }
             }
@@ -179,6 +184,7 @@ func main() {
         }
     }()
 
+    mux := http.NewServeMux()
     mux.HandleFunc("/file", func(w http.ResponseWriter, r *http.Request) {
         // GET /file?manifest_id=...&station=...
         if r.Method != http.MethodGet {
@@ -205,6 +211,36 @@ func main() {
         }
         http.ServeFile(w, r, path)
     })
+
+	mux.HandleFunc("/latest", func(w http.ResponseWriter, r *http.Request) {
+		// GET /latest?station=...
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		station := r.URL.Query().Get("station")
+		if station == "" {
+			http.Error(w, "missing station param", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if latestManifestID == "" {
+			http.Error(w, "no manifests available", http.StatusNotFound)
+			return
+		}
+		m, ok := manifests[latestManifestID]
+		if !ok {
+			http.Error(w, "latest manifest not found", http.StatusNotFound)
+			return
+		}
+		path, ok := m[station]
+		if !ok {
+			http.Error(w, "no tickets for this station", http.StatusNotFound)
+			return
+		}
+		http.ServeFile(w, r, path)
+	})
 
     server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
     ln, err := netutil.ListenTCP(listen)

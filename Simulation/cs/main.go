@@ -69,6 +69,8 @@ func main() {
 	var journeyInterval time.Duration
 	var ticketInterval time.Duration
 	var distributorTask string
+	var seedTickets bool
+	var seedTicketStations string
 
 	flag.StringVar(&listen, "listen", ":9101", "listen address")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
@@ -82,6 +84,8 @@ func main() {
 	flag.DurationVar(&journeyInterval, "journey-interval", 5*time.Minute, "how often to run journey construction (set smaller for testing)")
 	flag.DurationVar(&ticketInterval, "ticket-interval", 5*time.Minute, "how often to generate ticket manifests and notify distributor")
 	flag.StringVar(&distributorTask, "distributor-task", "sim.ticketdistributor", "task name for ticket distributor to notify via proxy")
+	flag.BoolVar(&seedTickets, "seed-tickets", true, "seed initial tickets for next 15 minutes on startup")
+	flag.StringVar(&seedTicketStations, "seed-ticket-stations", "1,2,3", "comma-separated list of station IDs to seed tickets for")
 	flag.Parse()
 
 	if strings.TrimSpace(advertise) == "" {
@@ -134,14 +138,31 @@ func main() {
 		log.Fatalf("seed cards: %v", err)
 	}
 	seedCosts := []carddb.StationCost{
-		{FromStation: "station-1", ToStation: "station-1", CostCents: 0},
-		{FromStation: "station-1", ToStation: "station-2", CostCents: 150},
-		{FromStation: "station-2", ToStation: "station-3", CostCents: 200},
-		{FromStation: "station-1", ToStation: "station-3", CostCents: 300},
+		{FromStation: "1", ToStation: "1", CostCents: 0},
+		{FromStation: "1", ToStation: "2", CostCents: 150},
+		{FromStation: "2", ToStation: "3", CostCents: 200},
+		{FromStation: "1", ToStation: "3", CostCents: 300},
 	}
 	if err := store.SeedStationCosts(ctx, seedCosts); err != nil {
 		cancel()
 		log.Fatalf("seed costs: %v", err)
+	}
+
+	if seedTickets {
+		stations := strings.Split(strings.TrimSpace(seedTicketStations), ",")
+		var validStations []string
+		for _, s := range stations {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				validStations = append(validStations, trimmed)
+			}
+		}
+		if len(validStations) > 0 {
+			if err := store.SeedTickets(ctx, validStations); err != nil {
+				cancel()
+				log.Fatalf("seed tickets: %v", err)
+			}
+			logger.Printf("seeded tickets for next 15 minutes: stations=%v", validStations)
+		}
 	}
 	cancel()
 

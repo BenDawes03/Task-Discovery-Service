@@ -17,7 +17,8 @@ Centralised server mode:
     - solution was to batch updates to the db and write them perioudically
     - An issue identified with this solution was that cache warming is done using the DB's view of query counts
     - Solution was to ensure batch write was performed before cache warming ocurred
-    
+- update clientproxy start to choose server address with flags and interactive [not started]
+
 
 TLS-Mode
 - Add TLS to the TCP server code ✓
@@ -62,3 +63,5 @@ Firewall mode:
 
 testing
 - Use the test scripts and the commit history to document the improvements made to the project
+- Place the simulation environment on the gitlab. Keep it switched off after some test runs
+- 

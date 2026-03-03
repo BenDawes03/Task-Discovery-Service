@@ -150,7 +150,7 @@ func main() {
 
 	flag.StringVar(&gateID, "id", "gate-1", "gate identifier")
 	flag.StringVar(&listen, "listen", ":9200", "listen address for HTTP tap input")
-	flag.StringVar(&stationID, "station-id", "station-1", "station computer identifier")
+	flag.StringVar(&stationID, "station-id", "1", "station computer identifier")
 	flag.StringVar(&proxyAddr, "proxy", "localhost:5100", "client proxy address host:port")
 	flag.StringVar(&proxyProto, "proxy-proto", "udp", "client proxy transport: udp or tcp")
 	flag.StringVar(&stationTask, "station-task", "", "task name to query for station computer (default: station-Computer-<station-id>)")

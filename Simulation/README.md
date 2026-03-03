@@ -117,6 +117,24 @@ curl -X POST http://localhost:9200/tap -H "Content-Type: application/json" -d '{
 
 (CTRL+C to stop)
 
+## Per-component start/stop scripts
+
+Each component folder includes helper scripts:
+
+- `start.sh` / `stop.sh` for the component itself
+- `start_proxy.sh` / `stop_proxy.sh` for `cmd/client_proxy`
+
+Available in:
+
+- `Simulation/cs`
+- `Simulation/pa`
+- `Simulation/pctrbo`
+- `Simulation/station_computer`
+- `Simulation/gate`
+
+These `stop` scripts send `TERM` first, wait (default 5 seconds), then use `KILL` if needed.
+Set `STOP_WAIT_SECONDS` to change the wait time.
+
 ## Notes
 
 - Service discovery:

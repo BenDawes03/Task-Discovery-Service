@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 : "${GATE_ID:=gate-1}"
 : "${GATE_LISTEN:=:9200}"
-: "${GATE_STATION_ID:=station-1}"
+: "${GATE_STATION_ID:=1}"
 : "${GATE_PROXY:=localhost:5100}"
 : "${GATE_PROXY_PROTO:=udp}"
 : "${GATE_STATION_TASK:=}"
