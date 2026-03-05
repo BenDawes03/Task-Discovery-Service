@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -250,52 +249,27 @@ func handlePacketP2P(conn *net.UDPConn, src *net.UDPAddr, data string, dhtRegist
 
 func parseProxyRequest(data string) (proxyRequest, error) {
 	data = strings.TrimSpace(data)
-	req := proxyRequest{Capacity: 1}
+	req := proxyRequest{Capacity: 1, JSON: true}
 	if data == "" {
 		return req, fmt.Errorf("empty command")
 	}
 
-	if strings.HasPrefix(data, "{") {
-		req.JSON = true
-		var msg transport.CentralizedMessage
-		if err := json.Unmarshal([]byte(data), &msg); err != nil {
-			return req, fmt.Errorf("invalid JSON: %w", err)
-		}
-		req.Command = strings.ToUpper(strings.TrimSpace(msg.Command))
-		req.Task = strings.TrimSpace(msg.Task)
-		req.Address = strings.TrimSpace(msg.Address)
-		if msg.Capacity > 0 {
-			req.Capacity = msg.Capacity
-		}
-		return req, nil
+	if !strings.HasPrefix(data, "{") {
+		return req, fmt.Errorf("JSON required")
 	}
 
-	parts := strings.Fields(data)
-	if len(parts) == 0 {
-		return req, fmt.Errorf("empty command")
+	var msg transport.CentralizedMessage
+	if err := json.Unmarshal([]byte(data), &msg); err != nil {
+		return req, fmt.Errorf("invalid JSON: %w", err)
 	}
-	req.Command = strings.ToUpper(parts[0])
-	switch req.Command {
-	case "REGISTER":
-		if len(parts) < 3 {
-			return req, fmt.Errorf("usage: REGISTER <task> <address> [capacity]")
-		}
-		req.Task = parts[1]
-		req.Address = parts[2]
-		if len(parts) >= 4 {
-			capVal, err := strconv.Atoi(parts[3])
-			if err != nil || capVal <= 0 {
-				return req, fmt.Errorf("capacity must be a positive integer")
-			}
-			req.Capacity = capVal
-		}
-	case "QUERY":
-		if len(parts) < 2 {
-			return req, fmt.Errorf("usage: QUERY <task>")
-		}
-		req.Task = parts[1]
-	default:
-		return req, fmt.Errorf("unknown command")
+	req.Command = strings.ToUpper(strings.TrimSpace(msg.Command))
+	req.Task = strings.TrimSpace(msg.Task)
+	req.Address = strings.TrimSpace(msg.Address)
+	if msg.Capacity < 0 {
+		return req, fmt.Errorf("capacity must be a positive integer")
+	}
+	if msg.Capacity > 0 {
+		req.Capacity = msg.Capacity
 	}
 
 	return req, nil
