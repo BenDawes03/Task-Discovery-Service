@@ -35,9 +35,6 @@ A Dual-Architecture Service Registry for Distributed Systems}}
 \maketitle
 \thispagestyle{empty}
 
-\newpage
-\tableofcontents
-\newpage
 
 \section{Introduction and Motivation}
 
@@ -98,281 +95,83 @@ Several prominent systems address service discovery:
 
 These systems excel in their respective domains but require commitment to a specific architectural paradigm. TDS differentiates itself by supporting multiple operational modes within a single codebase, allowing practitioners to select the appropriate architecture for their deployment context.
 
-\subsection{Technical Foundation}
+\section{Design}
+\subsubsection{services, tasks and the client proxy}
+The diagram below gives an overview of a client machine in this system. With multiple services registering and querying services to the client proxy which is the local endpoint of this solution.
 
-\subsubsection{Consistent Hashing}
 
-The P2P mode of TDS employs consistent hashing to distribute service registrations across nodes. In consistent hashing, both nodes and data items (tasks) are mapped to points on a circular hash space using a cryptographic hash function. A task is assigned to the first node encountered when moving clockwise around the ring from the task's hash position.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/clientdevice.png}
+    \caption{Client machine service registration and discovery via client proxy}
+    \label{fig:ClientDevice}
+\end{figure}
 
-Given an $m$-bit hash space, the ring has $2^m$ possible positions. For TDS, we use SHA-256 ($m = 256$), providing:
-$$
-\text{Ring Size} = 2^{256} \approx 1.16 \times 10^{77}
-$$
+\subsubsection{Message format}
+All communication between local services (clients) and the client proxy uses JSON messages in both centralised and P2P modes. The two shared commands are \texttt{REGISTER} and \texttt{QUERY}.
 
-This enormous space ensures uniform distribution and minimizes collision probability. The mapping function for a task $t$ to find responsible node $n$ is:
-$$
-n = \min\{n_i \in \text{Nodes} \mid \text{hash}(n_i) \geq \text{hash}(t) \pmod{2^m}\}
-$$
-
-\subsubsection{Load Balancing Algorithms}
-
-TDS implements round-robin load balancing for distributing queries across multiple service instances registered under the same task name. Given $k$ instances for task $t$, and a current index $i$, the selection function is:
-$$
-\text{select}(t) = \text{instances}_t[(i \bmod k)], \quad i \leftarrow i + 1
-$$
-
-This deterministic approach ensures even distribution across instances while maintaining simplicity and requiring minimal state (only the current index).
-
-\subsection{System Requirements}
-
-The TDS system must satisfy the following requirements:
-
-\textbf{Functional Requirements:}
-\begin{itemize}
-    \item Support service registration with task name and network address
-    \item Provide query interface for service lookup
-    \item Implement heartbeat mechanism for liveness detection
-    \item Enable automatic cleanup of stale registrations
-    \item Support both centralized and P2P operational modes
-    \item Provide multiple transport protocols (UDP, TCP, TLS)
-\end{itemize}
-
-\textbf{Non-Functional Requirements:}
-\begin{itemize}
-    \item Query latency $<$ 10ms for local network operations
-    \item Support minimum 10,000 concurrent service registrations
-    \item Achieve 99.9\% query success rate under normal conditions
-    \item Provide real-time monitoring and statistics
-    \item Ensure thread-safe concurrent access to registry
-    \item Support graceful degradation under load
-\end{itemize}
-
-\subsection{Technology Selection}
-
-\textbf{Go Programming Language:} Selected for its excellent concurrency primitives (goroutines and channels), strong standard library for network programming, and efficient compiled performance. Go's garbage collector and memory safety features reduce the risk of common bugs in concurrent systems.
-
-\textbf{PostgreSQL:} Chosen as the persistent storage backend for its ACID compliance, rich indexing capabilities, and proven reliability. The SQL interface simplifies complex queries for listing services and computing statistics.
-
-\textbf{Protocol Design:} The system uses a simple text-based protocol for ease of debugging and interoperability. Messages follow the format: \texttt{COMMAND TASK [ADDRESS]}, where commands include REGISTER, QUERY, and HEARTBEAT.
-
-\newpage
-\section{Methodology and Specification}
-
-\subsection{System Architecture}
-
-TDS implements a flexible dual-architecture design permitting deployment in either centralized or P2P mode. This section details the architectural specifications for each mode.
-
-\subsubsection{Centralized Architecture}
-
-The centralized architecture employs a traditional client-server model with three primary components:
-
-\textbf{TDS Server:} The authoritative registry maintaining complete service state. Key responsibilities include:
-\begin{itemize}
-    \item Processing registration, query, and heartbeat requests
-    \item Maintaining in-memory and persistent storage layers
-    \item Executing periodic cleanup of expired registrations
-    \item Providing Terminal User Interface (TUI) for monitoring
-    \item Broadcasting server presence via UDP for client discovery
-\end{itemize}
-
-\textbf{Client Proxy:} An intermediary gateway between clients and the TDS server:
-\begin{itemize}
-    \item Discovers TDS server via broadcast or static configuration
-    \item Forwards client requests to server
-    \item Maintains connection health monitoring
-    \item Provides simple forwarding with minimal processing overhead
-\end{itemize}
-
-\textbf{Client Library:} Lightweight client SDK for application integration:
-\begin{itemize}
-    \item Exposes Register(), Query(), and Heartbeat() operations
-    \item Handles protocol serialization and network communication
-    \item Implements timeout and retry logic
-\end{itemize}
-
-The message flow follows:
-$$
-\text{Client} \xrightarrow{\text{UDP/TCP}} \text{Proxy} \xrightarrow{\text{UDP/TCP/TLS}} \text{Server} \xrightarrow{\text{Registry}} \text{Storage}
-$$
-
-\subsubsection{P2P Architecture (DHT)}
-
-The P2P architecture implements a distributed hash table eliminating the centralized server:
-
-\textbf{DHT Node:} Each client proxy embeds a full DHT node implementation:
-\begin{itemize}
-    \item Performs consistent hashing to determine task ownership
-    \item Routes requests to responsible nodes
-    \item Maintains partial view of the hash ring
-    \item Participates in peer discovery and gossip protocol
-    \item Stores registrations for assigned key ranges
-\end{itemize}
-
-The routing algorithm uses finger tables for efficient $O(\log N)$ lookup complexity. A node $n$ with identifier $id_n$ maintains $m$ finger entries where finger $i$ points to the successor of:
-$$
-\text{finger}[i] = \text{successor}((id_n + 2^{i-1}) \bmod 2^m)
-$$
-
-\subsection{Protocol Specification}
-
-\subsubsection{Message Format}
-
-All messages use space-delimited text protocol for simplicity:
-
-\begin{lstlisting}[language=bash]
-# Registration
-REGISTER <task-name> <address:port>
-Response: OK | ERR <message>
-
-# Query
-QUERY <task-name>
-Response: <address:port> | NOTFOUND | ERR <message>
-
-# Heartbeat
-HEARTBEAT <task-name> <address:port>
-Response: OK | ERR <message>
-\end{lstlisting}
-
-\subsubsection{State Machine}
-
-Each service registration follows a lifecycle state machine:
-
-$$
-\text{Unregistered} \xrightarrow{\text{REGISTER}} \text{Active} \xrightarrow{\text{HEARTBEAT}} \text{Active}
-$$
-$$
-\text{Active} \xrightarrow{\text{timeout}} \text{Stale} \xrightarrow{\text{cleanup}} \text{Unregistered}
-$$
-
-The timeout threshold $T_{\text{timeout}}$ is configurable (default: 60 seconds). A service transitions to \textit{Stale} if:
-$$
-T_{\text{current}} - T_{\text{last\_heartbeat}} > T_{\text{timeout}}
-$$
-
-\subsection{Storage Architecture}
-
-TDS implements a two-tier storage hierarchy optimizing for performance while maintaining persistence:
-
-\subsubsection{In-Memory Registry}
-
-The \texttt{MemoryRegistry} provides fast access with the following data structures:
-
+\textbf{JSON requests (service $\rightarrow$ client proxy)}
 \begin{lstlisting}
-type MemoryRegistry struct {
-    mu               sync.RWMutex
-    services         map[string][]ServiceEntry
-    roundRobinIndex  map[string]int
-    totalQueries     int64
-}
-
-type ServiceEntry struct {
-    Address       string
-    LastHeartbeat time.Time
-    QueryCount    int64
-}
+{"cmd":"REGISTER","task":"payment","address":"10.0.1.5:8080","capacity":10}
+{"cmd":"QUERY","task":"payment"}
 \end{lstlisting}
 
-Operations achieve $O(1)$ lookup complexity through Go's map implementation. The \texttt{sync.RWMutex} enables concurrent reads while serializing writes, maximizing throughput for the common read-heavy workload.
-
-\subsubsection{Store-Backed Registry}
-
-The \texttt{StoreBackedRegistry} adds persistence with Least Frequently Used (LFU) caching:
-
+\textbf{JSON response format}
 \begin{lstlisting}
-type StoreBackedRegistry struct {
-    store           Store
-    memCache        *MemoryRegistry
-    cacheMutex      sync.RWMutex
-    cacheMaxSize    int
-}
+{"status":"OK"}
+{"status":"OK","address":"10.0.1.5:8080"}
+{"status":"NOTFOUND"}
+{"status":"ERR","error":"task required"}
 \end{lstlisting}
 
-The cache warming algorithm selects top-$k$ most queried tasks:
-$$
-\text{Cache}_k = \{t \in \text{Tasks} \mid \text{rank}(t) \leq k\}
-$$
-where $\text{rank}(t)$ is determined by total query count $\sum_{i} \text{queryCount}_i$ across all instances of task $t$.
-
-\subsection{Concurrency Model}
-
-TDS leverages Go's goroutines for concurrent request processing. Each incoming connection spawns a dedicated goroutine:
-
-\begin{lstlisting}
-func handleConnections(listener net.Listener) {
-    for {
-        conn, err := listener.Accept()
-        if err != nil {
-            continue
-        }
-        go processRequest(conn)
-    }
-}
-\end{lstlisting}
-
-This design supports high concurrency with minimal overhead since goroutines are multiplexed onto OS threads by the Go runtime. Synchronization uses fine-grained locking to minimize contention:
-
+\textbf{Validation and error cases}
 \begin{itemize}
-    \item Read operations acquire \texttt{RLock()} for concurrent access
-    \item Write operations acquire exclusive \texttt{Lock()}
-    \item Per-operation locks instead of coarse-grained table locks
+    \item Missing task on query returns \texttt{\{"status":"ERR","error":"task required"\}}
+    \item Missing task or address on register returns \texttt{\{"status":"ERR","error":"task and address required"\}}
+    \item Invalid capacity returns \texttt{\{"status":"ERR","error":"capacity must be a positive integer"\}}
+    \item Unknown command returns \texttt{\{"status":"ERR","error":"unknown command"\}}
+    \item Malformed JSON returns \texttt{\{"status":"ERR","error":"invalid JSON: <parse error>"\}}
+    \item Non-JSON input returns \texttt{\{"status":"ERR","error":"JSON required"\}}
 \end{itemize}
 
-\subsection{Security Model}
+These message types are intentionally minimal so the same client-side behavior works regardless of whether the proxy is currently forwarding to a central server or to the P2P registry.
+\subsection{Centralised mode}
+Introduce the server, cache and database. 
+\subsubsection{load balancing}
+\subsubsection{Firewall-mode}
+\subsubsection{}
+\subsection{Peer-to-Peer mode}
+\subsubsection{The Distributed Hash Table}
+\subsubsection{Service register and query}
+\subsubsection{Eventual consistency and node discovery}
 
-TDS implements mutual TLS authentication for secure deployments:
-
-\textbf{Certificate Hierarchy:} A self-signed CA certificate signs both server and client certificates, establishing mutual trust:
-$$
-\text{CA} \xrightarrow{\text{signs}} \text{Server\_Cert}, \quad \text{CA} \xrightarrow{\text{signs}} \text{Client\_Cert}
-$$
-
-\textbf{Handshake Process:}
-\begin{enumerate}
-    \item Client initiates TLS connection to server
-    \item Server presents certificate signed by CA
-    \item Client verifies server certificate against CA
-    \item Server requests client certificate
-    \item Client presents certificate signed by CA
-    \item Server verifies client certificate against CA
-    \item Encrypted channel established
-\end{enumerate}
-
-The TLS configuration enforces TLS 1.2 minimum version and secure cipher suites (ECDHE-RSA-AES256-GCM-SHA384).
-
-\newpage
-\section{Implementation Details}
+\section{Implementation details and testing}
 
 
-
-\newpage
-\section{Technical Highlights}
-
-\Section{Implementation Challenges}
+\subsection{Implementation Challenges}
 Here i will lay out key insights into areas of my project that presented key challenges to me. It details how I overcame them and, in particular, where I decided to cease further work in the scope of the project timeframe.
-\subsection{Server Cache Performance}
+\subsubsection{Server Cache Performance}
 The implementation of the cache appeared simple but produced several challenges. Having completed the cache implementation, I ran perforance tests with a combination of cache hits and misses. Initially I found that cache misses were actually faster than hits!
 After increasingly deep investigation I found that, though queries should be read intensive, because they incremented query counts and round robin it was write locking significantly.
 My solution was two-fold: firstly, I batched query count updates to the database as they were not necessary until the next cache warming. I then researched in to Atomics for the round robin and with these implemented the cache became significantly faster than the database.
 
-\subsection{Peer-to-Peer Challenges}
+\subsubsection{Peer-to-Peer Challenges}
 Having implemented and tested the P2P mode for this project, I found that it struggled to scale with large numbers of nodes. 
 The issue pertained to the fact that, as the network grew, patterns of individual nodes communicating emerged. Many nodes were rarely contacted and therefore their routing tables were not updated with the latest information.
 In these cases the centralised approach was far more effective. What the network gained in robustness against node failure, it lost with scale.
-\subsection{Firewall-Mode}
+\subsubsection{Firewall-Mode}
 Firewall mode was a feature I implemented with the goal of allowing the TDS system (in centralised mode) to only serve up services that were routable for the requestor.
 This proved to be a significant challenge as the only method I devised was to import firewall rule file from the system administrator of any given application. This was deemed unacceptable as the separation of the TDS' routing table from the source of truth (the firewall) was a recipe for inconsistency.
 The feature was therefore not developed further but included as an artifact as further work could be done to improve the implementation.
-\subsection{Architectural Decisions}
+\subsubsection{Architectural Decisions}
 
-\section{Testing and Example Applications}
-\subsection{Testing Methodology}
+\subsection{Functional testing}
 
 The TDS system underwent comprehensive testing to validate functionality.
 
 Unit tests validate individual component behavior:
 \subsubsection{Centralised Mode Testing}
 Testing was split into the two modes of operation, centalised and P2P. 
-
 
 \begin{itemize}
     \item Registry operations (register, query, cleanup)
@@ -406,11 +205,11 @@ A point of particular interest was the k-nearest neighbours effectiveness in ale
 
 
 
-\subsubsection{Realistic Application Testing}
+\subsection{Realistic Application Testing}
 To demonstrate the practical utility of TDS, I implemented a mock-up of the system that inspired it. 
-I created a highly abstracted version of a train ticketing, Oyster and contactless payment system. 
+I created a highly abstracted version of a train ticketing, Oyster and contactless payment system.\newline
 
-The system specified can be found under the Simulation folder of the project repository.
+The system specified can be found under the Simulation folder of the project repository.\newline 
 
 It contains a set of programs that simulate a full distributed system with stations, payment gates, fare calculation and very rough PCTR-tokenisation to simulate cardholder environment structure.
 Key features include:
@@ -421,6 +220,8 @@ Key features include:
     \item Multiple endpoints for ticket distribution to demonstrate load balancing
 \end{itemize}
 
+\textbf{A full High-Level-Design document is available in the repository under \texttt{ticketing\_system\_High\_Level\_Design\_Document.pdf}}
+
 All of these devices were interconnected by querying the TDS system for service discovery.
 Of key note was that, although many issues arose developing this system and setting up the environment, 
 communication between devices was seamless. This was a testament to the robustness of the project as the only time I had to troubleshoot communication was when i forgot to start the TDS server itself.
@@ -430,21 +231,6 @@ communication between devices was seamless. This was a testament to the robustne
 
 
 
-\textbf{Dual-mode design:} Supporting both centralized and P2P modes within a single codebase introduced complexity but provides valuable deployment flexibility. The abstraction layers (Registry interface, transport adapters) successfully isolated mode-specific logic.
-
-\textbf{LFU caching:} The cache warming algorithm effectively reduces database load. Initial implementation used LRU but LFU better handles workloads with distinct hot/cold task distributions.
-
-\textbf{Text protocol:} Simple space-delimited protocol simplified debugging and interoperability. Future work could add binary protocol option for performance-critical deployments.
-
-\subsubsection{Implementation Challenges}
-
-\textbf{Concurrency bugs:} Initial implementation had race conditions in round-robin index updates. Go's race detector (\texttt{-race} flag) proved invaluable for identifying these issues.
-
-\textbf{Lock contention:} Coarse-grained locking caused throughput bottlenecks. Migration to \texttt{sync.RWMutex} and fine-grained locks improved concurrent read performance by $3\times$.
-
-\textbf{Cleanup efficiency:} Linear scan of all services for cleanup became expensive at scale. Considered using min-heap by heartbeat time but determined periodic cleanup sufficient for current requirements.
-
-\subsection{Future Work}
 
 Several enhancements would improve TDS capabilities:
 
@@ -462,21 +248,7 @@ Several enhancements would improve TDS capabilities:
 
 \subsection{Conclusions}
 
-This project successfully demonstrates that a unified dual-mode service discovery system can provide both simplicity for small deployments and scalability for large distributed systems. The TDS implementation achieves the primary research objectives:
 
-\begin{enumerate}
-    \item \textbf{Flexible architecture}: Both centralized and P2P modes supported with mode-agnostic client interface
-    \item \textbf{Performance}: Sub-2ms query latency for typical workloads with throughput exceeding 45,000 QPS
-    \item \textbf{Scalability}: Supports tens of thousands of services with graceful degradation
-    \item \textbf{Security}: Mutual TLS authentication provides production-grade security
-    \item \textbf{Monitoring}: Real-time TUI enables operational visibility
-\end{enumerate}
-
-The key insight is that service discovery systems need not force a choice between centralized simplicity and distributed scalability. By carefully abstracting the registry interface and transport layer, a single implementation can support both paradigms. The LFU caching strategy effectively bridges in-memory performance and database persistence, demonstrating that hybrid approaches can deliver both speed and durability.
-
-Performance evaluations confirm that TDS meets the requirements for production deployment across a range of use cases, from development environments to large-scale distributed systems. The comprehensive testing infrastructure, including multi-VM orchestration and load testing frameworks, provides confidence in system reliability and performance characteristics.
-
-TDS represents a practical contribution to the service discovery landscape, demonstrating that architectural flexibility and high performance are compatible goals. The open architecture and clean interfaces facilitate future enhancements while the existing implementation provides immediate value for distributed systems practitioners.
 
 \newpage
 \begin{thebibliography}{9}
