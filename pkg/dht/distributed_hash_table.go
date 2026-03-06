@@ -156,8 +156,9 @@ func (dht *DHT) FindClosestNode(taskName string) *Node {
 	return dht.peers[closestID]
 }
 
-// FindKClosestNodes returns the k nodes with the smallest XOR distance to a task hash.
+// FindKClosestNodes returns the k nodes with the smallest ring distance to a task hash.
 // This is used for k-replication: data is stored on these k nodes for fault tolerance.
+// Distance is measured as the clockwise distance on the ring (Chord-like DHT metric).
 // Returns fewer than k nodes if the ring has fewer than k nodes total.
 func (dht *DHT) FindKClosestNodes(taskName string, k int) []*Node {
 	taskID := HashTask(taskName)
@@ -288,7 +289,7 @@ func (dht *DHT) forwardLookup(taskName string, kClosest []*Node) []string {
 // findKClosestNodesLocked finds k-closest nodes without taking lock (must hold lock)
 func (dht *DHT) findKClosestNodesLocked(taskName string, k int) []*Node {
 	taskID := HashTask(taskName)
-	
+
 	if len(dht.ring) == 0 {
 		return []*Node{dht.self}
 	}
@@ -345,8 +346,6 @@ func (dht *DHT) GetSelf() *Node {
 	}
 }
 
-// CompareNodeID compares two node IDs numerically
-// returns -1 if a < b, 0 if a == b, 1 if a > b
 func CompareNodeID(a, b NodeID) int {
 	aBig := new(big.Int).SetBytes(a[:])
 	bBig := new(big.Int).SetBytes(b[:])
@@ -392,7 +391,8 @@ func GetLocalIP() string {
 	return "127.0.0.1"
 }
 
-// Distance calculates the distance between two node IDs on the ring
+// Distance calculates the clockwise ring distance from node a to node b.
+// For Chord-like DHT: returns (b - a) mod 2^256, which is the position of b relative to a going clockwise.
 func Distance(a, b NodeID) *big.Int {
 	aBig := new(big.Int).SetBytes(a[:])
 	bBig := new(big.Int).SetBytes(b[:])

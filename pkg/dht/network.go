@@ -36,6 +36,8 @@ const (
 	MsgFind      = "FIND"
 	MsgFoundData = "FOUND"
 	MsgNotFound  = "NOTFOUND"
+	MsgOK        = "OK"
+	MsgNotResponsible = "NOT_RESPONSIBLE"
 )
 
 // Message represents a DHT protocol message
@@ -228,7 +230,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			dn.dht.StoreTask(sp.Task, sp.Address)
 			netLogger.Printf("stored %s -> %s (in k-closest)", sp.Task, sp.Address)
 			return &Message{
-				Type:   "OK",
+				Type:   MsgOK,
 				Sender: dn.dht.self.Address,
 			}
 		}
@@ -244,7 +246,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 		   payload, _ := json.Marshal(NotResponsiblePayload{Closest: closestAddrs})
 		   netLogger.Printf("rejected store for %s (not in k-closest), suggesting: %v", sp.Task, closestAddrs)
 		   return &Message{
-			   Type:    "NOT_RESPONSIBLE",
+			   Type:    MsgNotResponsible,
 			   Sender:  dn.dht.self.Address,
 			   Payload: payload,
 		   }
@@ -498,10 +500,10 @@ func (dn *DHTNetwork) Store(task, address string) error {
 			continue
 		}
 
-		if resp.Type == "OK" {
+		if resp.Type == MsgOK {
 			netLogger.Printf("stored on %s (k=%d): %s -> %s", addr, ReplicationFactor, task, address)
 			successCount++
-		} else if resp.Type == "NOT_RESPONSIBLE" && len(resp.Payload) > 0 {
+		} else if resp.Type == MsgNotResponsible && len(resp.Payload) > 0 {
 			var nr NotResponsiblePayload
 			if err := json.Unmarshal(resp.Payload, &nr); err == nil {
 				// Only queue suggested nodes that are closer than ANY node we've tried
@@ -528,7 +530,10 @@ func (dn *DHTNetwork) Store(task, address string) error {
 	}
 
 	if successCount == 0 {
-		return fmt.Errorf("failed to store on any node: %w", lastErr)
+		if lastErr != nil {
+			return fmt.Errorf("failed to store on any node: %w", lastErr)
+		}
+		return fmt.Errorf("failed to store on any node: no replicas succeeded")
 	}
 
 	netLogger.Printf("store complete: %d replicas for %s", successCount, task)
