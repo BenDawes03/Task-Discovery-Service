@@ -471,8 +471,8 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
-	// Concurrency limit prompts
-	if !maxUDPHandlersFlagSet {
+	// Concurrency limit prompts are transport-specific.
+	if transportMode == "udp" && !maxUDPHandlersFlagSet {
 		defaultUDP := int64(1000)
 		if maxConcurrentUDP > 0 {
 			defaultUDP = maxConcurrentUDP
@@ -490,12 +490,16 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
-	if !maxTCPConnectionsFlagSet {
+	if (transportMode == "tcp" || transportMode == "tls") && !maxTCPConnectionsFlagSet {
 		defaultTCP := int64(5000)
 		if maxConcurrentTCP > 0 {
 			defaultTCP = maxConcurrentTCP
 		}
-		fmt.Fprintf(os.Stderr, "Max concurrent TCP connections [%d]: ", defaultTCP)
+		if transportMode == "tls" {
+			fmt.Fprintf(os.Stderr, "Max concurrent TLS connections [%d]: ", defaultTCP)
+		} else {
+			fmt.Fprintf(os.Stderr, "Max concurrent TCP connections [%d]: ", defaultTCP)
+		}
 		tcpInput, _ := reader.ReadString('\n')
 		tcpInput = strings.TrimSpace(tcpInput)
 		if tcpInput != "" {

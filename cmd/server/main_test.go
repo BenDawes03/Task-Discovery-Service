@@ -62,6 +62,7 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 	oldTLSClientCAFile := tlsClientCAFile
 	oldStoreURL := storeURL
 	oldCacheMaxSize := cacheMaxSize
+	oldMaxConcurrentTCP := maxConcurrentTCP
 	oldFirewallEnabledFlag := firewallEnabledFlag
 	oldFirewallDisabledFlag := firewallDisabledFlag
 	oldFirewallRulesPath := firewallRulesPath
@@ -81,6 +82,7 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 		tlsClientCAFile = oldTLSClientCAFile
 		storeURL = oldStoreURL
 		cacheMaxSize = oldCacheMaxSize
+		maxConcurrentTCP = oldMaxConcurrentTCP
 		firewallEnabledFlag = oldFirewallEnabledFlag
 		firewallDisabledFlag = oldFirewallDisabledFlag
 		firewallRulesPath = oldFirewallRulesPath
@@ -97,6 +99,7 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 	tlsCertFile = "certs/server.crt"
 	tlsKeyFile = "certs/server.key"
 	tlsClientCAFile = "certs/ca.crt"
+	maxConcurrentTCP = 5000
 	storeURL = ""
 	cacheMaxSize = 100
 	firewallEnabledFlag = false
@@ -110,6 +113,7 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 			"5500",             // port
 			"75s",              // heartbeat timeout
 			"15s",              // cleanup interval
+			"2500",             // max concurrent tls/tcp connections
 			"custom-logs",      // log dir
 			"certs/custom.crt", // tls cert
 			"certs/custom.key", // tls key
@@ -144,6 +148,9 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 	if tlsCertFile != "certs/custom.crt" || tlsKeyFile != "certs/custom.key" || tlsClientCAFile != "certs/custom-ca.crt" {
 		t.Fatalf("expected prompted TLS files to be applied")
 	}
+	if maxConcurrentTCP != 2500 {
+		t.Fatalf("expected prompted max concurrent tls/tcp connections 2500, got %d", maxConcurrentTCP)
+	}
 }
 
 func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
@@ -162,6 +169,7 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 	oldTLSClientCAFile := tlsClientCAFile
 	oldStoreURL := storeURL
 	oldCacheMaxSize := cacheMaxSize
+	oldMaxConcurrentTCP := maxConcurrentTCP
 	defer func() {
 		forceUI = oldForceUI
 		noUI = oldNoUI
@@ -178,6 +186,7 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 		tlsClientCAFile = oldTLSClientCAFile
 		storeURL = oldStoreURL
 		cacheMaxSize = oldCacheMaxSize
+		maxConcurrentTCP = oldMaxConcurrentTCP
 	}()
 
 	forceUI = false
@@ -189,6 +198,7 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 		"--port=6001",
 		"--heartbeat-timeout=80s",
 		"--cleanup-interval=20s",
+		"--max-tcp-connections=4500",
 		"--log-dir=my-logs",
 		"--tls-cert=certs/flag.crt",
 		"--tls-key=certs/flag.key",
@@ -198,6 +208,7 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 	listenPort = 6001
 	heartbeatTimeout = 80 * time.Second
 	cleanupInterval = 20 * time.Second
+	maxConcurrentTCP = 4500
 	logDir = "my-logs"
 	tlsCertFile = "certs/flag.crt"
 	tlsKeyFile = "certs/flag.key"
@@ -208,10 +219,10 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 	isTerminalFn = func(fd int) bool { return true }
 	promptReaderFn = func() *bufio.Reader {
 		input := strings.Join([]string{
-			"y", // db enabled
+			"y",                    // db enabled
 			"postgresql://example", // db url
-			"n", // firewall disabled
-			"n", // no tui
+			"n",                    // firewall disabled
+			"n",                    // no tui
 		}, "\n") + "\n"
 		return bufio.NewReader(strings.NewReader(input))
 	}
@@ -231,6 +242,9 @@ func TestAskTerminalOptionsSkipsPromptedFieldsWhenFlagsProvided(t *testing.T) {
 	}
 	if cacheMaxSize != 42 {
 		t.Fatalf("expected cache-max-size from flag to remain unchanged, got %d", cacheMaxSize)
+	}
+	if maxConcurrentTCP != 4500 {
+		t.Fatalf("expected max-tcp-connections from flag to remain unchanged, got %d", maxConcurrentTCP)
 	}
 }
 
@@ -280,6 +294,7 @@ func TestAskTerminalOptionsMalformedPromptInputKeepsDefaults(t *testing.T) {
 			"not-a-port", // invalid port -> keep default
 			"not-a-duration", // invalid heartbeat -> keep default
 			"still-not-duration", // invalid cleanup -> keep default
+			"not-a-number", // invalid max udp handlers -> keep default
 			"", // empty log dir -> keep default
 			"n", // db disabled
 			"n", // firewall disabled
