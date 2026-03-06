@@ -1,4 +1,3 @@
-
 package dht
 
 import (
@@ -28,15 +27,15 @@ const (
 
 // Message types for DHT communication
 const (
-	MsgPing      = "PING"
-	MsgPong      = "PONG"
-	MsgJoin      = "JOIN"
-	MsgPeerList  = "PEERLIST"
-	MsgStore     = "STORE"
-	MsgFind      = "FIND"
-	MsgFoundData = "FOUND"
-	MsgNotFound  = "NOTFOUND"
-	MsgOK        = "OK"
+	MsgPing           = "PING"
+	MsgPong           = "PONG"
+	MsgJoin           = "JOIN"
+	MsgPeerList       = "PEERLIST"
+	MsgStore          = "STORE"
+	MsgFind           = "FIND"
+	MsgFoundData      = "FOUND"
+	MsgNotFound       = "NOTFOUND"
+	MsgOK             = "OK"
 	MsgNotResponsible = "NOT_RESPONSIBLE"
 )
 
@@ -235,21 +234,21 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			}
 		}
 
-		   // Not in k-closest, reject but suggest closest known nodes
-		   closestNodes := dn.dht.FindKClosestNodes(sp.Task, ReplicationFactor)
-		   closestAddrs := make([]string, 0, len(closestNodes))
-		   for _, n := range closestNodes {
-			   if n != nil {
-				   closestAddrs = append(closestAddrs, n.Address)
-			   }
-		   }
-		   payload, _ := json.Marshal(NotResponsiblePayload{Closest: closestAddrs})
-		   netLogger.Printf("rejected store for %s (not in k-closest), suggesting: %v", sp.Task, closestAddrs)
-		   return &Message{
-			   Type:    MsgNotResponsible,
-			   Sender:  dn.dht.self.Address,
-			   Payload: payload,
-		   }
+		// Not in k-closest, reject but suggest closest known nodes
+		closestNodes := dn.dht.FindKClosestNodes(sp.Task, ReplicationFactor)
+		closestAddrs := make([]string, 0, len(closestNodes))
+		for _, n := range closestNodes {
+			if n != nil {
+				closestAddrs = append(closestAddrs, n.Address)
+			}
+		}
+		payload, _ := json.Marshal(NotResponsiblePayload{Closest: closestAddrs})
+		netLogger.Printf("rejected store for %s (not in k-closest), suggesting: %v", sp.Task, closestAddrs)
+		return &Message{
+			Type:    MsgNotResponsible,
+			Sender:  dn.dht.self.Address,
+			Payload: payload,
+		}
 
 	case MsgFind:
 		var fp FindPayload
@@ -454,7 +453,7 @@ func (dn *DHTNetwork) Store(task, address string) error {
 	// Track attempted nodes and their distances
 	attempted := make(map[string]struct{})
 	taskHash := HashTask(task)
-	
+
 	// Priority queue: start with k-closest from local view
 	queue := make([]string, 0)
 	kClosest := dn.dht.FindKClosestNodes(task, ReplicationFactor)
@@ -470,7 +469,7 @@ func (dn *DHTNetwork) Store(task, address string) error {
 	for len(queue) > 0 {
 		addr := queue[0]
 		queue = queue[1:]
-		
+
 		if _, seen := attempted[addr]; seen {
 			continue
 		}
@@ -508,14 +507,14 @@ func (dn *DHTNetwork) Store(task, address string) error {
 			if err := json.Unmarshal(resp.Payload, &nr); err == nil {
 				// Only queue suggested nodes that are closer than ANY node we've tried
 				farthestAttempted := dn.getFarthestDistance(taskHash, attempted)
-				
+
 				for _, newAddr := range nr.Closest {
 					dn.dht.AddPeer(newAddr)
-					
+
 					if _, seen := attempted[newAddr]; seen {
 						continue
 					}
-					
+
 					// Check if this node is closer than the farthest we've tried
 					newDist := Distance(taskHash, HashAddress(newAddr))
 					if newDist.Cmp(farthestAttempted) < 0 {

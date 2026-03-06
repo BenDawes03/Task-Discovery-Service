@@ -15,13 +15,13 @@ func TestDHTStoreConvergence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create bootstrap: %v", err)
 	}
-	
+
 	bootstrapNet := dht.NewDHTNetwork(bootstrap, nil)
 	if err := bootstrapNet.Start(); err != nil {
 		t.Fatalf("Failed to start bootstrap: %v", err)
 	}
 	t.Cleanup(func() { _ = bootstrapNet.Stop() })
-	
+
 	time.Sleep(100 * time.Millisecond)
 	bootstrapAddr := bootstrap.GetSelf().Address
 
@@ -69,8 +69,8 @@ func TestDHTStoreConvergence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = netD.Stop() })
 
-	// Wait for peer discovery to complete
-	time.Sleep(500 * time.Millisecond)
+	// Wait for peer discovery to complete (peerDiscoveryLoop runs every 1s, need time for full convergence)
+	time.Sleep(2 * time.Second)
 
 	// Verify all nodes know about each other
 	if nodeA.GetRingSize() < 4 {
@@ -80,7 +80,7 @@ func TestDHTStoreConvergence(t *testing.T) {
 	// Pick a task and determine actual k-closest nodes (k=3)
 	testTask := "convergence-test-task"
 	testAddr := "10.0.0.99:8080"
-	
+
 	// Find k-closest from bootstrap's perspective (most complete view)
 	actualClosest := bootstrap.FindKClosestNodes(testTask, dht.ReplicationFactor)
 	t.Logf("Actual k-closest nodes for task '%s':", testTask)
@@ -100,12 +100,12 @@ func TestDHTStoreConvergence(t *testing.T) {
 	// Verify the task is stored on at least some of the actual k-closest nodes
 	storedCount := 0
 	allNodes := []*dht.DHT{bootstrap, nodeA, nodeB, nodeC, nodeD}
-	
+
 	t.Logf("\nStorage distribution:")
 	for _, node := range allNodes {
 		addrs := node.LookupTask(testTask)
 		selfAddr := node.GetSelf().Address
-		
+
 		isInKClosest := false
 		for _, closest := range actualClosest {
 			if closest.Address == selfAddr {
@@ -113,22 +113,22 @@ func TestDHTStoreConvergence(t *testing.T) {
 				break
 			}
 		}
-		
+
 		hasData := len(addrs) > 0 && contains(addrs, testAddr)
 		if hasData {
 			storedCount++
 		}
-		
+
 		status := "❌"
 		if hasData {
 			status = "✅"
 		}
-		
+
 		kClosestMarker := ""
 		if isInKClosest {
 			kClosestMarker = " [K-CLOSEST]"
 		}
-		
+
 		t.Logf("  %s %s: has data=%v%s", status, selfAddr, hasData, kClosestMarker)
 	}
 
@@ -152,7 +152,7 @@ func TestDHTStoreConvergence(t *testing.T) {
 	}
 
 	t.Logf("\nConvergence result: %d/%d k-closest nodes have the data", kClosestWithData, len(actualClosest))
-	
+
 	if kClosestWithData < 2 {
 		t.Errorf("Expected at least 2 k-closest nodes to have data, got %d", kClosestWithData)
 	}
@@ -168,13 +168,13 @@ func TestDHTStoreRejectsSuboptimalNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create bootstrap: %v", err)
 	}
-	
+
 	bootstrapNet := dht.NewDHTNetwork(bootstrap, nil)
 	if err := bootstrapNet.Start(); err != nil {
 		t.Fatalf("Failed to start bootstrap: %v", err)
 	}
 	t.Cleanup(func() { _ = bootstrapNet.Stop() })
-	
+
 	time.Sleep(100 * time.Millisecond)
 	bootstrapAddr := bootstrap.GetSelf().Address
 
@@ -198,12 +198,12 @@ func TestDHTStoreRejectsSuboptimalNodes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = netB.Stop() })
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Store a task
 	testTask := "suboptimal-test-task"
 	testAddr := "10.0.0.88:7070"
-	
+
 	if err := netA.Store(testTask, testAddr); err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestDHTStoreRejectsSuboptimalNodes(t *testing.T) {
 	// Verify it's stored somewhere
 	foundCount := 0
 	allNodes := []*dht.DHT{bootstrap, nodeA, nodeB}
-	
+
 	for _, node := range allNodes {
 		addrs := node.LookupTask(testTask)
 		if len(addrs) > 0 && contains(addrs, testAddr) {

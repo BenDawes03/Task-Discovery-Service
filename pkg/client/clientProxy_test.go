@@ -17,8 +17,8 @@ import (
 
 // mockDHTRegistry implements DHTRegistry for testing
 type mockDHTRegistry struct {
-	mu        sync.Mutex
-	tasks     map[string][]string
+	mu          sync.Mutex
+	tasks       map[string][]string
 	registerErr error
 	queryErr    error
 }
@@ -948,8 +948,8 @@ func TestProxyBackendProtocol(t *testing.T) {
 	})
 }
 
-// TestWriteUDPResult tests UDP response writing
-func TestWriteUDPResult(t *testing.T) {
+// TestWriteResult tests UDP response writing
+func TestWriteResult(t *testing.T) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("failed to create UDP conn: %v", err)
@@ -970,24 +970,24 @@ func TestWriteUDPResult(t *testing.T) {
 	}{
 		{
 			name:       "OK with address",
-			result:     proxyResult{Status: "OK", Address: "192.168.1.1:8080"},
+			result:     proxyResult{Status: StatusOK, Address: "192.168.1.1:8080"},
 			wantStatus: "OK",
 		},
 		{
 			name:       "NOTFOUND",
-			result:     proxyResult{Status: "NOTFOUND"},
+			result:     proxyResult{Status: StatusNotFound},
 			wantStatus: "NOTFOUND",
 		},
 		{
 			name:       "ERR with message",
-			result:     proxyResult{Status: "ERR", Error: "test error"},
+			result:     proxyResult{Status: StatusErr, Error: "test error"},
 			wantStatus: "ERR",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			writeUDPResult(conn, clientConn.LocalAddr().(*net.UDPAddr), true, tt.result)
+			writeResult(conn, clientConn.LocalAddr().(*net.UDPAddr), true, tt.result)
 
 			buf := make([]byte, 4096)
 			clientConn.SetReadDeadline(time.Now().Add(1 * time.Second))

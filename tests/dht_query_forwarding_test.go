@@ -15,7 +15,7 @@ func TestDHTQueryForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create bootstrap DHT: %v", err)
 	}
-	
+
 	bootstrapNetwork := dht.NewDHTNetwork(bootstrap, nil)
 	if err := bootstrapNetwork.Start(); err != nil {
 		t.Fatalf("Failed to start bootstrap network: %v", err)
@@ -33,7 +33,7 @@ func TestDHTQueryForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create node A: %v", err)
 	}
-	
+
 	networkA := dht.NewDHTNetwork(nodeA, []string{bootstrapAddr})
 	if err := networkA.Start(); err != nil {
 		t.Fatalf("Failed to start network A: %v", err)
@@ -47,7 +47,7 @@ func TestDHTQueryForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create node B: %v", err)
 	}
-	
+
 	networkB := dht.NewDHTNetwork(nodeB, []string{bootstrapAddr})
 	if err := networkB.Start(); err != nil {
 		t.Fatalf("Failed to start network B: %v", err)
@@ -56,13 +56,13 @@ func TestDHTQueryForwarding(t *testing.T) {
 		_ = networkB.Stop()
 	})
 
-	// Wait for peer discovery
-	time.Sleep(500 * time.Millisecond)
+	// Wait for peer discovery to complete (peerDiscoveryLoop runs every 1s, need time for full convergence)
+	time.Sleep(2 * time.Second)
 
 	// Store a value via network layer (with replication)
 	testTask := "forwarding-test-task"
 	testAddr := "10.0.0.42:9000"
-	
+
 	if err := networkA.Store(testTask, testAddr); err != nil {
 		t.Fatalf("Failed to store: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestDHTQueryForwarding(t *testing.T) {
 	if len(addrs) == 0 {
 		t.Errorf("Query forwarding failed: task not found")
 	}
-	
+
 	found := false
 	for _, addr := range addrs {
 		if addr == testAddr {
@@ -86,7 +86,7 @@ func TestDHTQueryForwarding(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !found {
 		t.Errorf("Query forwarding returned wrong addresses: got %v, want %s", addrs, testAddr)
 	}
@@ -101,7 +101,7 @@ func TestDHTQueryForwardingNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create bootstrap DHT: %v", err)
 	}
-	
+
 	bootstrapNetwork := dht.NewDHTNetwork(bootstrap, nil)
 	if err := bootstrapNetwork.Start(); err != nil {
 		t.Fatalf("Failed to start bootstrap network: %v", err)
@@ -117,7 +117,7 @@ func TestDHTQueryForwardingNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create node A: %v", err)
 	}
-	
+
 	networkA := dht.NewDHTNetwork(nodeA, []string{bootstrapAddr})
 	if err := networkA.Start(); err != nil {
 		t.Fatalf("Failed to start network A: %v", err)

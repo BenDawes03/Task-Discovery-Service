@@ -25,6 +25,13 @@ var (
 	errorCount uint64
 )
 
+// Status constants for proxy responses
+const (
+	StatusOK       = "OK"
+	StatusErr      = "ERR"
+	StatusNotFound = "NOTFOUND"
+)
+
 type proxyRequest struct {
 	Command  string
 	Task     string
@@ -37,6 +44,63 @@ type proxyResult struct {
 	Status  string
 	Address string
 	Error   string
+}
+
+// requestHandler processes a proxy request and returns a result
+type requestHandler func(req proxyRequest, source string) proxyResult
+
+// runUDPProxy is a generic UDP proxy loop that listens on listenAddr and delegates to a handler.
+// It respects ctx cancellation and manages error/success counting.
+func runUDPProxy(ctx context.Context, listenAddr string, logPrefix string, handler requestHandler) error {
+	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("resolve listen addr: %w", err)
+	}
+	conn, err := netutil.ListenUDP(udpAddr.String())
+	if err != nil {
+		return fmt.Errorf("listen udp: %w", err)
+	}
+	defer conn.Close()
+	logger.Printf("%s listening %s", logPrefix, listenAddr)
+
+	buf := make([]byte, 2048)
+	for {
+		// allow periodic wake to check ctx
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-ctx.Done():
+					logger.Printf("shutting down %s", logPrefix)
+					return nil
+				default:
+					continue
+				}
+			}
+			logger.Printf("read udp: %v", err)
+			atomic.AddUint64(&errorCount, 1)
+			continue
+		}
+		data := strings.TrimSpace(string(buf[:n]))
+		go handlePacketGeneric(conn, addr, data, handler)
+	}
+}
+
+// handlePacketGeneric processes a UDP packet by parsing the request and delegating to a handler.
+func handlePacketGeneric(conn *net.UDPConn, src *net.UDPAddr, data string, handler requestHandler) {
+	req, err := parseProxyRequest(data)
+	if err != nil {
+		atomic.AddUint64(&errorCount, 1)
+		writeResult(conn, src, req.JSON, proxyResult{Status: StatusErr, Error: err.Error()})
+		return
+	}
+
+	result := handler(req, src.String())
+	if result.Status == StatusErr {
+		atomic.AddUint64(&errorCount, 1)
+	}
+	writeResult(conn, src, req.JSON, result)
 }
 
 // RunProxy starts a UDP proxy that listens on listenAddr (e.g. ":5100")
@@ -52,54 +116,11 @@ func RunProxy(ctx context.Context, listenAddr string) error {
 		backendProto = "udp"
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
-	if err != nil {
-		return fmt.Errorf("resolve listen addr: %w", err)
-	}
-	conn, err := netutil.ListenUDP(udpAddr.String())
-	if err != nil {
-		return fmt.Errorf("listen udp: %w", err)
-	}
-	defer conn.Close()
-	logger.Printf("listening %s, forwarding to %s", listenAddr, serverAddr)
-
-	buf := make([]byte, 2048)
-	for {
-		// allow periodic wake to check ctx
-		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, addr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
-					logger.Println("shutting down proxy")
-					return nil
-				default:
-					continue
-				}
-			}
-			logger.Printf("read udp: %v", err)
-			atomic.AddUint64(&errorCount, 1)
-			continue
-		}
-		data := strings.TrimSpace(string(buf[:n]))
-		go handlePacket(conn, addr, data, serverAddr, backendProto)
-	}
-}
-
-func handlePacket(conn *net.UDPConn, src *net.UDPAddr, data string, serverAddr string, backendProto string) {
-	req, err := parseProxyRequest(data)
-	if err != nil {
-		atomic.AddUint64(&errorCount, 1)
-		writeUDPResult(conn, src, req.JSON, proxyResult{Status: "ERR", Error: err.Error()})
-		return
+	handler := func(req proxyRequest, source string) proxyResult {
+		return handleCentralizedRequest(req, serverAddr, backendProto, source)
 	}
 
-	result := handleCentralizedRequest(req, serverAddr, backendProto, src.String())
-	if result.Status == "ERR" {
-		atomic.AddUint64(&errorCount, 1)
-	}
-	writeUDPResult(conn, src, req.JSON, result)
+	return runUDPProxy(ctx, listenAddr, "proxy", handler)
 }
 
 func writeUDP(conn *net.UDPConn, addr *net.UDPAddr, msg string) {
@@ -109,6 +130,35 @@ func writeUDP(conn *net.UDPConn, addr *net.UDPAddr, msg string) {
 		logger.Printf("write udp to %s: %v", addr.String(), err)
 		atomic.AddUint64(&errorCount, 1)
 	}
+}
+
+// writeResult sends a result to a UDP client in either JSON or text mode.
+func writeResult(conn *net.UDPConn, addr *net.UDPAddr, jsonMode bool, result proxyResult) {
+	if jsonMode {
+		resp := transport.CentralizedResponse{Status: result.Status, Address: result.Address, Error: result.Error}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			writeUDP(conn, addr, StatusErr+" marshal response")
+			atomic.AddUint64(&errorCount, 1)
+			return
+		}
+		writeUDP(conn, addr, string(data))
+		return
+	}
+
+	if result.Status == StatusOK {
+		if result.Address != "" {
+			writeUDP(conn, addr, result.Address)
+			return
+		}
+		writeUDP(conn, addr, StatusOK)
+		return
+	}
+	if result.Status == StatusNotFound {
+		writeUDP(conn, addr, StatusNotFound)
+		return
+	}
+	writeUDP(conn, addr, StatusErr+" "+result.Error)
 }
 
 // RunProxyTCP starts a simple TCP proxy that listens on listenAddr (e.g. ":5100")
@@ -168,15 +218,15 @@ func handleTCPProxyConn(conn net.Conn, serverAddr string) {
 		req, err := parseProxyRequest(line)
 		if err != nil {
 			atomic.AddUint64(&errorCount, 1)
-			writeTCPResult(w, req.JSON, proxyResult{Status: "ERR", Error: err.Error()})
+			writeTCPResultGeneric(w, req.JSON, proxyResult{Status: StatusErr, Error: err.Error()})
 			continue
 		}
 
 		result := handleCentralizedRequest(req, serverAddr, "tcp", remote)
-		if result.Status == "ERR" {
+		if result.Status == StatusErr {
 			atomic.AddUint64(&errorCount, 1)
 		}
-		writeTCPResult(w, req.JSON, result)
+		writeTCPResultGeneric(w, req.JSON, result)
 	}
 }
 
@@ -197,54 +247,11 @@ type DHTRegistry interface {
 
 // RunProxyP2P starts a UDP proxy that uses DHT for distributed task registration
 func RunProxyP2P(ctx context.Context, listenAddr string, dhtRegistry DHTRegistry) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
-	if err != nil {
-		return fmt.Errorf("resolve listen addr: %w", err)
-	}
-	conn, err := netutil.ListenUDP(udpAddr.String())
-	if err != nil {
-		return fmt.Errorf("listen udp: %w", err)
-	}
-	defer conn.Close()
-	logger.Printf("P2P proxy listening %s", listenAddr)
-
-	buf := make([]byte, 2048)
-	for {
-		// allow periodic wake to check ctx
-		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, addr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
-					logger.Println("shutting down P2P proxy")
-					return nil
-				default:
-					continue
-				}
-			}
-			logger.Printf("read udp: %v", err)
-			atomic.AddUint64(&errorCount, 1)
-			continue
-		}
-		data := strings.TrimSpace(string(buf[:n]))
-		go handlePacketP2P(conn, addr, data, dhtRegistry)
-	}
-}
-
-func handlePacketP2P(conn *net.UDPConn, src *net.UDPAddr, data string, dhtRegistry DHTRegistry) {
-	req, err := parseProxyRequest(data)
-	if err != nil {
-		atomic.AddUint64(&errorCount, 1)
-		writeUDPResult(conn, src, req.JSON, proxyResult{Status: "ERR", Error: err.Error()})
-		return
+	handler := func(req proxyRequest, source string) proxyResult {
+		return handleP2PRequest(req, dhtRegistry, source)
 	}
 
-	result := handleP2PRequest(req, dhtRegistry, src.String())
-	if result.Status == "ERR" {
-		atomic.AddUint64(&errorCount, 1)
-	}
-	writeUDPResult(conn, src, req.JSON, result)
+	return runUDPProxy(ctx, listenAddr, "P2P proxy", handler)
 }
 
 func parseProxyRequest(data string) (proxyRequest, error) {
@@ -279,7 +286,7 @@ func handleCentralizedRequest(req proxyRequest, serverAddr, backendProto, source
 	switch req.Command {
 	case "REGISTER":
 		if req.Task == "" || req.Address == "" {
-			return proxyResult{Status: "ERR", Error: "task and address required"}
+			return proxyResult{Status: StatusErr, Error: "task and address required"}
 		}
 		logger.Printf("REGISTER %s -> %s cap=%d (from %s)", req.Task, req.Address, req.Capacity, source)
 
@@ -290,14 +297,14 @@ func handleCentralizedRequest(req proxyRequest, serverAddr, backendProto, source
 			err = RegisterUDPWithCapacity(serverAddr, req.Task, req.Address, req.Capacity)
 		}
 		if err != nil {
-			return proxyResult{Status: "ERR", Error: err.Error()}
+			return proxyResult{Status: StatusErr, Error: err.Error()}
 		}
 		atomic.AddUint64(&regCount, 1)
-		return proxyResult{Status: "OK"}
+		return proxyResult{Status: StatusOK}
 
 	case "QUERY":
 		if req.Task == "" {
-			return proxyResult{Status: "ERR", Error: "task required"}
+			return proxyResult{Status: StatusErr, Error: "task required"}
 		}
 		logger.Printf("QUERY %s (from %s)", req.Task, source)
 
@@ -311,79 +318,52 @@ func handleCentralizedRequest(req proxyRequest, serverAddr, backendProto, source
 			addr, err = QueryUDP(serverAddr, req.Task)
 		}
 		if err != nil {
-			return proxyResult{Status: "ERR", Error: err.Error()}
+			return proxyResult{Status: StatusErr, Error: err.Error()}
 		}
 		atomic.AddUint64(&queryCount, 1)
 		if addr == "" {
-			return proxyResult{Status: "NOTFOUND"}
+			return proxyResult{Status: StatusNotFound}
 		}
-		return proxyResult{Status: "OK", Address: addr}
+		return proxyResult{Status: StatusOK, Address: addr}
 	}
 
-	return proxyResult{Status: "ERR", Error: "unknown command"}
+	return proxyResult{Status: StatusErr, Error: "unknown command"}
 }
 
 func handleP2PRequest(req proxyRequest, dhtRegistry DHTRegistry, source string) proxyResult {
 	switch req.Command {
 	case "REGISTER":
 		if req.Task == "" || req.Address == "" {
-			return proxyResult{Status: "ERR", Error: "task and address required"}
+			return proxyResult{Status: StatusErr, Error: "task and address required"}
 		}
 		logger.Printf("P2P REGISTER %s -> %s (from %s)", req.Task, req.Address, source)
 		if err := dhtRegistry.Register(req.Task, req.Address); err != nil {
-			return proxyResult{Status: "ERR", Error: err.Error()}
+			return proxyResult{Status: StatusErr, Error: err.Error()}
 		}
 		atomic.AddUint64(&regCount, 1)
-		return proxyResult{Status: "OK"}
+		return proxyResult{Status: StatusOK}
 
 	case "QUERY":
 		if req.Task == "" {
-			return proxyResult{Status: "ERR", Error: "task required"}
+			return proxyResult{Status: StatusErr, Error: "task required"}
 		}
 		logger.Printf("P2P QUERY %s (from %s)", req.Task, source)
 		addr, err := dhtRegistry.Query(req.Task)
 		if err != nil {
-			return proxyResult{Status: "ERR", Error: err.Error()}
+			return proxyResult{Status: StatusErr, Error: err.Error()}
 		}
 		atomic.AddUint64(&queryCount, 1)
 		if addr == "" {
-			return proxyResult{Status: "NOTFOUND"}
+			return proxyResult{Status: StatusNotFound}
 		}
-		return proxyResult{Status: "OK", Address: addr}
+		return proxyResult{Status: StatusOK, Address: addr}
 	}
 
-	return proxyResult{Status: "ERR", Error: "unknown command"}
+	return proxyResult{Status: StatusErr, Error: "unknown command"}
 }
 
-func writeUDPResult(conn *net.UDPConn, addr *net.UDPAddr, jsonMode bool, result proxyResult) {
-	if jsonMode {
-		resp := transport.CentralizedResponse{Status: result.Status, Address: result.Address, Error: result.Error}
-		data, err := json.Marshal(resp)
-		if err != nil {
-			writeUDP(conn, addr, "ERR marshal response")
-			atomic.AddUint64(&errorCount, 1)
-			return
-		}
-		writeUDP(conn, addr, string(data))
-		return
-	}
-
-	if result.Status == "OK" {
-		if result.Address != "" {
-			writeUDP(conn, addr, result.Address)
-			return
-		}
-		writeUDP(conn, addr, "OK")
-		return
-	}
-	if result.Status == "NOTFOUND" {
-		writeUDP(conn, addr, "NOTFOUND")
-		return
-	}
-	writeUDP(conn, addr, "ERR "+result.Error)
-}
-
-func writeTCPResult(w *bufio.Writer, jsonMode bool, result proxyResult) {
+// writeTCPResultGeneric sends a result to a TCP client in either JSON or text mode.
+func writeTCPResultGeneric(w *bufio.Writer, jsonMode bool, result proxyResult) {
 	if jsonMode {
 		resp := transport.CentralizedResponse{Status: result.Status, Address: result.Address, Error: result.Error}
 		data, err := json.Marshal(resp)
@@ -398,20 +378,20 @@ func writeTCPResult(w *bufio.Writer, jsonMode bool, result proxyResult) {
 		return
 	}
 
-	if result.Status == "OK" {
+	if result.Status == StatusOK {
 		if result.Address != "" {
 			fmt.Fprintf(w, "%s\n", result.Address)
 		} else {
-			fmt.Fprint(w, "OK\n")
+			fmt.Fprint(w, StatusOK+"\n")
 		}
 		_ = w.Flush()
 		return
 	}
-	if result.Status == "NOTFOUND" {
-		fmt.Fprint(w, "NOTFOUND\n")
+	if result.Status == StatusNotFound {
+		fmt.Fprint(w, StatusNotFound+"\n")
 		_ = w.Flush()
 		return
 	}
-	fmt.Fprintf(w, "ERR %s\n", result.Error)
+	fmt.Fprintf(w, "%s %s\n", StatusErr, result.Error)
 	_ = w.Flush()
 }
