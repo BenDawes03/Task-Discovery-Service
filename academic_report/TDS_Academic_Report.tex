@@ -96,7 +96,7 @@ Several prominent systems address service discovery:
 These systems excel in their respective domains but require commitment to a specific architectural paradigm. TDS differentiates itself by supporting multiple operational modes within a single codebase, allowing practitioners to select the appropriate architecture for their deployment context.
 
 \section{Design}
-\subsubsection{services, tasks and the client proxy}
+\subsection{services, tasks and the client proxy}
 The diagram below gives an overview of a client machine in this system. With multiple services registering and querying services to the client proxy which is the local endpoint of this solution.
 
 
@@ -106,7 +106,8 @@ The diagram below gives an overview of a client machine in this system. With mul
     \caption{Client machine service registration and discovery via client proxy}
     \label{fig:ClientDevice}
 \end{figure}
-
+In this architecture, services running on a machine will query their local instance of the client proxy. As far as the services are concerned, that is all that needs to be done for them to advertise their service along with sending periodic heartbeats. 
+The client proxy will also handle any requests these services have for where to send their data once they have finished the scope of their operations on it. The client proxy is the interface behind which all the mechanisms of this project lie.
 \subsubsection{Message format}
 All communication between local services (clients) and the client proxy uses JSON messages in both centralised and P2P modes. The two shared commands are \texttt{REGISTER} and \texttt{QUERY}.
 
@@ -118,29 +119,33 @@ All communication between local services (clients) and the client proxy uses JSO
 
 \textbf{JSON response format}
 \begin{lstlisting}
-{"status":"OK"}
-{"status":"OK","address":"10.0.1.5:8080"}
-{"status":"NOTFOUND"}
-{"status":"ERR","error":"task required"}
+{"status":"OK"} //Register - OK
+{"status":"OK","address":"10.0.1.5:8080"} //Successful query
+{"status":"NOTFOUND"} // queried task not found
+{"status":"ERR","error":"task required"} //example error: no task in query request
 \end{lstlisting}
-
-\textbf{Validation and error cases}
-\begin{itemize}
-    \item Missing task on query returns \texttt{\{"status":"ERR","error":"task required"\}}
-    \item Missing task or address on register returns \texttt{\{"status":"ERR","error":"task and address required"\}}
-    \item Invalid capacity returns \texttt{\{"status":"ERR","error":"capacity must be a positive integer"\}}
-    \item Unknown command returns \texttt{\{"status":"ERR","error":"unknown command"\}}
-    \item Malformed JSON returns \texttt{\{"status":"ERR","error":"invalid JSON: <parse error>"\}}
-    \item Non-JSON input returns \texttt{\{"status":"ERR","error":"JSON required"\}}
-\end{itemize}
-
+ 
 These message types are intentionally minimal so the same client-side behavior works regardless of whether the proxy is currently forwarding to a central server or to the P2P registry.
 \subsection{Centralised mode}
-Introduce the server, cache and database. 
+We now move outside the scope of the single machine registering and querying services to a distributed system containing many such machines. The below figure demonstrates the role the server plays in centralised mode.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ServerArchitecture.png}
+    \caption{Client machines operating in server architecture}
+    \label{fig:ServerArchitecture}
+\end{figure}
 \subsubsection{load balancing}
+The server load balances services using a round-robin mechanism for all services under a task. This ensures even distribution of traffic to each service. Configurable on top of this is a weighted round robin mechanism using each registered service's capacity as a weighting. 
+This ensures that services running on less powerful machines are not swamped by being routed the same volume of traffic as a more powerful variant. During the heartbeat message, a service advertises its current capacity to inform load balancing.
 \subsubsection{Firewall-mode}
-\subsubsection{}
+
 \subsection{Peer-to-Peer mode}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1\textwidth]{images/PeerToPeerArchitecture.png}
+    \caption{Client machines operating in P2P architecture}
+    \label{fig:P2P-Architecture}
+\end{figure}
 \subsubsection{The Distributed Hash Table}
 \subsubsection{Service register and query}
 \subsubsection{Eventual consistency and node discovery}
@@ -150,6 +155,7 @@ Introduce the server, cache and database.
 
 \subsection{Implementation Challenges}
 Here i will lay out key insights into areas of my project that presented key challenges to me. It details how I overcame them and, in particular, where I decided to cease further work in the scope of the project timeframe.
+
 \subsubsection{Server Cache Performance}
 The implementation of the cache appeared simple but produced several challenges. Having completed the cache implementation, I ran perforance tests with a combination of cache hits and misses. Initially I found that cache misses were actually faster than hits!
 After increasingly deep investigation I found that, though queries should be read intensive, because they incremented query counts and round robin it was write locking significantly.

@@ -20,10 +20,9 @@ type NotResponsiblePayload struct {
 
 var netLogger = log.New(os.Stdout, "[dht] ", log.LstdFlags)
 
-// DHT configuration constants
-const (
-	ReplicationFactor = 3 // Number of nodes to replicate data on (k-closest)
-)
+// ReplicationFactor controls how many k-closest nodes are used for store/find.
+// Default is 3 and can be overridden at process startup.
+var ReplicationFactor = 3
 
 // Message types for DHT communication
 const (
@@ -224,6 +223,17 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			return nil
 		}
 
+		// If ring size <= k, all nodes are in k-closest by definition
+		ringSize := dn.dht.GetRingSize()
+		if ringSize <= ReplicationFactor {
+			dn.dht.StoreTask(sp.Task, sp.Address)
+			netLogger.Printf("stored %s -> %s (ring size %d <= k=%d)", sp.Task, sp.Address, ringSize, ReplicationFactor)
+			return &Message{
+				Type:   MsgOK,
+				Sender: dn.dht.self.Address,
+			}
+		}
+
 		// Check if we're in the k-closest nodes for this task
 		if dn.dht.AmIInKClosest(sp.Task, ReplicationFactor) {
 			dn.dht.StoreTask(sp.Task, sp.Address)
@@ -257,8 +267,12 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			return nil
 		}
 
+		// If ring size <= k, all nodes are in k-closest by definition
+		ringSize := dn.dht.GetRingSize()
+		inKClosest := (ringSize <= ReplicationFactor) || dn.dht.AmIInKClosest(fp.Task, ReplicationFactor)
+
 		// Check if we're in k-closest for this task
-		if dn.dht.AmIInKClosest(fp.Task, ReplicationFactor) {
+		if inKClosest {
 			addrs := dn.dht.LookupTask(fp.Task)
 			if len(addrs) > 0 {
 				payload, _ := json.Marshal(FoundPayload{
