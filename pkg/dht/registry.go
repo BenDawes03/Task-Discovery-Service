@@ -11,6 +11,16 @@ import (
 
 var registryLogger = log.New(os.Stdout, "[dht-registry] ", log.LstdFlags)
 
+// Snapshot contains the DHT state needed by interactive dashboards.
+type Snapshot struct {
+	NodeID      string
+	Address     string
+	RingSize    int
+	StorageSize int
+	Peers       []string
+	StoredTasks map[string][]string
+}
+
 // DHTRegistry wraps DHT functionality to match the proxy's expected interface
 type DHTRegistry struct {
 	network       *DHTNetwork
@@ -123,22 +133,35 @@ func (dr *DHTRegistry) Stats() (regs, queries, errs uint64) {
 	return
 }
 
-// GetDHTInfo returns information about the DHT state
-func (dr *DHTRegistry) GetDHTInfo() map[string]interface{} {
+// Snapshot returns a consistent view of the local DHT node state.
+func (dr *DHTRegistry) Snapshot() Snapshot {
 	self := dr.network.dht.GetSelf()
 	peers := dr.network.dht.GetPeers()
-	
 	peerAddrs := make([]string, len(peers))
 	for i, p := range peers {
 		peerAddrs[i] = p.Address
 	}
-	
+
+	return Snapshot{
+		NodeID:      NodeIDToString(self.ID),
+		Address:     self.Address,
+		RingSize:    dr.network.dht.GetRingSize(),
+		StorageSize: dr.network.dht.GetStorageSize(),
+		Peers:       peerAddrs,
+		StoredTasks: dr.network.dht.GetStorageSnapshot(),
+	}
+}
+
+// GetDHTInfo returns information about the DHT state
+func (dr *DHTRegistry) GetDHTInfo() map[string]interface{} {
+	snapshot := dr.Snapshot()
+
 	return map[string]interface{}{
-		"node_id":      NodeIDToString(self.ID),
-		"address":      self.Address,
-		"ring_size":    dr.network.dht.GetRingSize(),
-		"storage_size": dr.network.dht.GetStorageSize(),
-		"peers":        peerAddrs,
+		"node_id":      snapshot.NodeID,
+		"address":      snapshot.Address,
+		"ring_size":    snapshot.RingSize,
+		"storage_size": snapshot.StorageSize,
+		"peers":        snapshot.Peers,
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -96,8 +97,22 @@ func (dn *DHTNetwork) Start() error {
 	}
 	dn.listener = ln
 
-	// Update DHT's self address with actual bound address (important for port 0)
+	// Update DHT's self address with the runtime bound port while keeping a
+	// stable, dialable host to avoid wildcard forms like [::]:port.
 	actualAddr := ln.Addr().String()
+	advertiseHost := "127.0.0.1"
+	if h, _, err := net.SplitHostPort(dn.dht.self.Address); err == nil {
+		switch strings.TrimSpace(h) {
+		case "", "0.0.0.0", "::", "::1", "localhost":
+			advertiseHost = "127.0.0.1"
+		default:
+			advertiseHost = h
+		}
+	}
+	_, actualPort, splitErr := net.SplitHostPort(actualAddr)
+	if splitErr == nil && actualPort != "" {
+		actualAddr = net.JoinHostPort(advertiseHost, actualPort)
+	}
 	dn.dht.mutex.Lock()
 	dn.dht.self.Address = actualAddr
 	dn.dht.self.ID = HashAddress(actualAddr)
