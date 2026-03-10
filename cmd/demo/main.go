@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"math/rand"
 	"net"
@@ -42,6 +43,7 @@ type Response struct {
 var (
 	serverAddr = "localhost:5000"
 	protocol   = "tcp" // "tcp" or "udp" - must match server mode
+	stepByStep = false
 	stats      = &Stats{}
 )
 
@@ -54,6 +56,8 @@ type Stats struct {
 }
 
 func main() {
+	parseFlags()
+
 	clearScreen()
 	printBanner()
 	pause()
@@ -91,6 +95,24 @@ func main() {
 	// Step 7: Final summary
 	clearScreen()
 	showSummary()
+}
+
+func parseFlags() {
+	protocolFlag := flag.String("protocol", protocol, "Transport protocol to use: tcp or udp")
+	serverFlag := flag.String("server", serverAddr, "TDS server address in host:port format")
+	stepFlag := flag.Bool("step-by-step", stepByStep, "Pause before each register/query request")
+
+	flag.Parse()
+
+	selectedProtocol := strings.ToLower(strings.TrimSpace(*protocolFlag))
+	if selectedProtocol != "tcp" && selectedProtocol != "udp" {
+		fmt.Fprintf(os.Stderr, "invalid -protocol value %q (expected tcp or udp)\n", *protocolFlag)
+		os.Exit(2)
+	}
+
+	protocol = selectedProtocol
+	serverAddr = strings.TrimSpace(*serverFlag)
+	stepByStep = *stepFlag
 }
 
 func clearScreen() {
@@ -207,12 +229,16 @@ func registerServices() {
 	fmt.Printf("%sRegistering %d services with TDS...%s\n\n", colorWhite, len(services), colorReset)
 
 	for i, svc := range services {
+		address := fmt.Sprintf("localhost:%d", svc.port)
+		if stepByStep {
+			waitForRequest("REGISTER", svc.task, address)
+		}
+
 		fmt.Printf("%s[%d/%d]%s Registering %s%s%s on task '%s%s%s'...",
 			colorCyan, i+1, len(services), colorWhite,
 			colorGreen, svc.name, colorWhite,
 			colorYellow, svc.task, colorWhite)
 
-		address := fmt.Sprintf("localhost:%d", svc.port)
 		success := sendRegister(svc.task, address)
 
 		time.Sleep(300 * time.Millisecond) // Visual pacing
@@ -247,6 +273,10 @@ func demonstrateQueries() {
 	fmt.Printf("%sClients requesting services by task name...%s\n\n", colorWhite, colorReset)
 
 	for i, task := range queries {
+		if stepByStep {
+			waitForRequest("QUERY", task, "")
+		}
+
 		fmt.Printf("%s[Query %d]%s Looking for '%s%s%s'...",
 			colorCyan, i+1, colorWhite,
 			colorYellow, task, colorWhite)
@@ -281,6 +311,10 @@ func demonstrateRoundRobin() {
 	addresses := make(map[string]int)
 
 	for i := 1; i <= 9; i++ {
+		if stepByStep {
+			waitForRequest("QUERY", "task_web", "")
+		}
+
 		fmt.Printf("%s[Request %d]%s task_web → ",
 			colorCyan, i, colorWhite)
 
@@ -582,4 +616,13 @@ func sendUDP(msg Message) (*Response, error) {
 
 func pause() {
 	fmt.Scanln()
+}
+
+func waitForRequest(command, task, address string) {
+	if command == "REGISTER" {
+		fmt.Printf("%sPress ENTER to send %s %s -> %s...%s", colorGreen, command, task, address, colorReset)
+	} else {
+		fmt.Printf("%sPress ENTER to send %s %s...%s", colorGreen, command, task, colorReset)
+	}
+	pause()
 }
