@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tds-config
+  namespace: tds-simulation
+data:
+  TDS_SERVER_ADDR: "tds-server:5000"
+  TDS_PROXY_LISTEN: ":5100"
+  CS_DB_HOST: "cs-db"
+  CS_DB_PORT: "5432"
+  CS_DB_USER: "postgres"
+  CS_DB_NAME: "cs"
+  PCTRBO_DB_HOST: "pctrbo-db"
+  PCTRBO_DB_PORT: "5432"
+  PCTRBO_DB_USER: "postgres"
+  PCTRBO_DB_NAME: "pctrbo"
+  PA_DB_HOST: "pa-db"
+  PA_DB_PORT: "5432"
+  PA_DB_USER: "postgres"
+  PA_DB_NAME: "pa"
+  DB_PASSWORD: "pass"

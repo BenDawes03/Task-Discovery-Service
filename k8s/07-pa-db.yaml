@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pa-db
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pa-db
+  template:
+    metadata:
+      labels:
+        app: pa-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: DB_PASSWORD
+        - name: POSTGRES_DB
+          value: "pa"
+        volumeMounts:
+        - name: pa-db-storage
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: pa-db-storage
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pa-db
+  namespace: tds-simulation
+spec:
+  selector:
+    app: pa-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP

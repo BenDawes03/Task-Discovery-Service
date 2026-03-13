@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-proxy
+  template:
+    metadata:
+      labels:
+        app: client-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5100
+          name: proxy
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: client-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: client-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+  type: ClusterIP

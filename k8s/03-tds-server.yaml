@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tds-server
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tds-server
+  template:
+    metadata:
+      labels:
+        app: tds-server
+    spec:
+      containers:
+      - name: tds-server
+        image: tds-server:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+          name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tds-server
+  namespace: tds-simulation
+spec:
+  selector:
+    app: tds-server
+  ports:
+  - port: 5000
+    targetPort: 5000
+    name: http
+  type: ClusterIP

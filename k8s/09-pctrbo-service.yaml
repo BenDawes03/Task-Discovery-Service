@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pctrbo
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pctrbo
+  template:
+    metadata:
+      labels:
+        app: pctrbo
+    spec:
+      containers:
+      - name: pctrbo
+        image: sim-pctrbo:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9102
+        env:
+        - name: PCTRBO_DB_DSN
+          value: "postgres://postgres:pass@pctrbo-db:5432/pctrbo?sslmode=disable"
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+      initContainers:
+      - name: wait-for-client-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+      - name: wait-for-pctrbo-db
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup pctrbo-db; do echo waiting for pctrbo-db; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pctrbo
+  namespace: tds-simulation
+spec:
+  selector:
+    app: pctrbo
+  ports:
+  - port: 9102
+    targetPort: 9102
+  type: NodePort

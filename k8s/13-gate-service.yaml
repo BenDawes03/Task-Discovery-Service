@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gate-keys
+  namespace: tds-simulation
+data:
+  gate-public-key: |
+    # Placeholder for Gate public key
+    # Replace with actual content from Simulation/keys/pctr_public.pem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gate
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gate
+  template:
+    metadata:
+      labels:
+        app: gate
+    spec:
+      containers:
+      - name: gate
+        image: sim-gate:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9200
+        env:
+        - name: PCTR_PUBLIC_KEY
+          value: "/run/keys/pctr_public.pem"
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        volumeMounts:
+        - name: gate-keys
+          mountPath: /run/keys
+          readOnly: true
+      volumes:
+      - name: gate-keys
+        configMap:
+          name: gate-keys
+      initContainers:
+      - name: wait-for-station
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup station-1; do echo waiting for station-1; sleep 1; done']
+      - name: wait-for-cs
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup cs; do echo waiting for cs; sleep 1; done']
+      - name: wait-for-pa
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup pa; do echo waiting for pa; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gate
+  namespace: tds-simulation
+spec:
+  selector:
+    app: gate
+  ports:
+  - port: 9200
+    targetPort: 9200
+  type: NodePort

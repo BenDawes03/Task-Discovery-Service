@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: station-1
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: station-1
+  template:
+    metadata:
+      labels:
+        app: station-1
+    spec:
+      containers:
+      - name: station
+        image: sim-station:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9100
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+      initContainers:
+      - name: wait-for-client-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: station-1
+  namespace: tds-simulation
+spec:
+  selector:
+    app: station-1
+  ports:
+  - port: 9100
+    targetPort: 9100
+  type: NodePort

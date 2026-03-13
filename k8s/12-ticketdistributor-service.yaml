@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketdistributor
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticketdistributor
+  template:
+    metadata:
+      labels:
+        app: ticketdistributor
+    spec:
+      containers:
+      - name: ticketdistributor
+        image: sim-ticketdistributor:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9110
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        volumeMounts:
+        - name: tickets-storage
+          mountPath: /data/tickets
+      volumes:
+      - name: tickets-storage
+        emptyDir: {}
+      initContainers:
+      - name: wait-for-client-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ticketdistributor
+  namespace: tds-simulation
+spec:
+  selector:
+    app: ticketdistributor
+  ports:
+  - port: 9110
+    targetPort: 9110
+  type: NodePort
