@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -200,35 +201,59 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	proxyExited := make(chan struct{})
+	var proxyErr error
+	var proxyErrMu sync.Mutex
+	setProxyErr := func(err error) {
+		proxyErrMu.Lock()
+		defer proxyErrMu.Unlock()
+		proxyErr = err
+	}
+	getProxyErr := func() error {
+		proxyErrMu.Lock()
+		defer proxyErrMu.Unlock()
+		return proxyErr
+	}
 
 	var dhtRegistry *dht.DHTRegistry
+	var shutdownOnce sync.Once
 	shutdown := func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				log.Printf("proxy stopped with error: %v", err)
+		shutdownOnce.Do(func() {
+			cancel()
+			select {
+			case <-proxyExited:
+				if err := getProxyErr(); err != nil {
+					log.Printf("proxy stopped with error: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				log.Println("proxy shutdown timed out")
 			}
-		case <-time.After(2 * time.Second):
-			log.Println("proxy shutdown timed out")
-		}
-		if dhtRegistry != nil {
-			_ = dhtRegistry.Stop()
-		}
+			if dhtRegistry != nil {
+				_ = dhtRegistry.Stop()
+			}
+		})
 	}
+
+	go func() {
+		err := <-done
+		setProxyErr(err)
+		close(proxyExited)
+	}()
 
 	if mode == "p2p" {
 		// P2P mode: use DHT
-		if !background {
+		useDashboard := !background && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+		var dashboard *p2pDashboard
+		if !background && !useDashboard {
 			fmt.Println("Starting in P2P mode with DHT...")
 		}
 
 		dht.ReplicationFactor = kClosest
-		if !background {
+		if !background && !useDashboard {
 			fmt.Printf("DHT k-closest replication factor: %d\n", dht.ReplicationFactor)
 		}
 
-		if !background && len(bootstrapNodes) > 0 {
+		if !background && !useDashboard && len(bootstrapNodes) > 0 {
 			fmt.Printf("Bootstrap nodes: %v\n", bootstrapNodes)
 		}
 
@@ -242,8 +267,20 @@ func main() {
 			log.Fatalf("failed to create DHT registry: %v", err)
 		}
 
+		if useDashboard {
+			dashboard = newP2PDashboard(dhtRegistry, listen, p2pPort, bootstrapNodes, kClosest)
+			log.SetOutput(dashboard)
+			client.SetLogOutput(dashboard)
+			dht.SetLogOutput(dashboard)
+			fmt.Fprintln(dashboard, "starting in P2P mode with dashboard UI")
+		}
+
 		if err := dhtRegistry.Start(); err != nil {
 			if background {
+				os.Exit(1)
+			}
+			if useDashboard {
+				fmt.Fprintf(os.Stderr, "failed to start DHT: %v\n", err)
 				os.Exit(1)
 			}
 			log.Fatalf("failed to start DHT: %v", err)
@@ -254,9 +291,20 @@ func main() {
 			done <- client.RunProxyP2P(ctx, listen, dhtRegistry)
 		}()
 
-		if !background {
+		if !background && !useDashboard {
 			fmt.Printf("DHT node listening on %s\n", p2pPort)
 			fmt.Printf("Client proxy listening on %s\n", listen)
+		}
+
+		if useDashboard {
+			fmt.Fprintf(dashboard, "proxy listening on %s\n", listen)
+			if err := dashboard.Run(proxyExited, getProxyErr, shutdown); err != nil {
+				shutdown()
+				fmt.Fprintf(os.Stderr, "client-proxy dashboard exited: %v\n", err)
+				os.Exit(1)
+			}
+			shutdown()
+			return
 		}
 	} else {
 		// Traditional centralized mode
@@ -282,8 +330,8 @@ func main() {
 		sigCh := make(chan os.Signal, 2)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 		select {
-		case err := <-done:
-			if err != nil {
+		case <-proxyExited:
+			if err := getProxyErr(); err != nil {
 				os.Exit(1)
 			}
 			return

@@ -12,6 +12,22 @@ import (
 	"time"
 )
 
+// canonicalAddressForHash normalizes common local address aliases so a single
+// node does not get multiple hash identities (e.g. localhost vs 127.0.0.1).
+func canonicalAddressForHash(addr string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return strings.TrimSpace(addr)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "", "0.0.0.0", "::", "::1", "localhost":
+		host = "127.0.0.1"
+	}
+
+	return net.JoinHostPort(host, port)
+}
+
 // NodeID is a 256-bit identifier derived from hashing the node's address
 type NodeID [32]byte
 
@@ -71,7 +87,7 @@ func (dht *DHT) SetNetwork(network *DHTNetwork) {
 // HashAddress computes a SHA256 hash of an address string to create a NodeID.
 // This places the node at a specific position in the 256-bit keyspace.
 func HashAddress(addr string) NodeID {
-	hash := sha256.Sum256([]byte(addr))
+	hash := sha256.Sum256([]byte(canonicalAddressForHash(addr)))
 	return hash
 }
 
@@ -467,6 +483,21 @@ func (dht *DHT) GetStorageSize() int {
 	dht.mutex.RLock()
 	defer dht.mutex.RUnlock()
 	return len(dht.storage)
+}
+
+// GetStorageSnapshot returns a deep copy of the tasks stored on this node.
+func (dht *DHT) GetStorageSnapshot() map[string][]string {
+	dht.mutex.RLock()
+	defer dht.mutex.RUnlock()
+
+	snapshot := make(map[string][]string, len(dht.storage))
+	for task, addrs := range dht.storage {
+		copied := make([]string, len(addrs))
+		copy(copied, addrs)
+		snapshot[task] = copied
+	}
+
+	return snapshot
 }
 
 // NodeIDFromUint64 creates a NodeID from a uint64 (for testing)
