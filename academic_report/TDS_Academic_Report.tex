@@ -38,7 +38,7 @@ A Dual-Architecture Service Registry for Distributed Systems}}
 
 \section{Introduction and Motivation}
 
-During my time working for Cubic Transportation Systems, one of my major projects was working on a data distribution system. It lay at the core of the system architecture and its main purpose was receiving data from a dynamic number of devices and passing it on to fixed points to process it according to what operation was requested. Upon further research I found that this was a common component in many large scale distributed systems. The component I worked with, while it could receive requests from a dynamic number of clients, had hard coded outputs. This meant that redevelopment, and therefore comprehensive testing, was required if any changes were made to the endpoints. This included scaling and evidence of this issue was present as the original endpoints had been replaced with load balancers in the cases were it had become too much for the original resolvers. 
+In large distributed systems, one weak point can force the whole platform to slow down: static service routing. The core issue in the system I worked on at Cubic Transportation Systems was not input handling, but rigid, hard-coded output endpoints. Although the component accepted requests from a dynamic number of devices, every routing change required redevelopment and full regression testing. This made scaling expensive and slow, and over time the original resolvers had to be replaced with load balancers as demand outgrew the fixed design. This project began from that operational bottleneck and asks how service discovery can be made both dynamic and scalable.
 
 \subsection{Problem Statement}
 

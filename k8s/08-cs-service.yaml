@@ -17,6 +17,11 @@ spec:
       - name: cs
         image: sim-cs:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "-proxy"
+        - "client-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
         ports:
         - containerPort: 9101
         env:

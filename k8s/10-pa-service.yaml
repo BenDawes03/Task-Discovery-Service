@@ -4,9 +4,9 @@ metadata:
   name: pa-keys
   namespace: tds-simulation
 data:
-  pa-private-key: |
+  pctr_private.pem: |
     # Placeholder for PA private key
-    # Replace with actual content from Simulation/keys/pctr_private.pem
+    # Replace with actual content from pctr_private.pem
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,6 +27,11 @@ spec:
       - name: pa
         image: sim-pa:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "-proxy"
+        - "client-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
         ports:
         - containerPort: 9103
         env:

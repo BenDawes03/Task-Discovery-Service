@@ -4,7 +4,7 @@ metadata:
   name: ticketdistributor
   namespace: tds-simulation
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: ticketdistributor
@@ -17,6 +17,13 @@ spec:
       - name: ticketdistributor
         image: sim-ticketdistributor:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "-task"
+        - "sim.ticketdistributor"
+        - "-proxy"
+        - "client-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
         ports:
         - containerPort: 9110
         env:

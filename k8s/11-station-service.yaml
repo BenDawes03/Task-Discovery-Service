@@ -17,6 +17,13 @@ spec:
       - name: station
         image: sim-station:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "-station-id"
+        - "1"
+        - "-proxy"
+        - "client-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
         ports:
         - containerPort: 9100
         env:

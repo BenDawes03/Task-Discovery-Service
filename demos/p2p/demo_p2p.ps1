@@ -48,19 +48,19 @@ Write-Host ""
 
 # Start three nodes in separate visible terminals
 Write-Host "Starting Node A on :6000 (client proxy on :5100)..." -ForegroundColor Yellow
-$nodeACommand = "`$env:TDS_PROXY_LISTEN=':5100'; & '.\\bin\\client_proxy.exe' -p2p -p2p-port :6000 -k-closest $KClosest"
+$nodeACommand = "`$env:TDS_PROXY_LISTEN=':5100'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6000 -k-closest $KClosest"
 $nodeA = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeACommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node B on :6001 (client proxy on :5101)..." -ForegroundColor Yellow
-$nodeBCommand = "`$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -p2p-port :6001 -bootstrap 127.0.0.1:6000 -k-closest $KClosest"
+$nodeBCommand = "`$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6001 -bootstrap 127.0.0.1:6000  -k-closest $KClosest"
 $nodeB = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeBCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node C on :6002 (client proxy on :5102)..." -ForegroundColor Yellow
-$nodeCCommand = "`$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest"
+$nodeCCommand = "`$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui=false -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest"
 $nodeC = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeCCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 5

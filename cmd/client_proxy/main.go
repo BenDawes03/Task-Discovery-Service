@@ -22,12 +22,13 @@ import (
 )
 
 // askModeOptions collects interactive options from the terminal.
-// Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes
-func askModeOptions() (string, string, string, []string, bool, int) {
+// Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
+func askModeOptions() (string, string, string, []string, bool, int, bool) {
 	mode := "centralized"
 	transport := "udp"
 	p2pPort := ":6000"
 	kClosest := dht.ReplicationFactor
+	simplifiedUI := false
 	var bootstrapNodes []string
 	background := false
 
@@ -36,10 +37,12 @@ func askModeOptions() (string, string, string, []string, bool, int) {
 	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
 	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
 	kClosestFlag := flag.Int("k-closest", dht.ReplicationFactor, "Number of k-closest nodes used by DHT replication/query in p2p mode")
+	simpleUIFlag := flag.Bool("simple-ui", false, "Use a simplified P2P dashboard focused on DHT activity")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
 	backgroundFlag := flag.Bool("background", false, "Run in background (no interactive stdin); exit on SIGINT/SIGTERM or proxy error")
 	flag.Parse()
 	background = *backgroundFlag
+	simplifiedUI = *simpleUIFlag
 	if *kClosestFlag > 0 {
 		kClosest = *kClosestFlag
 	} else {
@@ -56,7 +59,7 @@ func askModeOptions() (string, string, string, []string, bool, int) {
 				bootstrapNodes[i] = strings.TrimSpace(bootstrapNodes[i])
 			}
 		}
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
 	}
 
 	if *tcpFlag {
@@ -68,12 +71,12 @@ func askModeOptions() (string, string, string, []string, bool, int) {
 		if !background {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
 		}
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
 	}
 
 	// In background mode, skip interactive prompts (use defaults unless flags are provided).
 	if background {
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
 	}
 
 	// Interactive prompts
@@ -107,6 +110,12 @@ func askModeOptions() (string, string, string, []string, bool, int) {
 
 		// Ask for bootstrap nodes
 		bootstrapNodes = askBootstrapNodes(reader)
+
+		// Ask for dashboard style
+		fmt.Fprint(os.Stderr, "Use simplified dashboard UI focused on DHT events? [Y/n]: ")
+		simpleInput, _ := reader.ReadString('\n')
+		simpleInput = strings.ToLower(strings.TrimSpace(simpleInput))
+		simplifiedUI = (simpleInput == "" || simpleInput == "y" || simpleInput == "yes")
 	} else {
 		// Centralized mode - ask for transport
 		fmt.Fprint(os.Stderr, "Select transport mode: 1) udp (default) 2) tcp. Enter 1 or 2 [1]: ")
@@ -123,7 +132,7 @@ func askModeOptions() (string, string, string, []string, bool, int) {
 		}
 	}
 
-	return mode, transport, p2pPort, bootstrapNodes, background, kClosest
+	return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
 }
 
 func askBootstrapNodes(reader *bufio.Reader) []string {
@@ -185,7 +194,7 @@ func normalizePortInput(input string) string {
 
 func main() {
 	// Gather mode and transport options
-	mode, transport, p2pPort, bootstrapNodes, background, kClosest := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI := askModeOptions()
 
 	if background {
 		// Quiet background operation: no logs, no prints, no interactive prompts.
@@ -268,11 +277,15 @@ func main() {
 		}
 
 		if useDashboard {
-			dashboard = newP2PDashboard(dhtRegistry, listen, p2pPort, bootstrapNodes, kClosest)
+			dashboard = newP2PDashboard(dhtRegistry, listen, p2pPort, bootstrapNodes, kClosest, simplifiedUI)
 			log.SetOutput(dashboard)
 			client.SetLogOutput(dashboard)
 			dht.SetLogOutput(dashboard)
-			fmt.Fprintln(dashboard, "starting in P2P mode with dashboard UI")
+			if simplifiedUI {
+				fmt.Fprintln(dashboard, "starting in P2P mode with simplified dashboard UI")
+			} else {
+				fmt.Fprintln(dashboard, "starting in P2P mode with dashboard UI")
+			}
 		}
 
 		if err := dhtRegistry.Start(); err != nil {

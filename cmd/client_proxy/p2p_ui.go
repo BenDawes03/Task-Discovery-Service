@@ -21,6 +21,7 @@ type p2pDashboard struct {
 	dhtListen      string
 	bootstrapNodes []string
 	kClosest       int
+	simplified     bool
 	startedAt      time.Time
 
 	summaryView *tview.TextView
@@ -42,33 +43,55 @@ type p2pDashboard struct {
 	proxyErr   error
 }
 
-func newP2PDashboard(registry *dht.DHTRegistry, proxyListen, dhtListen string, bootstrapNodes []string, kClosest int) *p2pDashboard {
+func newP2PDashboard(registry *dht.DHTRegistry, proxyListen, dhtListen string, bootstrapNodes []string, kClosest int, simplified bool) *p2pDashboard {
 	summaryView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetWrap(true)
-	summaryView.SetBorder(true).SetTitle(" Node summary ")
+	summaryTitle := " Node summary "
+	if simplified {
+		summaryTitle = " DHT quick view "
+	}
+	summaryView.SetBorder(true).SetTitle(summaryTitle)
 
 	peersTable := tview.NewTable().SetBorders(false).SetFixed(1, 0)
-	peersTable.SetBorder(true).SetTitle(" Known peers ")
+	peersTitle := " Known peers "
+	if simplified {
+		peersTitle = " Peers "
+	}
+	peersTable.SetBorder(true).SetTitle(peersTitle)
 
 	tasksTable := tview.NewTable().SetBorders(false).SetFixed(1, 0)
-	tasksTable.SetBorder(true).SetTitle(" Stored tasks ")
+	tasksTitle := " Stored tasks "
+	if simplified {
+		tasksTitle = " Task replicas "
+	}
+	tasksTable.SetBorder(true).SetTitle(tasksTitle)
 
 	logView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetScrollable(true).
-		SetWrap(false)
-	logView.SetBorder(true).SetTitle(" Recent log messages ")
+		SetWrap(simplified)
+	logTitle := " Recent log messages "
+	if simplified {
+		logTitle = " DHT event feed "
+	}
+	logView.SetBorder(true).SetTitle(logTitle)
 
 	footerView := tview.NewTextView().SetDynamicColors(true)
 	footerView.SetBorder(true).SetTitle(" Controls ")
 
-	body := tview.NewFlex().
-		AddItem(peersTable, 0, 2, false).
-		AddItem(tasksTable, 0, 3, false)
+	var body *tview.Flex
+	if simplified {
+		body = tview.NewFlex().
+			AddItem(tasksTable, 0, 1, false)
+	} else {
+		body = tview.NewFlex().
+			AddItem(peersTable, 0, 2, false).
+			AddItem(tasksTable, 0, 3, false)
+	}
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(summaryView, 6, 0, false).
+		AddItem(summaryView, 7, 0, false).
 		AddItem(body, 0, 2, false).
 		AddItem(logView, 0, 3, false).
 		AddItem(footerView, 3, 0, false)
@@ -80,6 +103,7 @@ func newP2PDashboard(registry *dht.DHTRegistry, proxyListen, dhtListen string, b
 		dhtListen:      dhtListen,
 		bootstrapNodes: append([]string(nil), bootstrapNodes...),
 		kClosest:       kClosest,
+		simplified:     simplified,
 		startedAt:      time.Now(),
 		summaryView:    summaryView,
 		peersTable:     peersTable,
@@ -126,6 +150,12 @@ func (d *p2pDashboard) Write(p []byte) (int, error) {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
+		}
+		if d.simplified {
+			line = simplifyLogLine(line)
+			if line == "" {
+				continue
+			}
 		}
 		d.logLines = append(d.logLines, line)
 	}
@@ -218,34 +248,63 @@ func (d *p2pDashboard) render() {
 		bootstraps = strings.Join(sortedBootstraps, ", ")
 	}
 
-	summary := fmt.Sprintf(
-		"[yellow]Mode:[white] P2P    [yellow]Uptime:[white] %s    [yellow]Replication (k):[white] %d\n"+
-			"[yellow]Proxy listen:[white] %s    [yellow]DHT listen:[white] %s\n"+
-			"[yellow]Node ID:[white] %s    [yellow]Ring size:[white] %d    [yellow]Peers:[white] %d\n"+
-			"[yellow]Local storage:[white] %d task(s)    [yellow]Bootstraps:[white] %s\n"+
-			"[yellow]Proxy stats:[white] registers=%d queries=%d errors=%d    [yellow]DHT stats:[white] registers=%d queries=%d errors=%d",
-		time.Since(d.startedAt).Round(time.Second),
-		d.kClosest,
-		d.proxyListen,
-		snapshot.Address,
-		snapshot.NodeID,
-		snapshot.RingSize,
-		len(peers),
-		snapshot.StorageSize,
-		bootstraps,
-		clientRegs,
-		clientQueries,
-		clientErrs,
-		dhtRegs,
-		dhtQueries,
-		dhtErrs,
-	)
+	var summary string
+	if d.simplified {
+		summary = fmt.Sprintf(
+			"[green::b]DHT VIEW[white:-:-]    [yellow]Uptime:[white] %s    [yellow]Replication (k):[white] %d\n"+
+				"[yellow]Proxy:[white] %s    [yellow]DHT node:[white] %s\n"+
+				"[yellow]Peers:[white] %d    [yellow]Tasks on this node:[white] %d    [yellow]Bootstraps:[white] %s\n"+
+				"[yellow]Operations:[white] reg=%d query=%d err=%d    [yellow]DHT ops:[white] reg=%d query=%d err=%d",
+			time.Since(d.startedAt).Round(time.Second),
+			d.kClosest,
+			d.proxyListen,
+			snapshot.Address,
+			len(peers),
+			snapshot.StorageSize,
+			bootstraps,
+			clientRegs,
+			clientQueries,
+			clientErrs,
+			dhtRegs,
+			dhtQueries,
+			dhtErrs,
+		)
+	} else {
+		summary = fmt.Sprintf(
+			"[red::b]DHT VIEW[white:-:-]    [yellow]Uptime:[white] %s    [yellow]Replication (k):[white] %d\n"+
+				"[yellow]Proxy listen:[white] %s    [yellow]DHT listen:[white] %s\n"+
+				"[yellow]Node ID:[white] %s    [yellow]Ring size:[white] %d    [yellow]Peers:[white] %d\n"+
+				"[yellow]Local storage:[white] %d task(s)    [yellow]Bootstraps:[white] %s\n"+
+				"[yellow]Proxy stats:[white] registers=%d queries=%d errors=%d    [yellow]DHT stats:[white] registers=%d queries=%d errors=%d",
+			time.Since(d.startedAt).Round(time.Second),
+			d.kClosest,
+			d.proxyListen,
+			snapshot.Address,
+			snapshot.NodeID,
+			snapshot.RingSize,
+			len(peers),
+			snapshot.StorageSize,
+			bootstraps,
+			clientRegs,
+			clientQueries,
+			clientErrs,
+			dhtRegs,
+			dhtQueries,
+			dhtErrs,
+		)
+	}
 	d.summaryView.SetText(summary)
 
-	d.renderPeers(peers)
+	if !d.simplified {
+		d.renderPeers(peers)
+	}
 	d.renderTasks(tasks, snapshot.StoredTasks)
 	d.renderLogs()
-	d.footerView.SetText("[yellow]q[white] quit    [yellow]c[white] clear logs    [yellow]r[white] refresh")
+	if d.simplified {
+		d.footerView.SetText("[green::b]UI MODE: SIMPLIFIED[white:-:-]    [yellow]q[white] quit    [yellow]c[white] clear events    [yellow]r[white] refresh")
+	} else {
+		d.footerView.SetText("[red::b]UI MODE: STANDARD[white:-:-]    [yellow]q[white] quit    [yellow]c[white] clear logs    [yellow]r[white] refresh")
+	}
 }
 
 func (d *p2pDashboard) renderPeers(peers []string) {
@@ -268,13 +327,19 @@ func (d *p2pDashboard) renderPeers(peers []string) {
 func (d *p2pDashboard) renderTasks(taskNames []string, stored map[string][]string) {
 	d.tasksTable.Clear()
 	d.tasksTable.SetCell(0, 0, headerCell("Task"))
-	d.tasksTable.SetCell(0, 1, headerCell("Addresses"))
-	d.tasksTable.SetCell(0, 2, headerCell("Replicas"))
+	if d.simplified {
+		d.tasksTable.SetCell(0, 1, headerCell("Replicas"))
+	} else {
+		d.tasksTable.SetCell(0, 1, headerCell("Addresses"))
+		d.tasksTable.SetCell(0, 2, headerCell("Replicas"))
+	}
 
 	if len(taskNames) == 0 {
 		d.tasksTable.SetCell(1, 0, plainCell("No tasks stored on this node"))
-		d.tasksTable.SetCell(1, 1, plainCell(""))
-		d.tasksTable.SetCell(1, 2, plainCell("0"))
+		d.tasksTable.SetCell(1, 1, plainCell("0"))
+		if !d.simplified {
+			d.tasksTable.SetCell(1, 2, plainCell("0"))
+		}
 		return
 	}
 
@@ -282,8 +347,12 @@ func (d *p2pDashboard) renderTasks(taskNames []string, stored map[string][]strin
 		addrs := append([]string(nil), stored[task]...)
 		sort.Strings(addrs)
 		d.tasksTable.SetCell(i+1, 0, plainCell(task))
-		d.tasksTable.SetCell(i+1, 1, plainCell(strings.Join(addrs, ", ")))
-		d.tasksTable.SetCell(i+1, 2, plainCell(fmt.Sprintf("%d", len(addrs))))
+		if d.simplified {
+			d.tasksTable.SetCell(i+1, 1, plainCell(fmt.Sprintf("%d", len(addrs))))
+		} else {
+			d.tasksTable.SetCell(i+1, 1, plainCell(strings.Join(addrs, ", ")))
+			d.tasksTable.SetCell(i+1, 2, plainCell(fmt.Sprintf("%d", len(addrs))))
+		}
 	}
 }
 
@@ -294,7 +363,11 @@ func (d *p2pDashboard) renderLogs() {
 
 	d.logView.Clear()
 	if len(lines) == 0 {
-		fmt.Fprintln(d.logView, "Waiting for log messages...")
+		if d.simplified {
+			fmt.Fprintln(d.logView, "Waiting for DHT events...")
+		} else {
+			fmt.Fprintln(d.logView, "Waiting for log messages...")
+		}
 		return
 	}
 	for _, line := range lines {
@@ -341,4 +414,97 @@ func headerCell(text string) *tview.TableCell {
 
 func plainCell(text string) *tview.TableCell {
 	return tview.NewTableCell(" " + text + " ").SetSelectable(false)
+}
+
+func simplifyLogLine(line string) string {
+	msg := trimLogEnvelope(line)
+	if msg == "" {
+		return ""
+	}
+
+	switch {
+	case strings.HasPrefix(msg, "P2P REGISTER "):
+		rest := strings.TrimPrefix(msg, "P2P REGISTER ")
+		rest = trimSourceSuffix(rest)
+		return "REGISTER request: " + rest
+	case strings.HasPrefix(msg, "P2P QUERY "):
+		rest := strings.TrimPrefix(msg, "P2P QUERY ")
+		rest = trimSourceSuffix(rest)
+		return "QUERY request: " + rest
+	case strings.HasPrefix(msg, "registering "):
+		return "DHT store started: " + strings.TrimPrefix(msg, "registering ")
+	case strings.HasPrefix(msg, "querying all for "):
+		return "DHT query(all): " + strings.TrimPrefix(msg, "querying all for ")
+	case strings.HasPrefix(msg, "querying "):
+		return "DHT query: " + strings.TrimPrefix(msg, "querying ")
+	case strings.HasPrefix(msg, "DHT listening on "):
+		return "DHT node online"
+	case strings.HasPrefix(msg, "joining via bootstrap node "):
+		return "Bootstrapping via " + strings.TrimPrefix(msg, "joining via bootstrap node ")
+	case strings.HasPrefix(msg, "join error with "):
+		return "Bootstrap failed: " + strings.TrimPrefix(msg, "join error with ")
+	case strings.HasPrefix(msg, "received ") && strings.Contains(msg, " peers from "):
+		return "Peer list updated: " + msg
+	case strings.HasPrefix(msg, "joined network, "):
+		return "Network join complete: " + msg
+	case strings.HasPrefix(msg, "stored locally"):
+		return "Stored locally: " + shortenStoreMessage(msg)
+	case strings.HasPrefix(msg, "stored on "):
+		return "Stored on peer: " + shortenStoreMessage(msg)
+	case strings.HasPrefix(msg, "store complete: "):
+		return "Replication done: " + strings.TrimPrefix(msg, "store complete: ")
+	case strings.HasPrefix(msg, "found locally: "):
+		return "Query result(local): " + strings.TrimPrefix(msg, "found locally: ")
+	case strings.HasPrefix(msg, "found on "):
+		return "Query result(peer): " + strings.TrimPrefix(msg, "found on ")
+	case strings.HasPrefix(msg, "not found on any k-closest node: "):
+		return "Query miss: " + strings.TrimPrefix(msg, "not found on any k-closest node: ")
+	case strings.HasPrefix(msg, "queuing closer node "):
+		return "Retrying with closer peer"
+	case strings.HasPrefix(msg, "removed unreachable peer "):
+		return "Peer dropped: " + strings.TrimPrefix(msg, "removed unreachable peer ")
+	case strings.HasPrefix(msg, "proxy listening on "):
+		return "Proxy online: " + strings.TrimPrefix(msg, "proxy listening on ")
+	case strings.HasPrefix(msg, "proxy stopped"):
+		return "Proxy stopped"
+	}
+
+	// In simplified mode, drop noisy unclassified logs.
+	return ""
+}
+
+func trimLogEnvelope(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(line, "[") {
+		if idx := strings.Index(line, "] "); idx != -1 {
+			line = strings.TrimSpace(line[idx+2:])
+		}
+	}
+
+	if len(line) >= 20 {
+		candidate := line[:19]
+		if _, err := time.Parse("2006/01/02 15:04:05", candidate); err == nil {
+			line = strings.TrimSpace(line[20:])
+		}
+	}
+
+	return line
+}
+
+func trimSourceSuffix(s string) string {
+	if idx := strings.Index(s, " (from "); idx != -1 {
+		return strings.TrimSpace(s[:idx])
+	}
+	return strings.TrimSpace(s)
+}
+
+func shortenStoreMessage(msg string) string {
+	if idx := strings.Index(msg, ": "); idx != -1 {
+		return strings.TrimSpace(msg[idx+2:])
+	}
+	return msg
 }
