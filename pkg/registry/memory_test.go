@@ -1,8 +1,13 @@
 package registry
 
 import (
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"tds/pkg/firewall"
 )
 
 func TestRegisterPreservesCapacityOnHeartbeatUpdate(t *testing.T) {
@@ -153,5 +158,124 @@ func TestHeartbeatFromUnregisteredServiceCreatesEntry(t *testing.T) {
 	}
 	if entries[0].Capacity != 1 {
 		t.Fatalf("expected default capacity 1, got %d", entries[0].Capacity)
+	}
+}
+
+func TestGetServiceForRequestorFiltersByFirewall(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "firewall-task"
+	allowedAddr := "10.10.0.1:8080"
+	deniedAddr := "10.10.0.2:8080"
+
+	r.RegisterWithCapacity(task, allowedAddr, 1)
+	r.RegisterWithCapacity(task, deniedAddr, 1)
+	r.SetDisableFreshness(true)
+
+	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
+	if err := os.WriteFile(rulesPath, []byte("192.168.1.10 10.10.0.1\n"), 0o600); err != nil {
+		t.Fatalf("failed to write firewall rules: %v", err)
+	}
+
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load firewall rules: %v", err)
+	}
+	r.SetFirewall(fw)
+
+	addr, err := r.GetServiceForRequestor(task, net.ParseIP("192.168.1.10"))
+	if err != nil {
+		t.Fatalf("unexpected GetServiceForRequestor error: %v", err)
+	}
+	if addr != allowedAddr {
+		t.Fatalf("expected allowed address %q, got %q", allowedAddr, addr)
+	}
+
+	_, err = r.GetServiceForRequestor(task, net.ParseIP("192.168.1.11"))
+	if err != ErrNoAllowedService {
+		t.Fatalf("expected ErrNoAllowedService, got %v", err)
+	}
+}
+
+func TestListServicesReturnsDeepCopyAndSyncedQueryCounts(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "copy-task"
+	addr := "10.0.0.70:8080"
+
+	r.RegisterWithCapacity(task, addr, 2)
+	if _, err := r.GetService(task); err != nil {
+		t.Fatalf("unexpected GetService error: %v", err)
+	}
+
+	services := r.ListServices()
+	if services[task][0].QueryCount != 1 {
+		t.Fatalf("expected query count 1, got %d", services[task][0].QueryCount)
+	}
+	services[task][0].Address = "mutated"
+	services[task] = append(services[task], ServiceEntry{Address: "extra"})
+
+	refreshed := r.ListServices()
+	if len(refreshed[task]) != 1 {
+		t.Fatalf("expected internal service slice to remain unchanged, got %d entries", len(refreshed[task]))
+	}
+	if refreshed[task][0].Address != addr {
+		t.Fatalf("expected original address %q, got %q", addr, refreshed[task][0].Address)
+	}
+
+	stats := r.GetStats()
+	if stats.TotalQueries != 1 || stats.TotalTasks != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestWeightHelpersCoverEdgeCases(t *testing.T) {
+	now := time.Now()
+	entries := []ServiceEntry{
+		{Address: "future", LastHeartbeat: now.Add(10 * time.Second), Capacity: 0},
+		{Address: "stale", LastHeartbeat: now.Add(-90 * time.Second), Capacity: 3},
+	}
+
+	if got := serviceWeight(entries[0], now); got != 1 {
+		t.Fatalf("expected zero capacity to normalize to weight 1, got %d", got)
+	}
+	if got := serviceWeightOpts(entries[1], now, true); got != 3 {
+		t.Fatalf("expected no-freshness weight to equal capacity, got %d", got)
+	}
+	if got := totalServiceWeight(entries, now); got != 2 {
+		t.Fatalf("expected total weight 2 with freshness decay, got %d", got)
+	}
+	if got := totalServiceWeightOpts(entries, now, true); got != 4 {
+		t.Fatalf("expected total weight 4 without freshness decay, got %d", got)
+	}
+
+	addr, ok := selectWeightedAddress(entries, now, 0)
+	if !ok || addr != "future" {
+		t.Fatalf("expected slot 0 to choose future entry, got %q ok=%v", addr, ok)
+	}
+	addr, ok = selectWeightedAddressOpts(entries, now, 3, true)
+	if !ok || addr != "stale" {
+		t.Fatalf("expected slot 3 to choose stale entry without freshness decay, got %q ok=%v", addr, ok)
+	}
+	if _, ok := selectWeightedAddressOpts(entries, now, 4, true); ok {
+		t.Fatalf("expected out-of-range slot selection to fail")
+	}
+}
+
+func TestCleanupKeepsFreshEntries(t *testing.T) {
+	r := NewMemoryRegistry()
+	r.RegisterWithCapacity("mixed", "10.0.0.80:8080", 1)
+	r.RegisterWithCapacity("mixed", "10.0.0.81:8080", 1)
+
+	r.mutex.Lock()
+	r.services["mixed"][0].LastHeartbeat = time.Now().Add(-2 * time.Minute)
+	r.services["mixed"][1].LastHeartbeat = time.Now()
+	r.mutex.Unlock()
+
+	removed := r.Cleanup(30 * time.Second)
+	if removed != 1 {
+		t.Fatalf("expected one stale entry removed, got %d", removed)
+	}
+	services := r.ListServices()
+	if len(services["mixed"]) != 1 || services["mixed"][0].Address != "10.0.0.81:8080" {
+		t.Fatalf("expected fresh entry to remain, got %+v", services["mixed"])
 	}
 }

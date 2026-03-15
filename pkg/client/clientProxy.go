@@ -61,6 +61,10 @@ func runUDPProxy(ctx context.Context, listenAddr string, logPrefix string, handl
 		return fmt.Errorf("listen udp: %w", err)
 	}
 	defer conn.Close()
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
 	logger.Printf("%s listening %s", logPrefix, listenAddr)
 
 	buf := make([]byte, 2048)
@@ -69,6 +73,13 @@ func runUDPProxy(ctx context.Context, listenAddr string, logPrefix string, handl
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
+			select {
+			case <-ctx.Done():
+				logger.Printf("shutting down %s", logPrefix)
+				return nil
+			default:
+			}
+
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				select {
 				case <-ctx.Done():

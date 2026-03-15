@@ -21,6 +21,16 @@ import (
 	"tds/pkg/dht"
 )
 
+var (
+	stdinIsTerminalFn  = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	stdoutIsTerminalFn = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	modePromptReaderFn = func() *bufio.Reader { return bufio.NewReader(os.Stdin) }
+
+	runProxyFn    = client.RunProxy
+	runProxyTCPFn = client.RunProxyTCP
+	runProxyP2PFn = client.RunProxyP2P
+)
+
 // askModeOptions collects interactive options from the terminal.
 // Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
 func askModeOptions() (string, string, string, []string, bool, int, bool) {
@@ -67,7 +77,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 	}
 
 	// If not in interactive terminal, return defaults
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !stdinIsTerminalFn() {
 		if !background {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
 		}
@@ -80,7 +90,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 	}
 
 	// Interactive prompts
-	reader := bufio.NewReader(os.Stdin)
+	reader := modePromptReaderFn()
 
 	// Ask for mode
 	fmt.Fprintln(os.Stderr, "Select mode:")
@@ -243,6 +253,23 @@ func main() {
 		})
 	}
 
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	signalForwardStop := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigCh:
+			if !background {
+				fmt.Fprintf(os.Stderr, "\nreceived %s, shutting down...\n", sig.String())
+			}
+			shutdown()
+		case <-signalForwardStop:
+		}
+	}()
+	defer close(signalForwardStop)
+
 	go func() {
 		err := <-done
 		setProxyErr(err)
@@ -251,7 +278,7 @@ func main() {
 
 	if mode == "p2p" {
 		// P2P mode: use DHT
-		useDashboard := !background && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+		useDashboard := !background && stdinIsTerminalFn() && stdoutIsTerminalFn()
 		var dashboard *p2pDashboard
 		if !background && !useDashboard {
 			fmt.Println("Starting in P2P mode with DHT...")
@@ -301,7 +328,7 @@ func main() {
 
 		// run proxy with DHT backend
 		go func() {
-			done <- client.RunProxyP2P(ctx, listen, dhtRegistry)
+			done <- runProxyP2PFn(ctx, listen, dhtRegistry)
 		}()
 
 		if !background && !useDashboard {
@@ -328,9 +355,9 @@ func main() {
 		go func() {
 			// run proxy and report any error
 			if transport == "tcp" {
-				done <- client.RunProxyTCP(ctx, listen)
+				done <- runProxyTCPFn(ctx, listen)
 			} else {
-				done <- client.RunProxy(ctx, listen)
+				done <- runProxyFn(ctx, listen)
 			}
 		}()
 
@@ -340,18 +367,11 @@ func main() {
 	}
 
 	if background {
-		sigCh := make(chan os.Signal, 2)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		select {
-		case <-proxyExited:
-			if err := getProxyErr(); err != nil {
-				os.Exit(1)
-			}
-			return
-		case <-sigCh:
-			shutdown()
-			return
+		<-proxyExited
+		if err := getProxyErr(); err != nil {
+			os.Exit(1)
 		}
+		return
 	}
 
 	// simple interactive loop

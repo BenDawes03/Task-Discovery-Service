@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -21,6 +23,11 @@ import (
 //
 // maxConcurrent limits the number of concurrent connections. If 0, defaults to 5000.
 func StartTCPServer(reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
+	return StartTCPServerWithContext(context.Background(), reg, port, maxConcurrent, onEvent)
+}
+
+// StartTCPServerWithContext starts a TCP server that shuts down when ctx is canceled.
+func StartTCPServerWithContext(ctx context.Context, reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 5000 // Default limit
 	}
@@ -32,24 +39,57 @@ func StartTCPServer(reg registry.Registry, port int, maxConcurrent int64, onEven
 	}
 	defer ln.Close()
 
+	var (
+		connMu      sync.Mutex
+		activeConns = make(map[net.Conn]struct{})
+		handlers    sync.WaitGroup
+	)
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+		connMu.Lock()
+		for c := range activeConns {
+			_ = c.Close()
+		}
+		connMu.Unlock()
+	}()
+
 	sem := semaphore.NewWeighted(maxConcurrent)
 	const acquireTimeout = 1 * time.Second
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				handlers.Wait()
+				return nil
+			}
 			// transient accept error: log and continue
 			fmt.Printf("tcp accept error: %v\n", err)
 			continue
 		}
+		connMu.Lock()
+		activeConns[conn] = struct{}{}
+		connMu.Unlock()
 
-		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
-		if err := sem.Acquire(ctx, 1); err == nil {
+		acquireCtx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+		if err := sem.Acquire(acquireCtx, 1); err == nil {
+			handlers.Add(1)
 			go func(c net.Conn) {
+				defer handlers.Done()
 				defer sem.Release(1)
+				defer func() {
+					connMu.Lock()
+					delete(activeConns, c)
+					connMu.Unlock()
+				}()
 				handleTCPConn(c, reg, onEvent)
 			}(conn)
 		} else {
+			connMu.Lock()
+			delete(activeConns, conn)
+			connMu.Unlock()
 			conn.Close() // Reject connection due to overload
 		}
 		cancel()
@@ -98,7 +138,13 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 // Requires server certificate/key and CA cert to verify client certificates.
 //
 // maxConcurrent limits the number of concurrent connections. If 0, defaults to 5000.
-func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, certFile, keyFile, clientCAFile string, onEvent func(string)) error {	if maxConcurrent <= 0 {
+func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, certFile, keyFile, clientCAFile string, onEvent func(string)) error {
+	return StartTCPServerTLSWithContext(context.Background(), reg, port, maxConcurrent, certFile, keyFile, clientCAFile, onEvent)
+}
+
+// StartTCPServerTLSWithContext starts a TLS server that shuts down when ctx is canceled.
+func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, port int, maxConcurrent int64, certFile, keyFile, clientCAFile string, onEvent func(string)) error {
+	if maxConcurrent <= 0 {
 		maxConcurrent = 5000 // Default limit
 	}
 	// Load server certificate
@@ -138,6 +184,22 @@ func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, cer
 	}
 	defer ln.Close()
 
+	var (
+		connMu      sync.Mutex
+		activeConns = make(map[net.Conn]struct{})
+		handlers    sync.WaitGroup
+	)
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+		connMu.Lock()
+		for c := range activeConns {
+			_ = c.Close()
+		}
+		connMu.Unlock()
+	}()
+
 	if onEvent != nil {
 		onEvent(fmt.Sprintf("TLS server started on %s (mutual auth enabled)", addr))
 	}
@@ -148,9 +210,16 @@ func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, cer
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				handlers.Wait()
+				return nil
+			}
 			fmt.Printf("tls accept error: %v\n", err)
 			continue
 		}
+		connMu.Lock()
+		activeConns[conn] = struct{}{}
+		connMu.Unlock()
 
 		// Extract client certificate info from TLS connection
 		if tlsConn, ok := conn.(*tls.Conn); ok {
@@ -164,13 +233,23 @@ func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, cer
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
-		if err := sem.Acquire(ctx, 1); err == nil {
+		acquireCtx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+		if err := sem.Acquire(acquireCtx, 1); err == nil {
+			handlers.Add(1)
 			go func(c net.Conn) {
+				defer handlers.Done()
 				defer sem.Release(1)
+				defer func() {
+					connMu.Lock()
+					delete(activeConns, c)
+					connMu.Unlock()
+				}()
 				handleTCPConn(c, reg, onEvent)
 			}(conn)
 		} else {
+			connMu.Lock()
+			delete(activeConns, conn)
+			connMu.Unlock()
 			conn.Close() // Reject connection due to overload
 		}
 		cancel()
