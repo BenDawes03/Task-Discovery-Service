@@ -169,6 +169,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(targetCache *MemoryRegistry, t
 			entries[i].LastHeartbeat = lastHeartbeat
 			entries[i].Capacity = capacity
 			targetCache.services[task] = entries
+			targetCache.cacheParsedDestination(task, addr)
 			// Set atomic query counter
 			counterKey := task + ":" + addr
 			counterVal, _ := targetCache.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
@@ -186,6 +187,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(targetCache *MemoryRegistry, t
 	}
 	targetCache.services[task] = append(entries, newEntry)
 	targetCache.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
+	targetCache.cacheParsedDestination(task, addr)
 
 	// Set atomic query counter
 	counterKey := task + ":" + addr

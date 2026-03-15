@@ -196,6 +196,77 @@ func TestGetServiceForRequestorFiltersByFirewall(t *testing.T) {
 	}
 }
 
+func TestGetServiceForRequestorKeepsWeightedRotationWithinAllowedSubset(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "firewall-weighted-task"
+	heavyAllowed := "10.20.0.1:8080"
+	lightAllowed := "10.20.0.2:8080"
+	denied := "10.20.0.3:8080"
+
+	r.RegisterWithCapacity(task, heavyAllowed, 3)
+	r.RegisterWithCapacity(task, lightAllowed, 1)
+	r.RegisterWithCapacity(task, denied, 10)
+	r.SetDisableFreshness(true)
+
+	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
+	if err := os.WriteFile(rulesPath, []byte("192.168.1.10 10.20.0.1\n192.168.1.10 10.20.0.2\n"), 0o600); err != nil {
+		t.Fatalf("failed to write firewall rules: %v", err)
+	}
+
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load firewall rules: %v", err)
+	}
+	r.SetFirewall(fw)
+
+	counts := map[string]int{}
+	for i := 0; i < 8; i++ {
+		selected, err := r.GetServiceForRequestor(task, net.ParseIP("192.168.1.10"))
+		if err != nil {
+			t.Fatalf("unexpected GetServiceForRequestor error: %v", err)
+		}
+		counts[selected]++
+	}
+
+	if counts[heavyAllowed] != 6 || counts[lightAllowed] != 2 {
+		t.Fatalf("expected allowed subset weighted 6:2 split, got %s=%d %s=%d denied=%d", heavyAllowed, counts[heavyAllowed], lightAllowed, counts[lightAllowed], counts[denied])
+	}
+	if counts[denied] != 0 {
+		t.Fatalf("expected denied address to never be selected, got %d", counts[denied])
+	}
+}
+
+func TestParsedDestinationCachedOnRegisterAndRemovedOnCleanup(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "parsed-cache-task"
+	addr := "10.30.0.1:8080"
+	key := task + ":" + addr
+
+	r.RegisterWithCapacity(task, addr, 1)
+
+	v, ok := r.parsedDestIPs.Load(key)
+	if !ok {
+		t.Fatalf("expected parsed destination to be cached for %s", key)
+	}
+	ip, ok := v.(net.IP)
+	if !ok || ip == nil || !ip.Equal(net.ParseIP("10.30.0.1")) {
+		t.Fatalf("expected cached destination IP 10.30.0.1, got %#v", v)
+	}
+
+	r.mutex.Lock()
+	r.services[task][0].LastHeartbeat = time.Now().Add(-2 * time.Minute)
+	r.mutex.Unlock()
+
+	removed := r.Cleanup(30 * time.Second)
+	if removed != 1 {
+		t.Fatalf("expected one removed entry, got %d", removed)
+	}
+
+	if _, ok := r.parsedDestIPs.Load(key); ok {
+		t.Fatalf("expected parsed destination cache to be removed for %s", key)
+	}
+}
+
 func TestListServicesReturnsDeepCopyAndSyncedQueryCounts(t *testing.T) {
 	r := NewMemoryRegistry()
 	task := "copy-task"

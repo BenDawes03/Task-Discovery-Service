@@ -2,9 +2,18 @@ package transport
 
 import (
 	"bufio"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1123,4 +1132,442 @@ func TestOnEventCallback(t *testing.T) {
 	}
 	
 	t.Logf("Events: %v", events)
+}
+
+// ========================================================================
+// TLS Server Tests
+// ========================================================================
+
+// generateTransportTestCert creates a self-signed CA and issues a combined
+// server/client certificate, writing PEM files to a temp directory.
+func generateTransportTestCert(t *testing.T) (certFile, keyFile, caFile string) {
+	t.Helper()
+
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+
+	caTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{Organization: []string{"Test CA"}},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	caCertDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+
+	certKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate cert key: %v", err)
+	}
+
+	certTemplate := x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{Organization: []string{"Test Cert"}},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:     []string{"localhost"},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &certTemplate, &caTemplate, &certKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	dir := t.TempDir()
+
+	caFile = dir + "/ca.crt"
+	f, _ := os.Create(caFile)
+	pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
+	f.Close()
+
+	certFile = dir + "/cert.crt"
+	f, _ = os.Create(certFile)
+	pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	f.Close()
+
+	keyFile = dir + "/cert.key"
+	f, _ = os.Create(keyFile)
+	pem.Encode(f, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(certKey)})
+	f.Close()
+
+	return certFile, keyFile, caFile
+}
+
+// buildTLSClientConfig builds a mutual-auth TLS client config using the test certs.
+func buildTLSClientConfig(t *testing.T, certFile, keyFile, caFile string) *tls.Config {
+	t.Helper()
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("load client cert: %v", err)
+	}
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read CA cert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCert)
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		ServerName:   "127.0.0.1",
+	}
+}
+
+func TestStartTCPServerTLSRegisterAndQuery(t *testing.T) {
+	certFile, keyFile, caFile := generateTransportTestCert(t)
+
+	reg := registry.NewMemoryRegistry()
+
+	// Bind to a free port for the TLS server.
+	tempLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("get free port: %v", err)
+	}
+	addr := tempLn.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	tempLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartTCPServerTLSWithContext(ctx, reg, port, 100, certFile, keyFile, caFile, nil)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	tlsCfg := buildTLSClientConfig(t, certFile, keyFile, caFile)
+
+	// REGISTER
+	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	if err != nil {
+		t.Fatalf("TLS dial for REGISTER: %v", err)
+	}
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	enc.Encode(CentralizedMessage{Command: "REGISTER", Task: "tls-task", Address: "10.1.1.1:9000", Capacity: 2})
+	var resp CentralizedResponse
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode REGISTER response: %v", err)
+	}
+	conn.Close()
+	if resp.Status != "OK" {
+		t.Errorf("expected OK, got %+v", resp)
+	}
+
+	// QUERY
+	conn, err = tls.Dial("tcp", addr, tlsCfg)
+	if err != nil {
+		t.Fatalf("TLS dial for QUERY: %v", err)
+	}
+	enc = json.NewEncoder(conn)
+	dec = json.NewDecoder(conn)
+	enc.Encode(CentralizedMessage{Command: "QUERY", Task: "tls-task"})
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode QUERY response: %v", err)
+	}
+	conn.Close()
+	if resp.Status != "OK" || resp.Address != "10.1.1.1:9000" {
+		t.Errorf("expected OK/10.1.1.1:9000, got %+v", resp)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("TLS server did not shut down in time")
+	}
+}
+
+func TestStartTCPServerTLSWithOnEvent(t *testing.T) {
+	certFile, keyFile, caFile := generateTransportTestCert(t)
+
+	var mu sync.Mutex
+	var events []string
+	onEvent := func(msg string) {
+		mu.Lock()
+		events = append(events, msg)
+		mu.Unlock()
+	}
+
+	reg := registry.NewMemoryRegistry()
+
+	tempLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("get free port: %v", err)
+	}
+	addr := tempLn.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	tempLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go StartTCPServerTLSWithContext(ctx, reg, port, 100, certFile, keyFile, caFile, onEvent)
+	time.Sleep(100 * time.Millisecond)
+
+	tlsCfg := buildTLSClientConfig(t, certFile, keyFile, caFile)
+	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	if err != nil {
+		t.Fatalf("TLS dial: %v", err)
+	}
+	json.NewEncoder(conn).Encode(CentralizedMessage{
+		Command: "REGISTER", Task: "ev-task", Address: "10.2.2.2:7000", Capacity: 1,
+	})
+	var resp CentralizedResponse
+	json.NewDecoder(conn).Decode(&resp)
+	conn.Close()
+
+	// Allow onEvent to fire.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	evSnapshot := append([]string(nil), events...)
+	mu.Unlock()
+
+	found := false
+	for _, e := range evSnapshot {
+		if strings.Contains(e, "ev-task") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected an onEvent call mentioning ev-task, got events: %v", evSnapshot)
+	}
+}
+
+func TestStartTCPServerTLSInvalidCerts(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	err := StartTCPServerTLS(reg, 0, 100, "/nonexistent/cert.crt", "/nonexistent/key.key", "/nonexistent/ca.crt", nil)
+	if err == nil {
+		t.Error("expected error for missing cert files, got nil")
+	}
+}
+
+func TestStartTCPServerTLSBadCACert(t *testing.T) {
+	certFile, keyFile, _ := generateTransportTestCert(t)
+
+	// Write a garbage CA file.
+	badCA := certFile + ".badca"
+	if err := os.WriteFile(badCA, []byte("not a PEM file"), 0600); err != nil {
+		t.Fatalf("write bad CA: %v", err)
+	}
+
+	reg := registry.NewMemoryRegistry()
+	err := StartTCPServerTLS(reg, 0, 100, certFile, keyFile, badCA, nil)
+	if err == nil {
+		t.Error("expected error for invalid CA cert, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("expected parse error, got: %v", err)
+	}
+}
+
+func TestStartTCPServerTLSEmptyCA(t *testing.T) {
+	certFile, keyFile, _ := generateTransportTestCert(t)
+
+	// Write an empty (but technically readable) CA file.
+	emptyCA := certFile + ".emptyca"
+	if err := os.WriteFile(emptyCA, []byte(""), 0600); err != nil {
+		t.Fatalf("write empty CA: %v", err)
+	}
+
+	reg := registry.NewMemoryRegistry()
+	err := StartTCPServerTLS(reg, 0, 100, certFile, keyFile, emptyCA, nil)
+	if err == nil {
+		t.Error("expected error for empty CA cert, got nil")
+	}
+}
+
+// ========================================================================
+// Context Cancellation / Shutdown Tests
+// ========================================================================
+
+func TestUDPServerContextCancellation(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+
+	// Bind to a free port.
+	tempConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("get free UDP port: %v", err)
+	}
+	addr := tempConn.LocalAddr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	tempConn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartUDPServerWithContext(ctx, reg, port, 100, nil)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the server handles a normal request.
+	msg := CentralizedMessage{Command: "REGISTER", Task: "ctx-task", Address: "10.9.9.9:9000"}
+	data, _ := json.Marshal(msg)
+	udpConn, _ := net.Dial("udp", addr)
+	udpConn.Write(data)
+	buf := make([]byte, 4096)
+	udpConn.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := udpConn.Read(buf)
+	udpConn.Close()
+	if err != nil || n == 0 {
+		t.Fatalf("expected response before cancel: err=%v n=%d", err, n)
+	}
+
+	// Cancel context and wait for clean exit.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("server returned unexpected error on cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("UDP server did not shut down within 3 s after cancel")
+	}
+}
+
+func TestTCPServerContextCancellation(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+
+	tempLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("get free TCP port: %v", err)
+	}
+	addr := tempLn.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	tempLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartTCPServerWithContext(ctx, reg, port, 100, nil)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// Open a connection and send a request.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("connect to TCP server: %v", err)
+	}
+	enc := json.NewEncoder(conn)
+	dec := bufio.NewReader(conn)
+	enc.Encode(CentralizedMessage{Command: "REGISTER", Task: "tp-task", Address: "10.0.0.1:8000"})
+	line, err := dec.ReadBytes('\n')
+	conn.Close()
+	if err != nil || len(line) == 0 {
+		t.Fatalf("expected response before cancel: err=%v", err)
+	}
+
+	// Cancel and wait.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("server returned unexpected error on cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("TCP server did not shut down within 3 s after cancel")
+	}
+}
+
+func TestTCPServerTLSContextCancellation(t *testing.T) {
+	certFile, keyFile, caFile := generateTransportTestCert(t)
+	reg := registry.NewMemoryRegistry()
+
+	tempLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("get free port: %v", err)
+	}
+	_, portStr, _ := net.SplitHostPort(tempLn.Addr().String())
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	tempLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartTCPServerTLSWithContext(ctx, reg, port, 100, certFile, keyFile, caFile, nil)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("TLS server returned unexpected error on cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("TLS server did not shut down within 3 s after cancel")
+	}
+}
+
+// ========================================================================
+// Additional handleUDPRequest coverage
+// ========================================================================
+
+// TestHandleUDPRequestWriteError confirms the handler does not panic when the
+// remote address is unreachable (write error is silently logged).
+func TestHandleUDPRequestWriteErrorSilent(t *testing.T) {
+	fake := &fakeRegistry{}
+	fake.queryAddress = "10.0.0.1:8000"
+
+	// Use a real server conn for writing; point at a port nothing listens on so
+	// the write will fail. The handler must not panic.
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer serverConn.Close()
+
+	unreachable := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1} // port 1 is almost never open
+
+	// Should not panic even with an unreachable destination.
+	handleUDPRequest(serverConn, fake, []byte(`{"cmd":"QUERY","task":"ticket"}`), unreachable, nil)
+}
+
+// TestStartUDPServerPortInUse verifies StartUDPServer returns an error when the
+// requested port is invalid.
+func TestStartUDPServerPortInUse(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	// Port -1 is invalid and should fail immediately at the Listen call.
+	err := StartUDPServer(reg, -1, 100, nil)
+	if err == nil {
+		t.Error("expected error for invalid port, got nil")
+	}
+}
+
+// TestStartTCPServerPortInUse verifies StartTCPServer returns an error when the
+// requested port is invalid.
+func TestStartTCPServerPortInUse(t *testing.T) {
+	reg := registry.NewMemoryRegistry()
+	// Port -1 is invalid and should fail immediately at the Listen call.
+	err := StartTCPServer(reg, -1, 100, nil)
+	if err == nil {
+		t.Error("expected error for invalid port, got nil")
+	}
 }
