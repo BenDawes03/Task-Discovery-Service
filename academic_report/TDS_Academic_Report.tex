@@ -150,13 +150,13 @@ The diagram below gives an overview of the peer to peer architecture. It shows h
     \label{fig:P2P-Architecture}
 \end{figure}
 In contrast to the centralised mode, all functionality of this architecture runs from the client-proxy. The P2P network is formed from one "bootstrap" node. All subsequent nodes that join are given a pre-existing node in the network as a bootstrap. When a node joins, it hashses its ip address to receive their node ID.
-This ID is capped at 256 bits forming a ring network.
+This ID is capped at 256 bits forming a ring network. 
 
-\subsubsection{Distributed Hash Table (DHT)}
-The DHT is used to store the task:address mappings in this architecture. When a service registers a task with their client-proxy, the proxy hashes the service name. It then searches its list of peers to find the node ID that is closest to this hash. Once that node is found the client-proxy sends a STORE request to it with the service details. 
-The node that receives this store message compares its peer list to the task hash to ensure it is the most appropriate candidate. If so then it stores the task in memory similarly to the cache in centralised mode. 
+\subsubsection{The Distributed Hash Table (DHT) and Service Discovery}
+The DHT is used to store the task:address mappings in this architecture. When a service registers a task with their client-proxy, the proxy hashes the service name. It then indexes its list of peers to find the node ID that is closest to this hash sending a STORE request to it with the service details. 
+The storing node compares its peer list to the task hash to ensure it is the most appropriate candidate. If so, it stores the task in memory similarly to the cache in centralised mode. 
 
-A query follows the same path: the client-proxy hashes the query task, sends a query request to the node with the closest ID. If that node has that service stored it returns an address, if not then it returns NOTFOUND.
+A query follows the same path: the client-proxy hashes the query task and sends a query request to the node with the closest ID. If that node has that service stored it returns an address, if not then it returns NOTFOUND.
 \subsubsection{Eventual consistency and node discovery}
 The nature of the Distributed Hash Table makes it eventually consistent. Nodes are given an initial peer list from their bootstrap node. As more nodes join the network they discover them through store and query messages as, if they do not have the requesting node in their peer list, they add these nodes to their peer list.
 Additionally, to suppliment this, a perodic re-discovery process runs where nodes query their original bootstrap node for any peers that joined after them. This introduces extra computation onto bootstrap nodes but this can be balanced by carefully choosing more computationally powerful devices in the network to be bootstrap nodes. 
@@ -168,7 +168,7 @@ As well as providing protection against tasks not being stored correctly it allo
 With this enabled, nodes will instead check if they are in the best k candidates for the hash instead.
 
 \section{Implementation details and testing}
-
+This section will first cover the challenges that were encountered while implementing the above design; it will then summarise functional and integration testing to give a holistic view of the implemented design.
 
 \subsection{Implementation Challenges}
 Here i will lay out key insights into areas of my project that presented key challenges to me. It details how I overcame them and, in particular, where I decided to cease further work in the scope of the project timeframe.
@@ -188,6 +188,7 @@ This proved to be a significant challenge as the only method I devised was to im
 The feature was therefore not developed further but included as an artifact as further work could be done to improve the implementation.
 
 \section{Functional testing}
+perhaps write a test report
 
 
 \section{Realistic Application Testing}

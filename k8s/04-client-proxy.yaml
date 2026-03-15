@@ -17,13 +17,9 @@ spec:
       - name: client-proxy
         image: tds-client-proxy:latest
         imagePullPolicy: IfNotPresent
-        args:
-        - "-background"
-        - "-tcp"
         ports:
         - containerPort: 5100
           name: proxy
-          protocol: TCP
         env:
         - name: TDS_SERVER_ADDR
           valueFrom:
@@ -52,5 +48,4 @@ spec:
   - port: 5100
     targetPort: 5100
     name: proxy
-    protocol: TCP
   type: ClusterIP

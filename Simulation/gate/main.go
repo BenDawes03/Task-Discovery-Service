@@ -474,13 +474,10 @@ func main() {
 				err := <-scanDone
 				if err != nil {
 					logger.Printf("stdin error: %v", err)
-				} else {
-					logger.Println("stdin closed; continuing in HTTP-only mode")
 				}
-				// In non-interactive environments (e.g., Kubernetes), stdin is often
-				// closed immediately. Keep the service running for HTTP traffic.
-				lines = nil
-				continue
+				shutdown()
+				logger.Println("exiting")
+				return
 			}
 			allowed, reason := handleTap(line)
 			if allowed {

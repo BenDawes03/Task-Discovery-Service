@@ -2,7 +2,6 @@ package simproxy
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,18 +16,6 @@ type Client struct {
 	Addr    string
 	Proto   string // "udp" or "tcp"
 	Timeout time.Duration
-}
-
-type proxyRequest struct {
-	Command string `json:"cmd"`
-	Task    string `json:"task,omitempty"`
-	Address string `json:"address,omitempty"`
-}
-
-type proxyResponse struct {
-	Status  string `json:"status"`
-	Address string `json:"address,omitempty"`
-	Error   string `json:"error,omitempty"`
 }
 
 // EnsureHTTPBase normalizes an address into an HTTP base URL.
@@ -166,21 +153,18 @@ func (c Client) Register(task, address string) error {
 	if task == "" || address == "" {
 		return fmt.Errorf("missing task or address")
 	}
-	resp, err := c.roundTripJSON(proxyRequest{Command: "REGISTER", Task: task, Address: address})
+	cmd := fmt.Sprintf("REGISTER %s %s", task, address)
+	resp, err := c.roundTrip(cmd)
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(resp.Status, "OK") {
+	if resp == "OK" {
 		return nil
 	}
-	if strings.EqualFold(resp.Status, "ERR") {
-		msg := strings.TrimSpace(resp.Error)
-		if msg == "" {
-			msg = "proxy error"
-		}
-		return errors.New(msg)
+	if strings.HasPrefix(resp, "ERR ") {
+		return errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR ")))
 	}
-	return fmt.Errorf("unexpected proxy response: status=%q error=%q", resp.Status, resp.Error)
+	return fmt.Errorf("unexpected proxy response: %q", resp)
 }
 
 func (c Client) Query(task string) (string, error) {
@@ -189,66 +173,28 @@ func (c Client) Query(task string) (string, error) {
 	if task == "" {
 		return "", fmt.Errorf("missing task")
 	}
-	resp, err := c.roundTripJSON(proxyRequest{Command: "QUERY", Task: task})
+	cmd := fmt.Sprintf("QUERY %s", task)
+	resp, err := c.roundTrip(cmd)
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(resp.Status, "NOTFOUND") {
+	if resp == "NOTFOUND" {
 		return "", ErrNotFound
 	}
-	if strings.EqualFold(resp.Status, "ERR") {
-		msg := strings.TrimSpace(resp.Error)
-		if msg == "" {
-			msg = "proxy error"
-		}
-		return "", errors.New(msg)
+	if strings.HasPrefix(resp, "ERR ") {
+		return "", errors.New(strings.TrimSpace(strings.TrimPrefix(resp, "ERR ")))
 	}
-	if strings.EqualFold(resp.Status, "OK") {
-		return strings.TrimSpace(resp.Address), nil
-	}
-	return "", fmt.Errorf("unexpected proxy response: status=%q error=%q", resp.Status, resp.Error)
+	return strings.TrimSpace(resp), nil
 }
 
-func (c Client) roundTripJSON(req proxyRequest) (proxyResponse, error) {
-	var zero proxyResponse
-	data, err := json.Marshal(req)
-	if err != nil {
-		return zero, fmt.Errorf("marshal request: %w", err)
-	}
-
-	respRaw, err := c.roundTrip(string(data))
-	if err != nil {
-		return zero, err
-	}
-
-	var resp proxyResponse
-	if err := json.Unmarshal([]byte(respRaw), &resp); err == nil {
-		return resp, nil
-	}
-
-	// Backward-compatible fallback if a plain-text proxy is used.
-	trimmed := strings.TrimSpace(respRaw)
-	switch {
-	case strings.EqualFold(trimmed, "OK"):
-		return proxyResponse{Status: "OK"}, nil
-	case strings.EqualFold(trimmed, "NOTFOUND"):
-		return proxyResponse{Status: "NOTFOUND"}, nil
-	case strings.HasPrefix(strings.ToUpper(trimmed), "ERR"):
-		msg := strings.TrimSpace(strings.TrimPrefix(trimmed, "ERR"))
-		return proxyResponse{Status: "ERR", Error: msg}, nil
-	default:
-		return proxyResponse{Status: "OK", Address: trimmed}, nil
-	}
-}
-
-func (c Client) roundTrip(payload string) (string, error) {
+func (c Client) roundTrip(cmd string) (string, error) {
 	if c.Proto == "tcp" {
-		return c.roundTripTCP(payload)
+		return c.roundTripTCP(cmd)
 	}
-	return c.roundTripUDP(payload)
+	return c.roundTripUDP(cmd)
 }
 
-func (c Client) roundTripUDP(payload string) (string, error) {
+func (c Client) roundTripUDP(cmd string) (string, error) {
 	raddr, err := net.ResolveUDPAddr("udp", c.Addr)
 	if err != nil {
 		return "", fmt.Errorf("resolve proxy addr: %w", err)
@@ -260,7 +206,7 @@ func (c Client) roundTripUDP(payload string) (string, error) {
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
-	if _, err := conn.Write([]byte(payload)); err != nil {
+	if _, err := conn.Write([]byte(cmd)); err != nil {
 		return "", fmt.Errorf("write udp: %w", err)
 	}
 
@@ -271,7 +217,8 @@ func (c Client) roundTripUDP(payload string) (string, error) {
 	}
 	return strings.TrimSpace(string(buf[:n])), nil
 }
-func (c Client) roundTripTCP(payload string) (string, error) {
+
+func (c Client) roundTripTCP(cmd string) (string, error) {
 	conn, err := net.DialTimeout("tcp", c.Addr, c.Timeout)
 	if err != nil {
 		return "", fmt.Errorf("dial proxy tcp: %w", err)
@@ -279,10 +226,10 @@ func (c Client) roundTripTCP(payload string) (string, error) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
 
-	if !strings.HasSuffix(payload, "\n") {
-		payload += "\n"
+	if !strings.HasSuffix(cmd, "\n") {
+		cmd += "\n"
 	}
-	if _, err := conn.Write([]byte(payload)); err != nil {
+	if _, err := conn.Write([]byte(cmd)); err != nil {
 		return "", fmt.Errorf("write tcp: %w", err)
 	}
 

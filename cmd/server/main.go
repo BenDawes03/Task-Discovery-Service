@@ -56,9 +56,6 @@ var (
 	forceUI bool
 	noUI    bool
 
-	// Load balancing configuration
-	noFreshnessFlag bool
-
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -335,16 +332,6 @@ func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
 	skipPrompts := false
-	argHas := func(names ...string) bool {
-		for _, a := range os.Args[1:] {
-			for _, n := range names {
-				if a == n || strings.HasPrefix(a, n+"=") {
-					return true
-				}
-			}
-		}
-		return false
-	}
 	flagProvided := func(names ...string) bool {
 		for _, a := range os.Args[1:] {
 			for _, n := range names {
@@ -367,7 +354,13 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// Check if transport mode was set via flags
-	transportFlagSet := argHas("-tcp", "--tcp") || argHas("-udp", "--udp") || argHas("-tls", "--tls")
+	transportFlagSet := false
+	for _, a := range os.Args[1:] {
+		if a == "--tcp" || a == "--udp" || a == "--tls" {
+			transportFlagSet = true
+			break
+		}
+	}
 
 	// Check if specific config values were set via flags
 	portFlagSet := flagProvided("--port")
@@ -396,13 +389,9 @@ func askTerminalOptions() (string, bool, bool) {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
-		// Use explicit transport flag value in headless mode.
-		if argHas("-tls", "--tls") || useTLS {
+		// Use flag value or default
+		if useTLS {
 			transportMode = "tls"
-		} else if argHas("-tcp", "--tcp") {
-			transportMode = "tcp"
-		} else if argHas("-udp", "--udp") {
-			transportMode = "udp"
 		}
 		return transportMode, runTUI, forceUI
 	}
@@ -1027,7 +1016,6 @@ func main() {
 	flag.BoolVar(&forceUI, "ui", false, "Alias for --force-ui")
 	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
 	flag.BoolVar(&noUI, "no-tui", false, "Alias for --no-ui")
-	flag.BoolVar(&noFreshnessFlag, "no-freshness", false, "Disable heartbeat-age freshness decay in weighted round-robin (use flat capacity-only weights)")
 
 	flag.Parse()
 
@@ -1042,10 +1030,6 @@ func main() {
 	fw := configureFirewall(runTUI, firewallEnabled)
 
 	reg = initializeRegistry(runTUI, fw)
-	if memReg, ok := reg.(*registry.MemoryRegistry); ok && noFreshnessFlag {
-		memReg.SetDisableFreshness(true)
-		logEvent("Freshness decay disabled: round-robin uses flat capacity weights")
-	}
 	startTransportServer(transportMode, runTUI)
 
 	if !runTUI {

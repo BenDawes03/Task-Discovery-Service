@@ -110,6 +110,7 @@ func TestAskTerminalOptionsInteractivePromptsApplyAndTLSNested(t *testing.T) {
 			"5500",                // port
 			"75s",                 // heartbeat timeout
 			"15s",                 // cleanup interval
+			"5000",                // max concurrent tls connections
 			"custom-logs",         // log dir
 			"certs/custom.crt",    // tls cert
 			"certs/custom.key",    // tls key
@@ -280,6 +281,7 @@ func TestAskTerminalOptionsMalformedPromptInputKeepsDefaults(t *testing.T) {
 			"not-a-port",         // invalid port -> keep default
 			"not-a-duration",     // invalid heartbeat -> keep default
 			"still-not-duration", // invalid cleanup -> keep default
+			"not-a-number",       // invalid max udp handlers -> keep default
 			"",                   // empty log dir -> keep default
 			"n",                  // db disabled
 			"n",                  // firewall disabled
