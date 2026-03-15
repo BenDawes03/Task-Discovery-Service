@@ -10,6 +10,8 @@
 \usepackage{caption}
 \usepackage{setspace}
 \usepackage{cite}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit}
 
 % Code listing settings
 \lstset{
@@ -205,6 +207,70 @@ Key features include:
     \item Fare calculation service to compute trip costs
     \item Multiple endpoints for ticket distribution to demonstrate load balancing
 \end{itemize}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        font=\small,
+        node distance=0.9cm and 1.2cm,
+        box/.style={draw, rounded corners, align=center, minimum width=2.5cm, minimum height=0.9cm},
+        service/.style={box, fill=blue!8},
+        infra/.style={box, fill=green!8},
+        data/.style={box, fill=orange!12},
+        edge/.style={-{Latex[length=2.2mm]}, line width=0.4pt}
+    ]
+
+    % Core service nodes
+    \node[service] (gate) {Gate};
+    \node[service, right=2.0cm of gate] (station) {Station\\Computer};
+
+    \node[service, below=1.8cm of gate] (cs) {CS\\(sim.cs)};
+    \node[service, below=1.8cm of station] (pctrbo) {PCTRBO\\(sim.pctrbo)};
+    \node[service, right=2.0cm of pctrbo] (pa) {PA\\(sim.pa)};
+    \node[service, right=2.0cm of station] (dist) {Ticket\\Distributor};
+
+    % Discovery plane
+    \node[infra, above=1.5cm of gate] (proxy) {Client Proxy\\(local endpoint)};
+    \node[infra, right=2.0cm of proxy] (tds) {TDS Server\\(registry)};
+
+    % Data plane
+    \node[data, below=1.7cm of cs] (csdb) {PostgreSQL\\CS DB};
+    \node[data, below=1.7cm of pctrbo] (pdb) {PostgreSQL\\PCTRBO DB};
+    \node[data, below=1.7cm of pa] (padb) {PostgreSQL\\PA DB};
+
+    % Discovery edges
+    \draw[edge] (gate.north) -- ++(0,0.35) -| (proxy.south west);
+    \draw[edge] (station.north) -- ++(0,0.35) -| (proxy.south);
+    \draw[edge] (proxy) -- node[above] {REGISTER / QUERY} (tds);
+    \draw[edge] (cs.north) -- ++(0,0.45) -| (proxy.south west);
+    \draw[edge] (pctrbo.north) -- ++(0,0.45) -| (proxy.south east);
+    \draw[edge] (pa.north) -- ++(0,0.45) -| (proxy.south east);
+    \draw[edge] (dist.north) -- ++(0,0.45) -| (proxy.south east);
+
+    % Business flow edges
+    \draw[edge] (gate) -- node[above] {accepted taps} (station);
+    \draw[edge] (gate.south) -- node[left] {OY /validate} (cs.north);
+    \draw[edge] (gate.south east) -- node[above right, xshift=1mm] {PCTR /tokenize} (pa.north west);
+    \draw[edge] (station.south west) -- node[above left] {OY /batch} (cs.north east);
+    \draw[edge] (station.south) -- node[left] {PCTR /batch} (pctrbo.north);
+    \draw[edge] (pctrbo.east) -- node[above] {debt reports} (pa.west);
+    \draw[edge] (station.east) -- node[above] {ticket poll} (dist.west);
+    \draw[edge] (cs.east) -- node[above] {manifest pull/notify} (dist.west);
+
+    % Storage links
+    \draw[edge] (cs) -- (csdb);
+    \draw[edge] (pctrbo) -- (pdb);
+    \draw[edge] (pa) -- (padb);
+
+    % Optional grouping boxes
+    \node[draw, dashed, rounded corners, fit=(gate)(station)(cs)(pctrbo)(pa)(dist), inner sep=0.25cm, label={[yshift=0.2cm]above:Simulation Services}] {};
+    \node[draw, dashed, rounded corners, fit=(proxy)(tds), inner sep=0.2cm, label={[yshift=0.2cm]above:Discovery Plane}] {};
+    \node[draw, dashed, rounded corners, fit=(csdb)(pdb)(padb), inner sep=0.2cm, label={[yshift=0.2cm]above:Data Plane}] {};
+
+    \end{tikzpicture}
+    \caption{High-level design of the simulation environment: discovery plane, business flow, and data stores}
+    \label{fig:Simulation-HLD}
+\end{figure}
 
 \textbf{A full High-Level-Design document is available in the repository under \newline \texttt{ticketing\_system\_High\_Level\_Design\_Document.pdf}}
 

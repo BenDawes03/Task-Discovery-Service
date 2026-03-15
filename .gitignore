@@ -1,6 +1,6 @@
 # Build artifacts
 bin/
-
+*.exe
 # Logs
 logs/
 **/logs/
