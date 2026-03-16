@@ -1,5 +1,6 @@
-\documentclass[12pt,a4paper]{article}
+\documentclass[11pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
+\usepackage[british]{babel}
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath}
 \usepackage{graphicx}
@@ -10,8 +11,6 @@
 \usepackage{caption}
 \usepackage{setspace}
 \usepackage{cite}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,fit}
 
 % Code listing settings
 \lstset{
@@ -26,6 +25,9 @@
 }
 
 \singlespacing
+\raggedbottom
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
 
 \title{\textbf{Task Discovery Service (TDS): \\
 A Dual-Architecture Service Registry for Distributed Systems}}
@@ -36,7 +38,6 @@ A Dual-Architecture Service Registry for Distributed Systems}}
 
 \maketitle
 \thispagestyle{empty}
-
 
 \section{Introduction and Motivation}
 
@@ -54,48 +55,71 @@ I proposed to address these issues by designing an architecture that would perfo
 
 \subsection{Research Objectives}
 
-This project addresses the service discovery problem by developing the Task Discovery Service (TDS), a flexible registry system that supports both centralized and peer-to-peer (P2P) operational modes within a unified architecture. The primary objectives are:
+This project addresses the service discovery problem by developing the Task Discovery Service (TDS), a flexible registry system that supports both centralised and peer-to-peer (P2P) operational modes within a unified architecture. The primary objectives are:
 
 \begin{enumerate}
-    \item Design and implement a dual-mode service registry supporting both centralized and P2P architectures
+    \item Design and implement a dual-mode service registry supporting both centralised and P2P architectures
     \item Develop efficient algorithms for service registration, query routing, and load balancing
-    \item Create a comprehensive monitoring interface for real-time system visualization
+    \item Create a comprehensive monitoring interface for real-time system visualisation
     \item Evaluate performance characteristics under various network conditions and load patterns
     \item Provide multiple transport and security options including UDP, TCP, and mutual TLS authentication
 \end{enumerate}
 
 \subsection{Contribution}
 
-The main contribution of this work is a production-ready service discovery system that eliminates the operational mode dichotomy present in existing solutions. TDS allows development teams to begin with a simple centralized deployment and seamlessly transition to distributed P2P operation as scale requirements increase, without changing client code or protocol definitions. This architectural flexibility, combined with comprehensive security features and real-time monitoring capabilities, represents a significant advancement in practical service discovery systems.
+The main contribution of this work is a production-ready service discovery system that eliminates the operational mode dichotomy present in existing solutions. TDS allows development teams to begin with a simple centralised deployment and seamlessly transition to distributed P2P operation as scale requirements increase, without changing client code or protocol definitions. This architectural flexibility, combined with comprehensive security features and real-time monitoring capabilities, represents a significant advancement in practical service discovery systems.
 
-\newpage
 \section{Project Background and Context}
 
 \subsection{Service Discovery in Distributed Systems}
 
-Service discovery is a fundamental component of distributed systems architecture, enabling dynamic binding between service consumers and providers. The challenge arises from the ephemeral nature of modern cloud-native applications, where service instances may spawn and terminate rapidly in response to load, failures, or deployment activities.
+Service discovery allows one part of a distributed system to find another at runtime. Instead of hard-coding IP addresses or ports, services register themselves and clients query for the address they need. This matters because modern systems change constantly: instances are restarted, scaled up, moved, or fail. If the discovery mechanism is out of date, the rest of the system may fail even when the application logic is correct.
 
-Traditional approaches to this problem fall into several categories:
-\begin{itemize}
-    \item \textbf{DNS-based discovery}: Simple but lacks real-time updates and health checking
-    \item \textbf{Configuration files}: Static and requires redeployment for changes
-    \item \textbf{Centralized registries}: Provides consistency but creates infrastructure dependencies
-    \item \textbf{Distributed hash tables}: Offers scalability but introduces complexity
-\end{itemize}
+Most existing solutions fall into three broad groups: centralised registries, decentralised peer-to-peer systems, and hybrid systems that combine a registry with programmable traffic control. All three solve the same basic problem, each having their different advantages and drawbacks.
 
-\subsection{Related Work}
+\subsubsection{Centralised registry approaches}
 
-Several prominent systems address service discovery:
+Centralised approaches keep a single authoritative view of the system. Services register with a central catalogue and clients query that catalogue through an API or DNS interface. Systems such as etcd and other Raft-based control planes are designed to give fresh, strongly consistent control-plane state \cite{etcd,raft,etcdapi}. This makes them easier to reason about because there is one place where the truth lives.
 
-\textbf{etcd} is a distributed key-value store using the Raft consensus algorithm. It provides strong consistency guarantees and is widely used in Kubernetes for service coordination. However, it requires a cluster of at least three nodes for production deployments and adds operational complexity.
+Many real systems use this model. Kubernetes keeps a stable service identity while its EndpointSlices track changing pods, and cluster DNS translates the service name to current backends \cite{k8sservice}. Consul follows a similar pattern, but adds health checks and multiple discovery methods \cite{consul,consuldocs}.
 
-\textbf{Consul} by HashiCorp offers comprehensive service mesh capabilities including health checking, key-value storage, and multi-datacenter support. While feature-rich, its complexity makes it overkill for smaller deployments.
+The main strength of centralised discovery is clarity. It is usually easier to manage, observe, and secure. The main weakness is dependency on the control plane itself. If the registry becomes overloaded or unavailable, discovery becomes a bottleneck.
 
-\textbf{ZooKeeper} provides distributed coordination with strong consistency guarantees but has a reputation for operational difficulty and lacks modern cloud-native features.
+\subsubsection{Decentralised approaches}
 
-\textbf{Chord DHT} pioneered structured peer-to-peer systems using consistent hashing to distribute data across nodes. Its logarithmic lookup complexity ($O(\log N)$) established the theoretical foundation for scalable distributed systems.
+Decentralised approaches remove the single authority and spread responsibility across many peers. In this family, lookup data is distributed around the network rather than stored in one registry. Systems such as Chord and Kademlia showed that this can scale well by placing data according to a hash of the key , in this case a service name, and routing queries through the network efficiently \cite{chord,kademlia}. Dynamo extended this style of thinking by favouring availability and replication even when the network is unstable \cite{dynamo}.
 
-These systems excel in their respective domains but require commitment to a specific architectural paradigm. TDS differentiates itself by supporting multiple operational modes within a single codebase, allowing practitioners to select the appropriate architecture for their deployment context.
+These systems also need a way to detect which peers are alive. Protocols such as SWIM address this through scalable membership and failure detection \cite{swim}. At smaller scale, mDNS and DNS-SD provide a simpler decentralised model for local networks, where devices can advertise and discover services without a dedicated server \cite{mdns,dnssd}.
+
+The strength of decentralised discovery is that there is no single point of failure. The weakness is that it is harder to guarantee that every node has the same up-to-date view of the system. As the network grows, correctness depends on how well peer information spreads.
+
+\subsubsection{Traffic-management, load-balancing, and policy-enforcement approaches}
+
+A third family focuses less on the problem of \emph{finding} services and more on the problem of \emph{choosing} between available instances and \emph{controlling} which connections are allowed. These approaches usually sit on top of an existing discovery mechanism and add traffic-management or policy-enforcement behaviour.
+
+For load balancing, systems such as Consul and Istio use discovery information to route traffic only to healthy instances and to apply routing strategies beyond simple name resolution \cite{consuldocs,istio}. Consul can expose healthy endpoints through DNS and integrate with external load balancers, while Istio applies policies such as least-requests, round-robin, weighted routing, retries, timeouts, and circuit breaking through proxies. This makes them useful when the main challenge is not just locating a service, but distributing load safely and efficiently across many replicas.
+
+For network control, platforms such as Kubernetes provide policy layers that restrict which workloads may communicate at all \cite{k8snetworkpolicy}. NetworkPolicy rules can isolate ingress and egress traffic and allow only selected pods, namespaces, ports, or IP ranges. In effect, these systems act like structured, application-aware firewall mechanisms inside a distributed platform.
+
+The advantage of this family is control. It gives operators a way to combine service discovery with health-aware routing, traffic shaping, and access restrictions. The disadvantage is that it depends on additional infrastructure and configuration. These solutions are powerful, but they can become difficult to reason about because discovery, load balancing, and policy enforcement are spread across several layers rather than handled in one place.
+
+\subsection{Security, Reachability, and Policy Correctness}
+
+Even with correct discovery and load balancing, communication can still fail if policy blocks the connection. This is why service discovery must be considered alongside reachability and access control.
+
+The firewall literature is useful here. Firewall Policy Queries focuses on detecting rule anomalies such as shadowing and redundancy, while Model Checking Firewall Policy Configurations focuses on verifying that policy behaves as intended \cite{firewallqueries,firewallmodelcheck}. These works reinforce a simple point: a discovery system is only fully useful when the endpoints it returns are not just correct, but also reachable under the active security policy.
+
+\subsection{How TDS Differs, and Its Strengths and Weaknesses}
+
+Existing solutions usually require an early commitment to one style of architecture. A team must choose a centralised registry, a decentralised overlay, or a more complex hybrid platform and then build around that choice. TDS differs by supporting both centralised and peer-to-peer operation behind the same client-facing interface.
+
+The main design idea is that services do not interact directly with the registry implementation. Instead, they talk to a local client proxy using the same REGISTER and QUERY operations in both modes. This means the deployment architecture can change without forcing application code to change with it. In practical terms, a system can begin with centralised discovery, which is simpler to operate and easier to observe, and later move to P2P operation if resilience or removal of a central dependency becomes more important.
+
+This gives TDS several inherent strengths. First, it reduces lock-in to a single discovery architecture. Second, it lowers adoption cost because the service-facing interface remains small and stable. Third, it allows the centralised mode to benefit from straightforward control and governance, while the P2P mode can offer better tolerance of single-node failure. Finally, the design leaves room for policy-aware routing, which is important in environments where not every discovered service should be reachable by every requester.
+
+However, this flexibility also introduces weaknesses. Supporting two modes increases implementation complexity because both architectural paths must be maintained and tested. The centralised mode still inherits the usual problem of depending on a core registry service. The P2P mode avoids that single dependency, but it is naturally weaker in terms of global consistency and can become harder to reason about as peer knowledge diverges. In other words, TDS avoids early architectural lock-in, but it does not remove the underlying trade-offs between centralised and decentralised discovery; it exposes both and gives the user a choice.
+
+For that reason, TDS is best understood not as a replacement for every mature discovery platform, but as a practical bridge between architectural extremes. Its contribution is to make movement between those extremes possible without changing the service-side contract.
 
 \section{Design}
 \subsection{services, tasks, and the client proxy}
@@ -127,7 +151,7 @@ All communication between local services (clients) and the client proxy uses JSO
 {"status":"ERR","error":"task required"} //example error: no task in query request
 \end{lstlisting}
  
-These message types are intentionally minimal so the same client-side behavior works regardless of whether the proxy is currently forwarding to a central server or to the P2P registry.
+These message types are intentionally minimal so the same client-side behaviour works regardless of whether the proxy is currently forwarding to a central server or to the P2P registry.
 \subsection{Centralised mode}
 We now move outside the scope of the single machine registering and querying services to a distributed system containing many such machines. The below figure demonstrates the role the server plays in centralised mode.
 \begin{figure}[htbp]
@@ -152,13 +176,13 @@ The diagram below gives an overview of the peer to peer architecture. It shows h
     \label{fig:P2P-Architecture}
 \end{figure}
 In contrast to the centralised mode, all functionality of this architecture runs from the client-proxy. The P2P network is formed from one "bootstrap" node. All subsequent nodes that join are given a pre-existing node in the network as a bootstrap. When a node joins, it hashses its ip address to receive their node ID.
-This ID is capped at 256 bits forming a ring network. 
+This ID is capped at 256 bits forming a ring network.
 
-\subsubsection{The Distributed Hash Table (DHT) and Service Discovery}
-The DHT is used to store the task:address mappings in this architecture. When a service registers a task with their client-proxy, the proxy hashes the service name. It then indexes its list of peers to find the node ID that is closest to this hash sending a STORE request to it with the service details. 
-The storing node compares its peer list to the task hash to ensure it is the most appropriate candidate. If so, it stores the task in memory similarly to the cache in centralised mode. 
+\subsubsection{Distributed Hash Table (DHT)}
+The DHT is used to store the task:address mappings in this architecture. When a service registers a task with their client-proxy, the proxy hashes the service name. It then searches its list of peers to find the node ID that is closest to this hash. Once that node is found the client-proxy sends a STORE request to it with the service details. 
+The node that receives this store message compares its peer list to the task hash to ensure it is the most appropriate candidate. If so then it stores the task in memory similarly to the cache in centralised mode. 
 
-A query follows the same path: the client-proxy hashes the query task and sends a query request to the node with the closest ID. If that node has that service stored it returns an address, if not then it returns NOTFOUND.
+A query follows the same path: the client-proxy hashes the query task, sends a query request to the node with the closest ID. If that node has that service stored it returns an address, if not then it returns NOTFOUND.
 \subsubsection{Eventual consistency and node discovery}
 The nature of the Distributed Hash Table makes it eventually consistent. Nodes are given an initial peer list from their bootstrap node. As more nodes join the network they discover them through store and query messages as, if they do not have the requesting node in their peer list, they add these nodes to their peer list.
 Additionally, to suppliment this, a perodic re-discovery process runs where nodes query their original bootstrap node for any peers that joined after them. This introduces extra computation onto bootstrap nodes but this can be balanced by carefully choosing more computationally powerful devices in the network to be bootstrap nodes. 
@@ -170,7 +194,7 @@ As well as providing protection against tasks not being stored correctly it allo
 With this enabled, nodes will instead check if they are in the best k candidates for the hash instead.
 
 \section{Implementation details and testing}
-This section will first cover the challenges that were encountered while implementing the above design; it will then summarise functional and integration testing to give a holistic view of the implemented design.
+
 
 \subsection{Implementation Challenges}
 Here i will lay out key insights into areas of my project that presented key challenges to me. It details how I overcame them and, in particular, where I decided to cease further work in the scope of the project timeframe.
@@ -190,14 +214,12 @@ This proved to be a significant challenge as the only method I devised was to im
 The feature was therefore not developed further but included as an artifact as further work could be done to improve the implementation.
 
 \section{Functional testing}
-perhaps write a test report
-
 
 \section{Realistic Application Testing}
 To demonstrate the practical utility of TDS, I implemented a mock-up of the system that inspired it. 
-I created a highly abstracted version of a train ticketing, Oyster and contactless payment system.\newline
+I created a highly abstracted version of a train ticketing, Oyster and contactless payment system.
 
-The system specified can be found under the Simulation folder of the project repository.\newline 
+The system specified can be found under the Simulation folder of the project repository.
 
 It contains a set of programs that simulate a full distributed system with stations, payment gates, fare calculation and very rough PCTR-tokenisation to simulate cardholder environment structure.
 Key features include:
@@ -208,102 +230,36 @@ Key features include:
     \item Multiple endpoints for ticket distribution to demonstrate load balancing
 \end{itemize}
 
-\begin{figure}[htbp]
-    \centering
-    \begin{tikzpicture}[
-        font=\small,
-        node distance=0.9cm and 1.2cm,
-        box/.style={draw, rounded corners, align=center, minimum width=2.5cm, minimum height=0.9cm},
-        service/.style={box, fill=blue!8},
-        infra/.style={box, fill=green!8},
-        data/.style={box, fill=orange!12},
-        edge/.style={-{Latex[length=2.2mm]}, line width=0.4pt}
-    ]
-
-    % Core service nodes
-    \node[service] (gate) {Gate};
-    \node[service, right=2.0cm of gate] (station) {Station\\Computer};
-
-    \node[service, below=1.8cm of gate] (cs) {CS\\(sim.cs)};
-    \node[service, below=1.8cm of station] (pctrbo) {PCTRBO\\(sim.pctrbo)};
-    \node[service, right=2.0cm of pctrbo] (pa) {PA\\(sim.pa)};
-    \node[service, right=2.0cm of station] (dist) {Ticket\\Distributor};
-
-    % Discovery plane
-    \node[infra, above=1.5cm of gate] (proxy) {Client Proxy\\(local endpoint)};
-    \node[infra, right=2.0cm of proxy] (tds) {TDS Server\\(registry)};
-
-    % Data plane
-    \node[data, below=1.7cm of cs] (csdb) {PostgreSQL\\CS DB};
-    \node[data, below=1.7cm of pctrbo] (pdb) {PostgreSQL\\PCTRBO DB};
-    \node[data, below=1.7cm of pa] (padb) {PostgreSQL\\PA DB};
-
-    % Discovery edges
-    \draw[edge] (gate.north) -- ++(0,0.35) -| (proxy.south west);
-    \draw[edge] (station.north) -- ++(0,0.35) -| (proxy.south);
-    \draw[edge] (proxy) -- node[above] {REGISTER / QUERY} (tds);
-    \draw[edge] (cs.north) -- ++(0,0.45) -| (proxy.south west);
-    \draw[edge] (pctrbo.north) -- ++(0,0.45) -| (proxy.south east);
-    \draw[edge] (pa.north) -- ++(0,0.45) -| (proxy.south east);
-    \draw[edge] (dist.north) -- ++(0,0.45) -| (proxy.south east);
-
-    % Business flow edges
-    \draw[edge] (gate) -- node[above] {accepted taps} (station);
-    \draw[edge] (gate.south) -- node[left] {OY /validate} (cs.north);
-    \draw[edge] (gate.south east) -- node[above right, xshift=1mm] {PCTR /tokenize} (pa.north west);
-    \draw[edge] (station.south west) -- node[above left] {OY /batch} (cs.north east);
-    \draw[edge] (station.south) -- node[left] {PCTR /batch} (pctrbo.north);
-    \draw[edge] (pctrbo.east) -- node[above] {debt reports} (pa.west);
-    \draw[edge] (station.east) -- node[above] {ticket poll} (dist.west);
-    \draw[edge] (cs.east) -- node[above] {manifest pull/notify} (dist.west);
-
-    % Storage links
-    \draw[edge] (cs) -- (csdb);
-    \draw[edge] (pctrbo) -- (pdb);
-    \draw[edge] (pa) -- (padb);
-
-    % Optional grouping boxes
-    \node[draw, dashed, rounded corners, fit=(gate)(station)(cs)(pctrbo)(pa)(dist), inner sep=0.25cm, label={[yshift=0.2cm]above:Simulation Services}] {};
-    \node[draw, dashed, rounded corners, fit=(proxy)(tds), inner sep=0.2cm, label={[yshift=0.2cm]above:Discovery Plane}] {};
-    \node[draw, dashed, rounded corners, fit=(csdb)(pdb)(padb), inner sep=0.2cm, label={[yshift=0.2cm]above:Data Plane}] {};
-
-    \end{tikzpicture}
-    \caption{High-level design of the simulation environment: discovery plane, business flow, and data stores}
-    \label{fig:Simulation-HLD}
-\end{figure}
-
-\textbf{A full High-Level-Design document is available in the repository under \newline \texttt{ticketing\_system\_High\_Level\_Design\_Document.pdf}}
+\textbf{A full High-Level-Design document is available in the repository under \texttt{ticketing\_system\_High\_Level\_Design\_Document.pdf}.}
 
 All of these devices were interconnected by querying the TDS system for service discovery.
 Of key note was that, although many issues arose developing this system and setting up the environment, 
 communication between devices was seamless. This was a testament to the robustness of the project as the only time I had to troubleshoot communication was when i forgot to start the TDS server itself.
-
-
-
-
+\section{Conclusion and future work}
 
 \section{Future Work}
 
 Several enhancements would improve TDS capabilities:
 
-\textbf{Replication:} Add multi-master replication for centralized mode high availability. Raft consensus could provide strong consistency while tolerating failures.
+\textbf{Replication:} Add multi-master replication for centralised mode high availability. Raft consensus could provide strong consistency while tolerating failures.
 
 \textbf{Health checking:} Implement active health probes instead of passive heartbeats. Server could periodically verify service reachability and automatically deregister failed instances.
 
-\textbf{Service metadata:} Support arbitrary key-value tags for services enabling filtering queries (e.g., "version=2.0", "datacenter=us-east").
+\textbf{Service metadata:} Support arbitrary key-value tags for services enabling filtering queries (e.g., "version=2.0", "data-centre=us-east").
 
-\textbf{Multi-datacenter:} Extend P2P mode with geographic awareness for locality-based routing.
+\textbf{Multi-data-centre:} Extend P2P mode with geographic awareness for locality-based routing.
 
 \textbf{Metrics export:} Integrate with Prometheus for comprehensive monitoring and alerting.
 
 \textbf{REST API:} Add HTTP REST interface alongside binary protocol for broader language support and web-based tooling.
 
-\subsection{Conclusions}
+\subsection{Conclusion}
+In summation, this project has achieved the goals outline in project objectives. It provides a versatile achitecture that provides a trade
 
 
 
 \newpage
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
 
 \bibitem{chord}
 Stoica, I., Morris, R., Karger, D., Kaashoek, M. F., \& Balakrishnan, H. (2001).
@@ -349,6 +305,71 @@ IEEE Internet Computing, 3(3), 28-39.
 Ratnasamy, S., Francis, P., Handley, M., Karp, R., \& Shenker, S. (2001).
 \textit{A scalable content-addressable network}.
 ACM SIGCOMM Computer Communication Review, 31(4), 161-172.
+
+\bibitem{kademlia}
+Maymounkov, P., \& Mazieres, D. (2002).
+\textit{Kademlia: A peer-to-peer information system based on the XOR metric}.
+International Workshop on Peer-to-Peer Systems (IPTPS), 53-65.
+
+\bibitem{dynamo}
+DeCandia, G., Hastorun, D., Jampani, M., Kakulapati, G., Lakshman, A., Pilchin, A., Sivasubramanian, S., Vosshall, P., \& Vogels, W. (2007).
+\textit{Dynamo: Amazon's highly available key-value store}.
+ACM SIGOPS Operating Systems Review, 41(6), 205-220.
+
+\bibitem{swim}
+Das, A., Gupta, I., \& Motivala, A. (2002).
+\textit{SWIM: Scalable weakly-consistent infection-style process group membership protocol}.
+IEEE/IFIP International Conference on Dependable Systems and Networks, 303-312.
+
+\bibitem{raft}
+Ongaro, D., \& Ousterhout, J. (2014).
+\textit{In search of an understandable consensus algorithm (extended version)}.
+USENIX Annual Technical Conference, 305-319.
+
+\bibitem{mdns}
+Cheshire, S., \& Krochmal, M. (2013).
+\textit{Multicast DNS} (RFC 6762).
+IETF.
+
+\bibitem{dnssd}
+Cheshire, S., \& Krochmal, M. (2013).
+\textit{DNS-Based Service Discovery} (RFC 6763).
+IETF.
+
+\bibitem{k8sservice}
+Kubernetes Authors. (2026).
+\textit{Kubernetes Services, Load Balancing, and Networking: Service}.
+https://kubernetes.io/docs/concepts/services-networking/service/
+
+\bibitem{k8snetworkpolicy}
+Kubernetes Authors. (2024).
+\textit{Kubernetes Network Policies}.
+https://kubernetes.io/docs/concepts/services-networking/network-policies/
+
+\bibitem{istio}
+Istio Authors. (2025).
+\textit{Traffic Management Concepts}.
+https://istio.io/latest/docs/concepts/traffic-management/
+
+\bibitem{consuldocs}
+HashiCorp. (2026).
+\textit{Consul Discover Services Overview}.
+https://developer.hashicorp.com/consul/docs/discover
+
+\bibitem{etcdapi}
+etcd Authors. (2025).
+\textit{etcd API guarantees}.
+\url{https://etcd.io/docs/v3.6/learning/api_guarantees/}
+
+\bibitem{firewallqueries}
+Al-Shaer, E., \& Hamed, H. (2009).
+\textit{Firewall policy queries}.
+IEEE Transactions on Parallel and Distributed Systems, 20(6), 766-777.
+
+\bibitem{firewallmodelcheck}
+Jeffrey, A., \& Samak, T. (2009).
+\textit{Model checking firewall policy configurations}.
+IEEE International Symposium on Policies for Distributed Systems and Networks, 60-67.
 
 \end{thebibliography}
 

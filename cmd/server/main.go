@@ -3,17 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -59,6 +56,9 @@ var (
 	forceUI bool
 	noUI    bool
 
+	// Load balancing configuration
+	noFreshnessFlag bool
+
 	serverStartTime = time.Now()
 	reg             registry.Registry
 
@@ -67,7 +67,6 @@ var (
 	detailTable = tview.NewTable()
 	logView     = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	searchField = tview.NewInputField().SetLabel(" Filter: ")
-	footerView  = tview.NewTextView().SetDynamicColors(true)
 
 	// Filter state
 	currentFilter       = ""
@@ -88,16 +87,6 @@ var (
 	uiMutex          sync.Mutex                // Serialize all UI operations
 	isTerminalFn     = func(fd int) bool { return term.IsTerminal(fd) }
 	promptReaderFn   = func() *bufio.Reader { return bufio.NewReader(os.Stdin) }
-
-	startUDPServerWithContextFn    = transport.StartUDPServerWithContext
-	startTCPServerWithContextFn    = transport.StartTCPServerWithContext
-	startTCPServerTLSWithContextFn = transport.StartTCPServerTLSWithContext
-	broadcastServerInfoFn          = transport.BroadcastServerInfo
-
-	setupUILayoutFn = setupUILayout
-	runHeadlessFn   = runHeadlessLoop
-	runTUIFn        = runTUILoop
-	runTviewAppFn   = func(a *tview.Application, root tview.Primitive) error { return a.SetRoot(root, true).Run() }
 )
 
 func writeToLogView(message string) {
@@ -293,26 +282,10 @@ func renderDetailsTable(services []registry.ServiceEntry) {
 		SetExpansion(1).
 		SetTextColor(tcell.ColorYellow).
 		SetAttributes(tcell.AttrBold))
-
-	if len(services) == 0 {
-		return
-	}
-
 	for i, e := range services {
-		rowColor := tcell.ColorDefault
-		if i%2 == 1 {
-			rowColor = tcell.Color235
-		}
-
-		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").
-			SetExpansion(1).
-			SetBackgroundColor(rowColor))
-		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").
-			SetExpansion(1).
-			SetBackgroundColor(rowColor))
-		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").
-			SetExpansion(1).
-			SetBackgroundColor(rowColor))
+		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").SetExpansion(1))
+		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").SetExpansion(1))
+		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").SetExpansion(1))
 	}
 }
 
@@ -362,6 +335,16 @@ func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
 	skipPrompts := false
+	argHas := func(names ...string) bool {
+		for _, a := range os.Args[1:] {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	flagProvided := func(names ...string) bool {
 		for _, a := range os.Args[1:] {
 			for _, n := range names {
@@ -384,13 +367,7 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// Check if transport mode was set via flags
-	transportFlagSet := false
-	for _, a := range os.Args[1:] {
-		if a == "--tcp" || a == "--udp" || a == "--tls" {
-			transportFlagSet = true
-			break
-		}
-	}
+	transportFlagSet := argHas("-tcp", "--tcp") || argHas("-udp", "--udp") || argHas("-tls", "--tls")
 
 	// Check if specific config values were set via flags
 	portFlagSet := flagProvided("--port")
@@ -419,9 +396,13 @@ func askTerminalOptions() (string, bool, bool) {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
-		// Use flag value or default
-		if useTLS {
+		// Use explicit transport flag value in headless mode.
+		if argHas("-tls", "--tls") || useTLS {
 			transportMode = "tls"
+		} else if argHas("-tcp", "--tcp") {
+			transportMode = "tcp"
+		} else if argHas("-udp", "--udp") {
+			transportMode = "udp"
 		}
 		return transportMode, runTUI, forceUI
 	}
@@ -833,7 +814,7 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 	return memReg
 }
 
-func startTransportServer(ctx context.Context, transportMode string, runTUI bool) {
+func startTransportServer(transportMode string, runTUI bool) {
 	logEvent(fmt.Sprintf("Starting server on port %d (mode=%s)", listenPort, transportMode))
 	if !runTUI {
 		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
@@ -874,19 +855,19 @@ func startTransportServer(ctx context.Context, transportMode string, runTUI bool
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
-			if err := startTCPServerTLSWithContextFn(ctx, reg, listenPort, maxConcurrentTCP, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil && !errors.Is(err, context.Canceled) {
+			if err := transport.StartTCPServerTLS(reg, listenPort, maxConcurrentTCP, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TLS server error: %v", err))
 			}
 		}()
 	case "tcp":
 		go func() {
-			if err := startTCPServerWithContextFn(ctx, reg, listenPort, maxConcurrentTCP, logEvent); err != nil && !errors.Is(err, context.Canceled) {
+			if err := transport.StartTCPServer(reg, listenPort, maxConcurrentTCP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TCP server error: %v", err))
 			}
 		}()
 	default:
 		go func() {
-			if err := startUDPServerWithContextFn(ctx, reg, listenPort, maxConcurrentUDP, logEvent); err != nil && !errors.Is(err, context.Canceled) {
+			if err := transport.StartUDPServer(reg, listenPort, maxConcurrentUDP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("UDP server error: %v", err))
 			}
 		}()
@@ -897,17 +878,11 @@ func startTransportServer(ctx context.Context, transportMode string, runTUI bool
 		fmt.Fprintln(os.Stderr, "Server correctly started")
 	}
 	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
-	go broadcastServerInfoFn(listenPort, heartbeatTimeout, serverStartTime)
+	go transport.BroadcastServerInfo(listenPort, heartbeatTimeout, serverStartTime)
 }
 
 func setupUILayout() {
 	// Build layout
-	headerView := tview.NewTextView().SetDynamicColors(true)
-	headerView.SetTextAlign(tview.AlignCenter)
-	headerView.SetWrap(false)
-	headerView.SetText("[white::b]Task Distribution Server[white:-:-]")
-	headerView.SetBackgroundColor(tcell.Color24)
-
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
 	left.AddItem(searchField, 3, 0, false)
@@ -918,16 +893,8 @@ func setupUILayout() {
 	flex.AddItem(left, 30, 0, true)
 	flex.AddItem(right, 0, 1, false)
 
-	root := tview.NewFlex().SetDirection(tview.FlexRow)
-	root.AddItem(headerView, 1, 0, false)
-	root.AddItem(flex, 0, 1, true)
-	root.AddItem(footerView, 1, 0, false)
-
 	// Configure search field with live filtering
-	searchField.SetBorder(true).SetTitle("Task Filter")
-	searchField.SetLabel(" Task: ")
-	searchField.SetFieldBackgroundColor(tcell.Color236)
-	searchField.SetLabelColor(tcell.ColorWhite)
+	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
 	searchField.SetChangedFunc(func(text string) {
 		currentFilter = text
 		requestDashboardUpdate() // Trigger refresh with filter
@@ -938,35 +905,13 @@ func setupUILayout() {
 		}
 	})
 
-	taskList.SetBorder(true).SetTitle("Tasks")
-	taskList.ShowSecondaryText(false)
-	taskList.SetMainTextColor(tcell.ColorWhite)
-	taskList.SetSelectedBackgroundColor(tcell.Color30)
-	taskList.SetSelectedTextColor(tcell.ColorWhite)
-	detailTable.SetBorder(true).SetTitle("Service Details")
+	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
+	detailTable.SetBorder(true).SetTitle("Details")
 	detailTable.SetSeparator('|') // Add column separators
-	logView.SetBorder(true).SetTitle("Events")
-	logView.SetTextColor(tcell.ColorWhite)
-	logView.SetBackgroundColor(tcell.Color234)
-	logView.SetRegions(false)
-
-	footerView.SetTextAlign(tview.AlignCenter)
-	footerView.SetBackgroundColor(tcell.Color236)
-	footerView.SetText("[yellow]Tab[white] switch focus   [yellow]Esc[white] leave filter   [yellow]q[white] quit TUI   [yellow]Ctrl+C[white] interrupt")
+	logView.SetBorder(true).SetTitle("Log")
 
 	// Set up keyboard navigation
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyCtrlC {
-			app.Stop()
-			return nil
-		}
-
-		switch strings.ToLower(string(event.Rune())) {
-		case "q":
-			app.Stop()
-			return nil
-		}
-
 		if event.Key() == tcell.KeyTab {
 			// Toggle between filter and task list
 			if app.GetFocus() == searchField {
@@ -980,7 +925,7 @@ func setupUILayout() {
 	})
 
 	// Start TUI
-	if err := runTviewAppFn(app, root); err != nil {
+	if err := app.SetRoot(flex, true).Run(); err != nil {
 		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
 		os.Exit(1)
 	}
@@ -990,79 +935,52 @@ func setupUILayout() {
 	}
 }
 
-func runHeadlessLoop(ctx context.Context) {
+func runHeadlessLoop() {
 	logEvent("Running in headless mode (no TUI)")
 	fmt.Fprintln(os.Stderr, "Server will continue running without the TUI.")
-	loopReg := reg
 
 	// For headless mode, just run cleanup, no UI refresh needed
 	ticker := time.NewTicker(cleanupInterval)
-	defer ticker.Stop()
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if loopReg == nil {
-					continue
-				}
-				removed := loopReg.Cleanup(heartbeatTimeout)
-				if removed > 0 {
-					logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
-				}
+		for range ticker.C {
+			removed := reg.Cleanup(heartbeatTimeout)
+			if removed > 0 {
+				logEvent(fmt.Sprintf("Cleanup removed %d entries", removed))
 			}
 		}
 	}()
-	<-ctx.Done()
-	logEvent("Shutdown signal received; stopping headless server")
+	select {}
 }
 
-func runTUILoop(ctx context.Context) {
+func runTUILoop() {
 	logEvent("Starting TUI mode")
-	loopReg := reg
 
 	// TUI mode: start tickers and UI refresh
 	// Periodic cleanup
 	ticker := time.NewTicker(cleanupInterval)
-	defer ticker.Stop()
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if loopReg == nil {
-					continue
-				}
-				removed := loopReg.Cleanup(heartbeatTimeout)
-				logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
+		for range ticker.C {
+			removed := reg.Cleanup(heartbeatTimeout)
+			logEvent(fmt.Sprintf("Cleanup ran: removed %d stale entries", removed))
 
-				// Warm cache from DB to ensure UI reflects deleted entries
-				if storeReg, ok := loopReg.(*registry.StoreBackedRegistry); ok {
-					refreshCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					if err := storeReg.WarmCacheFromDB(refreshCtx); err != nil {
-						logEvent(fmt.Sprintf("WARNING: failed to warm cache during TUI cleanup loop: %v", err))
-					}
-					cancel()
+			// Warm cache from DB to ensure UI reflects deleted entries
+			if storeReg, ok := reg.(*registry.StoreBackedRegistry); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := storeReg.WarmCacheFromDB(ctx); err != nil {
+					logEvent(fmt.Sprintf("WARNING: failed to warm cache during TUI cleanup loop: %v", err))
 				}
-
-				requestDashboardUpdate()
+				cancel()
 			}
+
+			requestDashboardUpdate()
 		}
 	}()
 
 	// Periodic UI refresh
 	uiTicker := time.NewTicker(2 * time.Second)
-	defer uiTicker.Stop()
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-uiTicker.C:
-				requestDashboardUpdate()
-			}
+		for range uiTicker.C {
+			requestDashboardUpdate()
 		}
 	}()
 
@@ -1072,12 +990,7 @@ func runTUILoop(ctx context.Context) {
 		requestDashboardUpdate()
 	}()
 
-	go func() {
-		<-ctx.Done()
-		app.Stop()
-	}()
-
-	setupUILayoutFn()
+	setupUILayout()
 }
 
 func main() {
@@ -1114,6 +1027,7 @@ func main() {
 	flag.BoolVar(&forceUI, "ui", false, "Alias for --force-ui")
 	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
 	flag.BoolVar(&noUI, "no-tui", false, "Alias for --no-ui")
+	flag.BoolVar(&noFreshnessFlag, "no-freshness", false, "Disable heartbeat-age freshness decay in weighted round-robin (use flat capacity-only weights)")
 
 	flag.Parse()
 
@@ -1124,19 +1038,20 @@ func main() {
 	transportMode, runTUI, _ := askTerminalOptions()
 	defer configureTUIIO(runTUI)()
 
-	shutdownCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
 	firewallEnabled := determineEffectiveFirewallEnabled()
 	fw := configureFirewall(runTUI, firewallEnabled)
 
 	reg = initializeRegistry(runTUI, fw)
-	startTransportServer(shutdownCtx, transportMode, runTUI)
+	if memReg, ok := reg.(*registry.MemoryRegistry); ok && noFreshnessFlag {
+		memReg.SetDisableFreshness(true)
+		logEvent("Freshness decay disabled: round-robin uses flat capacity weights")
+	}
+	startTransportServer(transportMode, runTUI)
 
 	if !runTUI {
-		runHeadlessFn(shutdownCtx)
+		runHeadlessLoop()
 		return
 	}
 
-	runTUIFn(shutdownCtx)
+	runTUILoop()
 }

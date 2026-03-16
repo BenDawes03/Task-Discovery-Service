@@ -169,15 +169,6 @@ func TestWarmCacheFromDBRespectsLFULimitAndPropagatesFirewall(t *testing.T) {
 	if addr != "10.0.0.10:8080" {
 		t.Fatalf("expected hot address from cache, got %q", addr)
 	}
-
-	if v, ok := sr.currentMemCache().parsedDestIPs.Load("hot:10.0.0.10:8080"); !ok {
-		t.Fatalf("expected parsed destination cache to be populated for warmed entry")
-	} else {
-		ip, ok := v.(net.IP)
-		if !ok || ip == nil || !ip.Equal(net.ParseIP("10.0.0.10")) {
-			t.Fatalf("expected parsed destination IP 10.0.0.10, got %#v", v)
-		}
-	}
 }
 
 func TestPopulateCacheEntryUpdatesExistingEntry(t *testing.T) {

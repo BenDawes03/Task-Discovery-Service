@@ -17,9 +17,14 @@ spec:
       - name: tds-server
         image: tds-server:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "--tcp"
+        - "--no-ui"
+        - "--no-freshness"
         ports:
         - containerPort: 5000
           name: http
+          protocol: TCP
 ---
 apiVersion: v1
 kind: Service
@@ -33,4 +38,5 @@ spec:
   - port: 5000
     targetPort: 5000
     name: http
+    protocol: TCP
   type: ClusterIP

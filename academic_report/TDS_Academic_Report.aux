@@ -1,42 +1,58 @@
 \relax 
+\providecommand \babel@aux [2]{\global \let \babel@toc \@gobbletwo }
+\@nameuse{bbl@beforestart}
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
+\babel@aux{british}{}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction and Motivation}{1}{section.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Problem Statement}{1}{subsection.1.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Research Objectives}{1}{subsection.1.2}\protected@file@percent }
+\citation{etcd,raft,etcdapi}
+\citation{k8sservice}
+\citation{consul,consuldocs}
+\citation{chord,kademlia}
+\citation{dynamo}
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Contribution}{2}{subsection.1.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2}Project Background and Context}{3}{section.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Service Discovery in Distributed Systems}{3}{subsection.2.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Related Work}{3}{subsection.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3}Design}{3}{section.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}services, tasks, and the client proxy}{3}{subsection.3.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Client machine service registration and discovery via client proxy}}{4}{figure.caption.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Project Background and Context}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Service Discovery in Distributed Systems}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.1}Centralised registry approaches}{2}{subsubsection.2.1.1}\protected@file@percent }
+\citation{swim}
+\citation{mdns,dnssd}
+\citation{consuldocs,istio}
+\citation{k8snetworkpolicy}
+\citation{firewallqueries,firewallmodelcheck}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.2}Decentralised approaches}{3}{subsubsection.2.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.3}Traffic-management, load-balancing, and policy-enforcement approaches}{3}{subsubsection.2.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Security, Reachability, and Policy Correctness}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}How TDS Differs, and Its Strengths and Weaknesses}{4}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Design}{4}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}services, tasks, and the client proxy}{4}{subsection.3.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Client machine service registration and discovery via client proxy}}{5}{figure.caption.1}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{fig:ClientDevice}{{1}{4}{Client machine service registration and discovery via client proxy}{figure.caption.1}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.1}Message format}{4}{subsubsection.3.1.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Centralised mode}{4}{subsection.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}load balancing}{4}{subsubsection.3.2.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Client machines operating in server architecture}}{5}{figure.caption.2}\protected@file@percent }
-\newlabel{fig:ServerArchitecture}{{2}{5}{Client machines operating in server architecture}{figure.caption.2}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Firewall-mode}{5}{subsubsection.3.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Peer-to-Peer mode}{5}{subsection.3.3}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Client machines operating in P2P architecture}}{6}{figure.caption.3}\protected@file@percent }
-\newlabel{fig:P2P-Architecture}{{3}{6}{Client machines operating in P2P architecture}{figure.caption.3}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.1}The Distributed Hash Table (DHT) and Service Discovery}{7}{subsubsection.3.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.2}Eventual consistency and node discovery}{7}{subsubsection.3.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.3}K-Nearest Neighbours}{7}{subsubsection.3.3.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation details and testing}{7}{section.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Implementation Challenges}{7}{subsection.4.1}\protected@file@percent }
+\newlabel{fig:ClientDevice}{{1}{5}{Client machine service registration and discovery via client proxy}{figure.caption.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.1}Message format}{5}{subsubsection.3.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Centralised mode}{5}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}load balancing}{5}{subsubsection.3.2.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Client machines operating in server architecture}}{6}{figure.caption.2}\protected@file@percent }
+\newlabel{fig:ServerArchitecture}{{2}{6}{Client machines operating in server architecture}{figure.caption.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Firewall-mode}{6}{subsubsection.3.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Peer-to-Peer mode}{6}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.1}Distributed Hash Table (DHT)}{6}{subsubsection.3.3.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Client machines operating in P2P architecture}}{7}{figure.caption.3}\protected@file@percent }
+\newlabel{fig:P2P-Architecture}{{3}{7}{Client machines operating in P2P architecture}{figure.caption.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.2}Eventual consistency and node discovery}{8}{subsubsection.3.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.3}K-Nearest Neighbours}{8}{subsubsection.3.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation details and testing}{8}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Implementation Challenges}{8}{subsection.4.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.1}Server Cache Performance}{8}{subsubsection.4.1.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.2}Peer-to-Peer Challenges}{8}{subsubsection.4.1.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.3}Firewall-Mode}{8}{subsubsection.4.1.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5}Functional testing}{8}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {6}Realistic Application Testing}{8}{section.6}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces High-level design of the simulation environment: discovery plane, business flow, and data stores}}{9}{figure.caption.4}\protected@file@percent }
-\newlabel{fig:Simulation-HLD}{{4}{9}{High-level design of the simulation environment: discovery plane, business flow, and data stores}{figure.caption.4}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Future Work}{9}{section.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Conclusions}{10}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.2}Peer-to-Peer Challenges}{9}{subsubsection.4.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.3}Firewall-Mode}{9}{subsubsection.4.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Functional testing}{9}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Realistic Application Testing}{9}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusion and future work}{10}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Future Work}{10}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Conclusion}{10}{subsection.8.1}\protected@file@percent }
 \bibcite{chord}{1}
 \bibcite{consul}{2}
 \bibcite{etcd}{3}
@@ -46,4 +62,17 @@
 \bibcite{golang}{7}
 \bibcite{loadbalancing}{8}
 \bibcite{dht}{9}
-\gdef \@abspage@last{11}
+\bibcite{kademlia}{10}
+\bibcite{dynamo}{11}
+\bibcite{swim}{12}
+\bibcite{raft}{13}
+\bibcite{mdns}{14}
+\bibcite{dnssd}{15}
+\bibcite{k8sservice}{16}
+\bibcite{k8snetworkpolicy}{17}
+\bibcite{istio}{18}
+\bibcite{consuldocs}{19}
+\bibcite{etcdapi}{20}
+\bibcite{firewallqueries}{21}
+\bibcite{firewallmodelcheck}{22}
+\gdef \@abspage@last{12}

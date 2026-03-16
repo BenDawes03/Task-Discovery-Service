@@ -4,9 +4,9 @@ metadata:
   name: gate-keys
   namespace: tds-simulation
 data:
-  gate-public-key: |
+  pctr_public.pem: |
     # Placeholder for Gate public key
-    # Replace with actual content from Simulation/keys/pctr_public.pem
+    # Replace with actual content from pctr_public.pem
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,6 +27,15 @@ spec:
       - name: gate
         image: sim-gate:latest
         imagePullPolicy: IfNotPresent
+        args:
+        - "-id"
+        - "gate-1"
+        - "-station-id"
+        - "1"
+        - "-proxy"
+        - "client-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
         ports:
         - containerPort: 9200
         env:

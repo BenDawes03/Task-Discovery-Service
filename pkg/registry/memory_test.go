@@ -236,37 +236,6 @@ func TestGetServiceForRequestorKeepsWeightedRotationWithinAllowedSubset(t *testi
 	}
 }
 
-func TestParsedDestinationCachedOnRegisterAndRemovedOnCleanup(t *testing.T) {
-	r := NewMemoryRegistry()
-	task := "parsed-cache-task"
-	addr := "10.30.0.1:8080"
-	key := task + ":" + addr
-
-	r.RegisterWithCapacity(task, addr, 1)
-
-	v, ok := r.parsedDestIPs.Load(key)
-	if !ok {
-		t.Fatalf("expected parsed destination to be cached for %s", key)
-	}
-	ip, ok := v.(net.IP)
-	if !ok || ip == nil || !ip.Equal(net.ParseIP("10.30.0.1")) {
-		t.Fatalf("expected cached destination IP 10.30.0.1, got %#v", v)
-	}
-
-	r.mutex.Lock()
-	r.services[task][0].LastHeartbeat = time.Now().Add(-2 * time.Minute)
-	r.mutex.Unlock()
-
-	removed := r.Cleanup(30 * time.Second)
-	if removed != 1 {
-		t.Fatalf("expected one removed entry, got %d", removed)
-	}
-
-	if _, ok := r.parsedDestIPs.Load(key); ok {
-		t.Fatalf("expected parsed destination cache to be removed for %s", key)
-	}
-}
-
 func TestListServicesReturnsDeepCopyAndSyncedQueryCounts(t *testing.T) {
 	r := NewMemoryRegistry()
 	task := "copy-task"

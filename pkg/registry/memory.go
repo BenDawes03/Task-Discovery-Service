@@ -15,7 +15,6 @@ type MemoryRegistry struct {
 	services         map[string][]ServiceEntry
 	roundRobinIndex  sync.Map // map[string]*atomic.Int64 for lock-free weighted round-robin cursor
 	queryCounters    sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
-	parsedDestIPs    sync.Map // map[string]net.IP keyed by "task:address" for parse-once firewall checks
 	totalQueries     atomic.Int64
 	firewall         *firewall.Firewall
 	disableFreshness atomic.Bool // when true, weight = capacity only (no heartbeat age decay)
@@ -60,7 +59,6 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 			// Heartbeat-only update: preserve configured capacity.
 			entries[i].LastHeartbeat = now
 			registry.services[task] = entries
-			registry.cacheParsedDestination(task, addr)
 			return
 		}
 	}
@@ -74,7 +72,6 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 	}
 	registry.services[task] = append(entries, newEntry)
 	registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
-	registry.cacheParsedDestination(task, addr)
 }
 
 func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity int) {
@@ -97,7 +94,6 @@ func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity
 			entries[i].LastHeartbeat = now
 			entries[i].Capacity = capacity
 			registry.services[task] = entries
-			registry.cacheParsedDestination(task, addr)
 			return
 		}
 	}
@@ -111,7 +107,6 @@ func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity
 	registry.services[task] = append(entries, newEntry)
 	// Ensure a round-robin index exists for the task.
 	registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
-	registry.cacheParsedDestination(task, addr)
 }
 
 func (registry *MemoryRegistry) GetService(task string) (string, error) {
@@ -124,121 +119,67 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 		return "", ErrInvalidTaskName
 	}
 
-	now := time.Now()
-	noFreshness := registry.disableFreshness.Load()
-
+	// Copy current addresses under RLock so we don't hold the lock while
+	// doing parsing / firewall checks.
 	registry.mutex.RLock()
 	entries, found := registry.services[task]
 	if !found || len(entries) == 0 {
 		registry.mutex.RUnlock()
 		return "", ErrNotFound
 	}
-
-	if registry.firewall == nil || requestorIP == nil {
-		totalWeight := totalServiceWeightOpts(entries, now, noFreshness)
-		if totalWeight <= 0 {
-			registry.mutex.RUnlock()
-			return "", ErrNotFound
-		}
-
-		idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
-		idxPtr := idxVal.(*atomic.Int64)
-		slot := int(idxPtr.Add(1)-1) % totalWeight
-		selectedAddr, ok := selectWeightedAddressOpts(entries, now, slot, noFreshness)
-		registry.mutex.RUnlock()
-		if !ok {
-			return "", ErrNotFound
-		}
-		return registry.recordSelection(task, selectedAddr), nil
-	}
-
-	fw := registry.firewall
 	entryCopy := make([]ServiceEntry, len(entries))
-	copy(entryCopy, entries)
+	for i, e := range entries {
+		entryCopy[i] = e
+	}
 	registry.mutex.RUnlock()
 
-	totalAllowedWeight := 0
-	allowedCount := 0
-	for _, entry := range entryCopy {
-		destIP := registry.getParsedDestination(task, entry.Address)
-		if destIP == nil || !fw.IsAllowed(requestorIP, destIP) {
-			continue
+	// Filter allowed addresses (if firewall is configured and we know requestor IP).
+	allowedEntries := entryCopy
+	if registry.firewall != nil && requestorIP != nil {
+		allowedEntries = allowedEntries[:0]
+		for _, entry := range entryCopy {
+			addr := entry.Address
+			hostPart, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				hostPart = addr
+			}
+			destIP := net.ParseIP(hostPart)
+			if destIP != nil && registry.firewall.IsAllowed(requestorIP, destIP) {
+				allowedEntries = append(allowedEntries, entry)
+			}
 		}
-		allowedCount++
-		totalAllowedWeight += serviceWeightOpts(entry, now, noFreshness)
+		if len(allowedEntries) == 0 {
+			return "", ErrNoAllowedService
+		}
 	}
-	if allowedCount == 0 {
-		return "", ErrNoAllowedService
-	}
-	if totalAllowedWeight <= 0 {
+
+	now := time.Now()
+	noFreshness := registry.disableFreshness.Load()
+	totalWeight := totalServiceWeightOpts(allowedEntries, now, noFreshness)
+	if totalWeight <= 0 {
 		return "", ErrNotFound
 	}
 
+	// Atomic weighted round-robin selection over the allowed set without
+	// materializing an expanded weighted address pool.
 	idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 	idxPtr := idxVal.(*atomic.Int64)
-	slot := int(idxPtr.Add(1)-1) % totalAllowedWeight
-
-	running := 0
-	for _, entry := range entryCopy {
-		destIP := registry.getParsedDestination(task, entry.Address)
-		if destIP == nil || !fw.IsAllowed(requestorIP, destIP) {
-			continue
-		}
-		running += serviceWeightOpts(entry, now, noFreshness)
-		if slot < running {
-			return registry.recordSelection(task, entry.Address), nil
-		}
+	slot := int(idxPtr.Add(1)-1) % totalWeight
+	selectedAddr, ok := selectWeightedAddressOpts(allowedEntries, now, slot, noFreshness)
+	if !ok {
+		return "", ErrNotFound
 	}
 
-	return "", ErrNotFound
-}
-
-func parseDestinationIP(address string) net.IP {
-	hostPart, _, err := net.SplitHostPort(address)
-	if err != nil {
-		hostPart = address
-	}
-
-	return net.ParseIP(hostPart)
-}
-
-func parsedDestKey(task, address string) string {
-	return task + ":" + address
-}
-
-func (registry *MemoryRegistry) cacheParsedDestination(task, address string) {
-	key := parsedDestKey(task, address)
-	destIP := parseDestinationIP(address)
-	if destIP == nil {
-		registry.parsedDestIPs.Delete(key)
-		return
-	}
-	registry.parsedDestIPs.Store(key, destIP)
-}
-
-func (registry *MemoryRegistry) getParsedDestination(task, address string) net.IP {
-	key := parsedDestKey(task, address)
-	if v, ok := registry.parsedDestIPs.Load(key); ok {
-		if ip, ok := v.(net.IP); ok {
-			return ip
-		}
-	}
-	destIP := parseDestinationIP(address)
-	if destIP != nil {
-		registry.parsedDestIPs.Store(key, destIP)
-	}
-	return destIP
-}
-
-func (registry *MemoryRegistry) recordSelection(task, selectedAddr string) string {
+	// Increment query count atomically (lock-free).
 	counterKey := task + ":" + selectedAddr
 	counterVal, _ := registry.queryCounters.LoadOrStore(counterKey, &atomic.Int64{})
 	counterPtr := counterVal.(*atomic.Int64)
 	counterPtr.Add(1)
 
+	// Increment total queries atomically (lock-free).
 	registry.totalQueries.Add(1)
 
-	return selectedAddr
+	return selectedAddr, nil
 }
 
 func totalServiceWeight(entries []ServiceEntry, now time.Time) int {
@@ -311,7 +252,6 @@ func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 			} else {
 				counterKey := task + ":" + e.Address
 				registry.queryCounters.Delete(counterKey)
-				registry.parsedDestIPs.Delete(counterKey)
 				removed++
 			}
 		}
