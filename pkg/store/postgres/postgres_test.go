@@ -202,6 +202,40 @@ func TestGetService_RoundRobinAndIncrement(t *testing.T) {
 	}
 }
 
+func TestGetService_UsesCumulativeCapacityWeights(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	makeRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"address", "last_heartbeat", "query_count", "capacity"}).
+			AddRow("10.0.0.1:9000", now, int64(1), 3).
+			AddRow("10.0.0.2:9000", now.Add(-5*time.Minute), int64(2), 1)
+	}
+
+	for _, addr := range []string{"10.0.0.1:9000", "10.0.0.1:9000", "10.0.0.1:9000", "10.0.0.2:9000"} {
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT address, last_heartbeat, query_count, capacity")).WithArgs("task-a").WillReturnRows(makeRows())
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).WithArgs("task-a", addr).WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+
+	counts := map[string]int{}
+	for i := 0; i < 4; i++ {
+		entry, err := ps.GetService(context.Background(), "task-a")
+		if err != nil {
+			t.Fatalf("GetService iteration %d returned error: %v", i, err)
+		}
+		counts[entry.Address]++
+	}
+
+	if counts["10.0.0.1:9000"] != 3 || counts["10.0.0.2:9000"] != 1 {
+		t.Fatalf("expected 3:1 capacity-weighted split, got %+v", counts)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestGetService_UpdateError(t *testing.T) {
 	ps, mock, db := newMockStore(t)
 	defer db.Close()
@@ -598,49 +632,34 @@ func TestNormalizedCapacity(t *testing.T) {
 	}
 }
 
-func TestBuildWeightedIndexPool(t *testing.T) {
-	now := time.Now().UTC()
+func TestSelectWeightedEntryIndex(t *testing.T) {
 	entries := []store.ServiceEntry{
-		{Address: "a", LastHeartbeat: now, Capacity: 2},
-		{Address: "b", LastHeartbeat: now, Capacity: 1},
+		{Address: "a", Capacity: 2},
+		{Address: "b", Capacity: 1},
 	}
 
-	pool := buildWeightedIndexPool(entries, now)
-	if len(pool) != 3 {
-		t.Fatalf("expected pool length 3, got %d (%v)", len(pool), pool)
+	if got := totalStoreWeight(entries); got != 3 {
+		t.Fatalf("expected total weight 3, got %d", got)
 	}
 
-	count0 := 0
-	count1 := 0
-	for _, idx := range pool {
-		if idx == 0 {
-			count0++
-		}
-		if idx == 1 {
-			count1++
-		}
+	idx, ok := selectWeightedEntryIndex(entries, 0)
+	if !ok || idx != 0 {
+		t.Fatalf("expected slot 0 to select first entry, got idx=%d ok=%v", idx, ok)
 	}
-
-	if count0 != 2 || count1 != 1 {
-		t.Fatalf("unexpected weighted counts: index0=%d index1=%d pool=%v", count0, count1, pool)
+	idx, ok = selectWeightedEntryIndex(entries, 2)
+	if !ok || idx != 1 {
+		t.Fatalf("expected slot 2 to select second entry, got idx=%d ok=%v", idx, ok)
+	}
+	if _, ok := selectWeightedEntryIndex(entries, 3); ok {
+		t.Fatalf("expected out-of-range slot selection to fail")
 	}
 }
 
 func TestStoreServiceWeight(t *testing.T) {
-	now := time.Now().UTC()
-
-	fresh := storeServiceWeight(store.ServiceEntry{Capacity: 4, LastHeartbeat: now}, now)
-	if fresh != 4 {
-		t.Fatalf("expected fresh weight 4, got %d", fresh)
+	if got := storeServiceWeight(store.ServiceEntry{Capacity: 4}); got != 4 {
+		t.Fatalf("expected weight 4, got %d", got)
 	}
-
-	stale := storeServiceWeight(store.ServiceEntry{Capacity: 4, LastHeartbeat: now.Add(-5 * time.Minute)}, now)
-	if stale < 1 {
-		t.Fatalf("expected stale weight >= 1, got %d", stale)
-	}
-
-	future := storeServiceWeight(store.ServiceEntry{Capacity: 2, LastHeartbeat: now.Add(30 * time.Second)}, now)
-	if future != 2 {
-		t.Fatalf("expected future heartbeat weight 2, got %d", future)
+	if got := storeServiceWeight(store.ServiceEntry{Capacity: 0}); got != 1 {
+		t.Fatalf("expected zero capacity to normalize to 1, got %d", got)
 	}
 }

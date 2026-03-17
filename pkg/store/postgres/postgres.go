@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -83,8 +82,8 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 	return err
 }
 
-// GetService retrieves a single service by task using weighted round-robin selection
-// (capacity and heartbeat recency) and increments query count.
+// GetService retrieves a single service by task using capacity-weighted round-robin
+// selection and increments query count.
 func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.ServiceEntry, error) {
 	// Retrieve all active entries for the task
 	query := `
@@ -117,18 +116,22 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 		return nil, ErrNotFound
 	}
 
-	weightedPool := buildWeightedIndexPool(entries, time.Now())
-	if len(weightedPool) == 0 {
+	totalWeight := totalStoreWeight(entries)
+	if totalWeight <= 0 {
 		return nil, ErrNotFound
 	}
 
-	// Weighted round-robin selection
+	// Capacity-weighted round-robin selection via cumulative weights.
 	ps.roundRobinIndexMu.Lock()
-	idx := ps.roundRobinIndex[task] % len(weightedPool)
-	ps.roundRobinIndex[task] = (idx + 1) % len(weightedPool)
+	slot := ps.roundRobinIndex[task] % totalWeight
+	ps.roundRobinIndex[task] = (slot + 1) % totalWeight
 	ps.roundRobinIndexMu.Unlock()
 
-	selected := &entries[weightedPool[idx]]
+	selectedIndex, ok := selectWeightedEntryIndex(entries, slot)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	selected := &entries[selectedIndex]
 
 	// Increment query count in database
 	updateQuery := `
@@ -334,34 +337,25 @@ func normalizedCapacity(capacity int) int {
 	return capacity
 }
 
-func buildWeightedIndexPool(entries []store.ServiceEntry, now time.Time) []int {
+func totalStoreWeight(entries []store.ServiceEntry) int {
 	total := 0
-	weights := make([]int, len(entries))
-	for i, entry := range entries {
-		weight := storeServiceWeight(entry, now)
-		weights[i] = weight
-		total += weight
+	for _, entry := range entries {
+		total += storeServiceWeight(entry)
 	}
-
-	pool := make([]int, 0, total)
-	for i := range entries {
-		for j := 0; j < weights[i]; j++ {
-			pool = append(pool, i)
-		}
-	}
-	return pool
+	return total
 }
 
-func storeServiceWeight(entry store.ServiceEntry, now time.Time) int {
-	capacity := normalizedCapacity(entry.Capacity)
-	ageSeconds := now.Sub(entry.LastHeartbeat).Seconds()
-	if ageSeconds < 0 {
-		ageSeconds = 0
+func selectWeightedEntryIndex(entries []store.ServiceEntry, slot int) (int, bool) {
+	running := 0
+	for i, entry := range entries {
+		running += storeServiceWeight(entry)
+		if slot < running {
+			return i, true
+		}
 	}
-	freshness := 1.0 / (1.0 + ageSeconds/30.0)
-	effectiveWeight := int(math.Round(float64(capacity) * freshness))
-	if effectiveWeight < 1 {
-		return 1
-	}
-	return effectiveWeight
+	return 0, false
+}
+
+func storeServiceWeight(entry store.ServiceEntry) int {
+	return normalizedCapacity(entry.Capacity)
 }

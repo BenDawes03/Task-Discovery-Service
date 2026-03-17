@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"math"
 	"net"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ type MemoryRegistry struct {
 	queryCounters    sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
 	totalQueries     atomic.Int64
 	firewall         *firewall.Firewall
-	disableFreshness atomic.Bool // when true, weight = capacity only (no heartbeat age decay)
 }
 
 func NewMemoryRegistry() *MemoryRegistry {
@@ -25,14 +23,6 @@ func NewMemoryRegistry() *MemoryRegistry {
 		services: make(map[string][]ServiceEntry),
 		firewall: nil, // No firewall by default
 	}
-}
-
-// SetDisableFreshness controls whether heartbeat-age freshness decay is applied
-// when computing weighted round-robin slot sizes. When true every registered
-// instance receives weight equal to its capacity only, giving perfectly even
-// round-robin regardless of when each instance last heartbeat'd.
-func (registry *MemoryRegistry) SetDisableFreshness(v bool) {
-	registry.disableFreshness.Store(v)
 }
 
 // SetFirewall configures the firewall rules for this registry.
@@ -153,9 +143,7 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 		}
 	}
 
-	now := time.Now()
-	noFreshness := registry.disableFreshness.Load()
-	totalWeight := totalServiceWeightOpts(allowedEntries, now, noFreshness)
+	totalWeight := totalServiceWeight(allowedEntries)
 	if totalWeight <= 0 {
 		return "", ErrNotFound
 	}
@@ -165,7 +153,7 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	idxVal, _ := registry.roundRobinIndex.LoadOrStore(task, &atomic.Int64{})
 	idxPtr := idxVal.(*atomic.Int64)
 	slot := int(idxPtr.Add(1)-1) % totalWeight
-	selectedAddr, ok := selectWeightedAddressOpts(allowedEntries, now, slot, noFreshness)
+	selectedAddr, ok := selectWeightedAddress(allowedEntries, slot)
 	if !ok {
 		return "", ErrNotFound
 	}
@@ -182,27 +170,18 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	return selectedAddr, nil
 }
 
-func totalServiceWeight(entries []ServiceEntry, now time.Time) int {
-	return totalServiceWeightOpts(entries, now, false)
-}
-
-func totalServiceWeightOpts(entries []ServiceEntry, now time.Time, noFreshness bool) int {
+func totalServiceWeight(entries []ServiceEntry) int {
 	total := 0
 	for _, entry := range entries {
-		weight := serviceWeightOpts(entry, now, noFreshness)
-		total += weight
+		total += serviceWeight(entry)
 	}
 	return total
 }
 
-func selectWeightedAddress(entries []ServiceEntry, now time.Time, slot int) (string, bool) {
-	return selectWeightedAddressOpts(entries, now, slot, false)
-}
-
-func selectWeightedAddressOpts(entries []ServiceEntry, now time.Time, slot int, noFreshness bool) (string, bool) {
+func selectWeightedAddress(entries []ServiceEntry, slot int) (string, bool) {
 	running := 0
 	for _, entry := range entries {
-		running += serviceWeightOpts(entry, now, noFreshness)
+		running += serviceWeight(entry)
 		if slot < running {
 			return entry.Address, true
 		}
@@ -210,33 +189,12 @@ func selectWeightedAddressOpts(entries []ServiceEntry, now time.Time, slot int, 
 	return "", false
 }
 
-func serviceWeight(entry ServiceEntry, now time.Time) int {
-	return serviceWeightOpts(entry, now, false)
-}
-
-func serviceWeightOpts(entry ServiceEntry, now time.Time, noFreshness bool) int {
+func serviceWeight(entry ServiceEntry) int {
 	capacity := entry.Capacity
 	if capacity <= 0 {
 		capacity = 1
 	}
-
-	if noFreshness {
-		return capacity
-	}
-
-	ageSeconds := now.Sub(entry.LastHeartbeat).Seconds()
-	if ageSeconds < 0 {
-		ageSeconds = 0
-	}
-
-	// Decay weight with heartbeat age so fresher instances receive more traffic.
-	// Age 0s => factor 1.0, 30s => 0.5, 60s => 0.33, etc.
-	freshness := 1.0 / (1.0 + ageSeconds/30.0)
-	effectiveWeight := int(math.Round(float64(capacity) * freshness))
-	if effectiveWeight < 1 {
-		return 1
-	}
-	return effectiveWeight
+	return capacity
 }
 
 func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {

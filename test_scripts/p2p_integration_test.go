@@ -9,6 +9,23 @@ import (
 	"tds/pkg/dht"
 )
 
+func waitForAnyQuery(t *testing.T, reg *dht.DHTRegistry, task string, expected map[string]struct{}, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		addr, err := reg.Query(task)
+		if err == nil {
+			if _, ok := expected[addr]; ok {
+				return addr
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	addr, err := reg.Query(task)
+	t.Fatalf("query timeout: got %q (err=%v), want one of %v", addr, err, expected)
+	return ""
+}
+
 func getFreeAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -136,5 +153,48 @@ func TestP2PIntegration_QueryNotFound(t *testing.T) {
 	}
 	if addr != "" {
 		t.Fatalf("expected empty address, got %q", addr)
+	}
+}
+
+func TestP2PIntegration_QueryRoundRobinAcrossNodes(t *testing.T) {
+	reg1, addr1 := startRegistry(t, nil)
+	reg2, _ := startRegistry(t, []string{addr1})
+
+	waitForRingSize(t, reg1, 2, 3*time.Second)
+	waitForRingSize(t, reg2, 2, 3*time.Second)
+
+	task := "svc-rr"
+	addrA := "10.0.0.11:7000"
+	addrB := "10.0.0.12:7000"
+
+	if err := reg1.Register(task, addrA); err != nil {
+		t.Fatalf("register addrA: %v", err)
+	}
+	if err := reg1.Register(task, addrB); err != nil {
+		t.Fatalf("register addrB: %v", err)
+	}
+
+	expected := map[string]struct{}{addrA: {}, addrB: {}}
+	first := waitForAnyQuery(t, reg2, task, expected, 3*time.Second)
+	second, err := reg2.Query(task)
+	if err != nil {
+		t.Fatalf("second query failed: %v", err)
+	}
+	third, err := reg2.Query(task)
+	if err != nil {
+		t.Fatalf("third query failed: %v", err)
+	}
+
+	if _, ok := expected[second]; !ok {
+		t.Fatalf("expected second query to return one of %v, got %q", expected, second)
+	}
+	if _, ok := expected[third]; !ok {
+		t.Fatalf("expected third query to return one of %v, got %q", expected, third)
+	}
+	if first == second {
+		t.Fatalf("expected round-robin rotation between first and second query, got %q then %q", first, second)
+	}
+	if third != first {
+		t.Fatalf("expected third query to wrap to first address, got first=%q second=%q third=%q", first, second, third)
 	}
 }

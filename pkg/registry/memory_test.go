@@ -51,30 +51,29 @@ func TestWeightedSelectionByCapacity(t *testing.T) {
 	}
 }
 
-func TestWeightedSelectionByHeartbeatFreshness(t *testing.T) {
+func TestWeightedSelectionIgnoresHeartbeatAge(t *testing.T) {
 	r := NewMemoryRegistry()
 	task := "routing"
-	fresh := "10.0.0.20:8080"
-	stale := "10.0.0.21:8080"
+	first := "10.0.0.20:8080"
+	second := "10.0.0.21:8080"
 
-	// Same capacity; heartbeat freshness should bias selection.
-	r.RegisterWithCapacity(task, fresh, 3)
-	r.RegisterWithCapacity(task, stale, 3)
+	r.RegisterWithCapacity(task, first, 3)
+	r.RegisterWithCapacity(task, second, 3)
 
 	r.mutex.Lock()
 	now := time.Now()
 	for i := range r.services[task] {
-		if r.services[task][i].Address == fresh {
+		if r.services[task][i].Address == first {
 			r.services[task][i].LastHeartbeat = now
 		}
-		if r.services[task][i].Address == stale {
+		if r.services[task][i].Address == second {
 			r.services[task][i].LastHeartbeat = now.Add(-90 * time.Second)
 		}
 	}
 	r.mutex.Unlock()
 
 	counts := map[string]int{}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 6; i++ {
 		selected, err := r.GetService(task)
 		if err != nil {
 			t.Fatalf("unexpected GetService error: %v", err)
@@ -82,8 +81,8 @@ func TestWeightedSelectionByHeartbeatFreshness(t *testing.T) {
 		counts[selected]++
 	}
 
-	if counts[fresh] != 6 || counts[stale] != 2 {
-		t.Fatalf("expected freshness-weighted 6:2 split, got %s=%d %s=%d", fresh, counts[fresh], stale, counts[stale])
+	if counts[first] != 3 || counts[second] != 3 {
+		t.Fatalf("expected heartbeat age to have no effect, got %s=%d %s=%d", first, counts[first], second, counts[second])
 	}
 }
 
@@ -169,7 +168,6 @@ func TestGetServiceForRequestorFiltersByFirewall(t *testing.T) {
 
 	r.RegisterWithCapacity(task, allowedAddr, 1)
 	r.RegisterWithCapacity(task, deniedAddr, 1)
-	r.SetDisableFreshness(true)
 
 	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
 	if err := os.WriteFile(rulesPath, []byte("192.168.1.10 10.10.0.1\n"), 0o600); err != nil {
@@ -206,7 +204,6 @@ func TestGetServiceForRequestorKeepsWeightedRotationWithinAllowedSubset(t *testi
 	r.RegisterWithCapacity(task, heavyAllowed, 3)
 	r.RegisterWithCapacity(task, lightAllowed, 1)
 	r.RegisterWithCapacity(task, denied, 10)
-	r.SetDisableFreshness(true)
 
 	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
 	if err := os.WriteFile(rulesPath, []byte("192.168.1.10 10.20.0.1\n192.168.1.10 10.20.0.2\n"), 0o600); err != nil {
@@ -268,34 +265,30 @@ func TestListServicesReturnsDeepCopyAndSyncedQueryCounts(t *testing.T) {
 }
 
 func TestWeightHelpersCoverEdgeCases(t *testing.T) {
-	now := time.Now()
 	entries := []ServiceEntry{
-		{Address: "future", LastHeartbeat: now.Add(10 * time.Second), Capacity: 0},
-		{Address: "stale", LastHeartbeat: now.Add(-90 * time.Second), Capacity: 3},
+		{Address: "future", LastHeartbeat: time.Now().Add(10 * time.Second), Capacity: 0},
+		{Address: "stale", LastHeartbeat: time.Now().Add(-90 * time.Second), Capacity: 3},
 	}
 
-	if got := serviceWeight(entries[0], now); got != 1 {
+	if got := serviceWeight(entries[0]); got != 1 {
 		t.Fatalf("expected zero capacity to normalize to weight 1, got %d", got)
 	}
-	if got := serviceWeightOpts(entries[1], now, true); got != 3 {
-		t.Fatalf("expected no-freshness weight to equal capacity, got %d", got)
+	if got := serviceWeight(entries[1]); got != 3 {
+		t.Fatalf("expected positive capacity to equal weight, got %d", got)
 	}
-	if got := totalServiceWeight(entries, now); got != 2 {
-		t.Fatalf("expected total weight 2 with freshness decay, got %d", got)
-	}
-	if got := totalServiceWeightOpts(entries, now, true); got != 4 {
-		t.Fatalf("expected total weight 4 without freshness decay, got %d", got)
+	if got := totalServiceWeight(entries); got != 4 {
+		t.Fatalf("expected total weight 4, got %d", got)
 	}
 
-	addr, ok := selectWeightedAddress(entries, now, 0)
+	addr, ok := selectWeightedAddress(entries, 0)
 	if !ok || addr != "future" {
 		t.Fatalf("expected slot 0 to choose future entry, got %q ok=%v", addr, ok)
 	}
-	addr, ok = selectWeightedAddressOpts(entries, now, 3, true)
+	addr, ok = selectWeightedAddress(entries, 3)
 	if !ok || addr != "stale" {
-		t.Fatalf("expected slot 3 to choose stale entry without freshness decay, got %q ok=%v", addr, ok)
+		t.Fatalf("expected slot 3 to choose stale entry, got %q ok=%v", addr, ok)
 	}
-	if _, ok := selectWeightedAddressOpts(entries, now, 4, true); ok {
+	if _, ok := selectWeightedAddress(entries, 4); ok {
 		t.Fatalf("expected out-of-range slot selection to fail")
 	}
 }

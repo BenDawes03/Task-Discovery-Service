@@ -259,6 +259,48 @@ func TestStartStopAndRegistryFlow(t *testing.T) {
 	}
 }
 
+func TestDHTRegistryQueryRoundRobinAcrossAddresses(t *testing.T) {
+	reg, err := NewDHTRegistry("0", nil)
+	if err != nil {
+		t.Fatalf("NewDHTRegistry failed: %v", err)
+	}
+
+	if err := reg.Start(); err != nil {
+		t.Fatalf("registry start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.Stop() })
+
+	if err := reg.Register("service.rr", "127.0.0.1:9900"); err != nil {
+		t.Fatalf("register addr1 failed: %v", err)
+	}
+	if err := reg.Register("service.rr", "127.0.0.1:9901"); err != nil {
+		t.Fatalf("register addr2 failed: %v", err)
+	}
+
+	first, err := reg.Query("service.rr")
+	if err != nil {
+		t.Fatalf("first query failed: %v", err)
+	}
+	second, err := reg.Query("service.rr")
+	if err != nil {
+		t.Fatalf("second query failed: %v", err)
+	}
+	third, err := reg.Query("service.rr")
+	if err != nil {
+		t.Fatalf("third query failed: %v", err)
+	}
+
+	if first == "" || second == "" || third == "" {
+		t.Fatalf("expected non-empty round-robin answers, got %q, %q, %q", first, second, third)
+	}
+	if first == second {
+		t.Fatalf("expected first and second query to rotate addresses, got %q and %q", first, second)
+	}
+	if third != first {
+		t.Fatalf("expected third query to wrap to first address, got first=%q second=%q third=%q", first, second, third)
+	}
+}
+
 func TestNormalizeListenAddrAndLogging(t *testing.T) {
 	if got := normalizeListenAddr(" 6001 "); got != ":6001" {
 		t.Fatalf("expected :6001, got %s", got)

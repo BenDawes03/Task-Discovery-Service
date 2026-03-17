@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -23,10 +24,11 @@ type Snapshot struct {
 
 // DHTRegistry wraps DHT functionality to match the proxy's expected interface
 type DHTRegistry struct {
-	network       *DHTNetwork
-	regCount      uint64
-	queryCount    uint64
-	errorCount    uint64
+	network          *DHTNetwork
+	roundRobinCursor sync.Map // map[string]*atomic.Int64, keyed by task
+	regCount         uint64
+	queryCount       uint64
+	errorCount       uint64
 }
 
 func normalizeListenAddr(listenAddr string) string {
@@ -106,9 +108,11 @@ func (dr *DHTRegistry) Query(task string) (string, error) {
 	if len(addrs) == 0 {
 		return "", nil
 	}
-	
-	// return the first address (could implement round-robin here)
-	return addrs[0], nil
+
+	counterVal, _ := dr.roundRobinCursor.LoadOrStore(task, &atomic.Int64{})
+	counter := counterVal.(*atomic.Int64)
+	idx := int(counter.Add(1)-1) % len(addrs)
+	return addrs[idx], nil
 }
 
 // QueryAll retrieves all addresses for a task from the DHT
