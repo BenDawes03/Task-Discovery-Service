@@ -95,8 +95,60 @@ function Ensure-PCTRKeyConfigMaps {
     }
 }
 
+function Ensure-TLSCertSecret {
+    param([string]$Namespace = "tds-simulation")
+
+    kubectl get namespace $Namespace *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Namespace '$Namespace' does not exist. Deploy infrastructure first: .\deploy.ps1 -Service infrastructure"
+    }
+
+    $repoRoot = Split-Path -Parent $k8sDir
+    $certDir = Join-Path $repoRoot "certs"
+    $serverCert = Join-Path $certDir "server.crt"
+    $serverKey = Join-Path $certDir "server.key"
+    $clientCert = Join-Path $certDir "client.crt"
+    $clientKey = Join-Path $certDir "client.key"
+    $caCert = Join-Path $certDir "ca.crt"
+
+    $requiredFiles = @($serverCert, $serverKey, $clientCert, $clientKey, $caCert)
+    foreach ($required in $requiredFiles) {
+        if (-not (Test-Path $required)) {
+            throw "Missing TLS certificate file '$required'. Generate certs first (for example: .\scripts\generate_certs.ps1)."
+        }
+    }
+
+    Write-Host "Syncing TLS cert secret (tds-tls-certs)..." -ForegroundColor Cyan
+    kubectl create secret generic tds-tls-certs -n $Namespace `
+        --from-file "server.crt=$serverCert" `
+        --from-file "server.key=$serverKey" `
+        --from-file "client.crt=$clientCert" `
+        --from-file "client.key=$clientKey" `
+        --from-file "ca.crt=$caCert" `
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply TLS secret 'tds-tls-certs'."
+    }
+}
+
+function Update-FirewallRules {
+    param([string]$Namespace = "tds-simulation")
+
+    $ruleScript = Join-Path $k8sDir "generate-firewall-rules.ps1"
+    if (-not (Test-Path $ruleScript)) {
+        throw "Firewall rule generator '$ruleScript' was not found."
+    }
+
+    Write-Host "Refreshing firewall rules from live pod IPs..." -ForegroundColor Cyan
+    & $ruleScript -Namespace $Namespace
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to refresh firewall rules."
+    }
+}
+
 # Define service dependencies
-$infrastructure = @("00-namespace.yaml", "01-configmap.yaml", "02-storage-class.yaml", "03-tds-server.yaml", "04-client-proxy.yaml")
+$infrastructure = @("00-namespace.yaml", "01-configmap.yaml", "02-storage-class.yaml", "14-firewall-rules.yaml", "03-tds-server.yaml", "04-client-proxy.yaml")
 $databases = @("05-cs-db.yaml", "06-pctrbo-db.yaml", "07-pa-db.yaml")
 $services = @("08-cs-service.yaml", "09-pctrbo-service.yaml", "10-pa-service.yaml", "11-station-service.yaml", "12-ticketdistributor-service.yaml", "13-gate-service.yaml")
 
@@ -124,6 +176,7 @@ if ($Delete) {
     if ($Service -eq "all" -or $Service -eq "infrastructure") {
         Delete-Service "databases" $databases
         Delete-Service "infrastructure" $infrastructure
+        kubectl delete secret tds-tls-certs -n tds-simulation --ignore-not-found
     }
 } 
 elseif ($Status) {
@@ -134,7 +187,9 @@ else {
     
     # Deploy infrastructure first
     if ($Service -eq "all" -or $Service -eq "infrastructure") {
-        Deploy-Service "Infrastructure" $infrastructure
+        Deploy-Service "Infrastructure Namespace" @("00-namespace.yaml")
+        Ensure-TLSCertSecret
+        Deploy-Service "Infrastructure Core" @("01-configmap.yaml", "02-storage-class.yaml", "14-firewall-rules.yaml", "03-tds-server.yaml", "04-client-proxy.yaml")
         Deploy-Service "Databases" $databases
         
         Write-Host "`n⏳ Waiting for infrastructure to be ready..." -ForegroundColor Yellow
@@ -166,6 +221,10 @@ else {
         Deploy-Service "Gate Service" @("13-gate-service.yaml")
         Ensure-PCTRKeyConfigMaps
     }
+
+    Write-Host "`n⏳ Waiting for pod IPs before refreshing firewall rules..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+    Update-FirewallRules
     
     Write-Host "`n[+] Deployment complete!" -ForegroundColor Green
     Write-Host "Check status with: .\deploy.ps1 -Status" -ForegroundColor Yellow

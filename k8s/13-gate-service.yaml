@@ -33,7 +33,7 @@ spec:
         - "-station-id"
         - "1"
         - "-proxy"
-        - "client-proxy:5100"
+        - "gate-proxy:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -55,6 +55,9 @@ spec:
         configMap:
           name: gate-keys
       initContainers:
+      - name: wait-for-gate-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup gate-proxy; do echo waiting for gate-proxy; sleep 1; done']
       - name: wait-for-station
         image: busybox:1.28
         command: ['sh', '-c', 'until nslookup station-1; do echo waiting for station-1; sleep 1; done']

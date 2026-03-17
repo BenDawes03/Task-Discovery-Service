@@ -68,12 +68,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$scriptDir = Split-Path -Parent $PSCommandPath
+
+function Update-FirewallRules {
+  $ruleScript = Join-Path $scriptDir "generate-firewall-rules.ps1"
+  if (-not (Test-Path $ruleScript)) {
+    throw "Firewall rule generator '$ruleScript' was not found."
+  }
+
+  & $ruleScript -Namespace $Namespace
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to refresh firewall rules."
+  }
+}
+
 # ---------------------------------------------------------------------------
 # YAML generators
 # ---------------------------------------------------------------------------
 
 function Get-StationYAML([int]$N) {
     $name = "station-$N"
+  $proxyName = "$name-proxy"
     @"
 apiVersion: apps/v1
 kind: Deployment
@@ -101,7 +116,7 @@ spec:
         - "-station-id"
         - "$N"
         - "-proxy"
-        - "client-proxy:5100"
+        - "$proxyName:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -113,9 +128,9 @@ spec:
               name: tds-config
               key: TDS_SERVER_ADDR
       initContainers:
-      - name: wait-for-client-proxy
+      - name: wait-for-station-proxy
         image: busybox:1.28
-        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+        command: ['sh', '-c', 'until nslookup $proxyName; do echo waiting for $proxyName; sleep 1; done']
 ---
 apiVersion: v1
 kind: Service
@@ -134,9 +149,92 @@ spec:
 "@
 }
 
+function Get-ProxyYAML([string]$ProxyName, [string]$Role) {
+    @"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $ProxyName
+  namespace: $Namespace
+  labels:
+    tds-role: $Role
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $ProxyName
+  template:
+    metadata:
+      labels:
+        app: $ProxyName
+        tds-role: $Role
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: $ProxyName
+  namespace: $Namespace
+  labels:
+    tds-role: $Role
+spec:
+  selector:
+    app: $ProxyName
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+"@
+}
+
 function Get-GateYAML([int]$N, [int]$ForStationID) {
     $name      = "gate-$N"
     $stationSvc = "station-$ForStationID"
+    $proxyName = "$name-proxy"
     @"
 apiVersion: apps/v1
 kind: Deployment
@@ -166,7 +264,7 @@ spec:
         - "-station-id"
         - "$ForStationID"
         - "-proxy"
-        - "client-proxy:5100"
+        - "$proxyName:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -188,6 +286,9 @@ spec:
         configMap:
           name: gate-keys
       initContainers:
+      - name: wait-for-gate-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup $proxyName; do echo waiting for $proxyName; sleep 1; done']
       - name: wait-for-station
         image: busybox:1.28
         command: ['sh', '-c', 'until nslookup $stationSvc; do echo waiting for $stationSvc; sleep 1; done']
@@ -258,9 +359,15 @@ function Show-List {
 }
 
 function Add-Station([int]$N) {
+  $proxyName = "station-$N-proxy"
+  Write-Host "`nDeploying $proxyName..." -ForegroundColor Cyan
+  Get-ProxyYAML -ProxyName $proxyName -Role "station-proxy" | kubectl apply -f -
+  if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed for $proxyName" }
+
     Write-Host "`nDeploying station-$N..." -ForegroundColor Cyan
     Get-StationYAML -N $N | kubectl apply -f -
     if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed for station-$N" }
+  Update-FirewallRules
     Write-Host "[+] station-$N deployed. It will register as task 'station-Computer-$N'." -ForegroundColor Green
 }
 
@@ -278,6 +385,9 @@ function Remove-Station([int]$N) {
 
     kubectl delete deployment "station-$N" -n $Namespace --ignore-not-found
     kubectl delete svc        "station-$N" -n $Namespace --ignore-not-found
+    kubectl delete deployment "station-$N-proxy" -n $Namespace --ignore-not-found
+    kubectl delete svc        "station-$N-proxy" -n $Namespace --ignore-not-found
+    Update-FirewallRules
     Write-Host "[+] station-$N removed." -ForegroundColor Green
 }
 
@@ -290,9 +400,15 @@ function Add-Gate([int]$N, [int]$ForStationID) {
         Write-Warning "Deploy station-$ForStationID first:  .\manage-stations-gates.ps1 -Action add-station -ID $ForStationID"
     }
 
+    $proxyName = "gate-$N-proxy"
+    Write-Host "`nDeploying $proxyName..." -ForegroundColor Cyan
+    Get-ProxyYAML -ProxyName $proxyName -Role "gate-proxy" | kubectl apply -f -
+    if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed for $proxyName" }
+
     Write-Host "`nDeploying gate-$N (station: $ForStationID)..." -ForegroundColor Cyan
     Get-GateYAML -N $N -ForStationID $ForStationID | kubectl apply -f -
     if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed for gate-$N" }
+    Update-FirewallRules
     Write-Host "[+] gate-$N deployed (id=gate-$N, station-id=$ForStationID)." -ForegroundColor Green
 }
 
@@ -300,6 +416,9 @@ function Remove-Gate([int]$N) {
     Write-Host "`nRemoving gate-$N..." -ForegroundColor Red
     kubectl delete deployment "gate-$N" -n $Namespace --ignore-not-found
     kubectl delete svc        "gate-$N" -n $Namespace --ignore-not-found
+    kubectl delete deployment "gate-$N-proxy" -n $Namespace --ignore-not-found
+    kubectl delete svc        "gate-$N-proxy" -n $Namespace --ignore-not-found
+    Update-FirewallRules
     Write-Host "[+] gate-$N removed." -ForegroundColor Green
 }
 

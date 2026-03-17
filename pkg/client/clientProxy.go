@@ -180,13 +180,17 @@ func RunProxyTCP(ctx context.Context, listenAddr string) error {
 	if serverAddr == "" {
 		serverAddr = "127.0.0.1:5000"
 	}
+	backendProto := strings.ToLower(strings.TrimSpace(os.Getenv("TDS_SERVER_PROTO")))
+	if backendProto == "" {
+		backendProto = "tcp"
+	}
 
 	ln, err := netutil.ListenTCP(listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen tcp: %w", err)
 	}
 	defer ln.Close()
-	logger.Printf("listening tcp %s, forwarding to %s", listenAddr, serverAddr)
+	logger.Printf("listening tcp %s, forwarding to %s via %s", listenAddr, serverAddr, strings.ToUpper(backendProto))
 
 	// close listener when context is done so Accept returns
 	go func() {
@@ -207,11 +211,11 @@ func RunProxyTCP(ctx context.Context, listenAddr string) error {
 				continue
 			}
 		}
-		go handleTCPProxyConn(conn, serverAddr)
+		go handleTCPProxyConn(conn, serverAddr, backendProto)
 	}
 }
 
-func handleTCPProxyConn(conn net.Conn, serverAddr string) {
+func handleTCPProxyConn(conn net.Conn, serverAddr, backendProto string) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
 	r := bufio.NewReader(conn)
@@ -233,12 +237,28 @@ func handleTCPProxyConn(conn net.Conn, serverAddr string) {
 			continue
 		}
 
-		result := handleCentralizedRequest(req, serverAddr, "tcp", remote)
+		result := handleCentralizedRequest(req, serverAddr, backendProto, remote)
 		if result.Status == StatusErr {
 			atomic.AddUint64(&errorCount, 1)
 		}
 		writeTCPResultGeneric(w, req.JSON, result)
 	}
+}
+
+func tlsClientFilesFromEnv() (certFile, keyFile, caFile string) {
+	certFile = strings.TrimSpace(os.Getenv("TDS_TLS_CERT_FILE"))
+	if certFile == "" {
+		certFile = "certs/client.crt"
+	}
+	keyFile = strings.TrimSpace(os.Getenv("TDS_TLS_KEY_FILE"))
+	if keyFile == "" {
+		keyFile = "certs/client.key"
+	}
+	caFile = strings.TrimSpace(os.Getenv("TDS_TLS_CA_FILE"))
+	if caFile == "" {
+		caFile = "certs/ca.crt"
+	}
+	return certFile, keyFile, caFile
 }
 
 // Stats returns a simple snapshot of proxy counters.
@@ -304,6 +324,9 @@ func handleCentralizedRequest(req proxyRequest, serverAddr, backendProto, source
 		var err error
 		if backendProto == "tcp" {
 			err = RegisterTCPWithCapacity(serverAddr, req.Task, req.Address, req.Capacity)
+		} else if backendProto == "tls" {
+			certFile, keyFile, caFile := tlsClientFilesFromEnv()
+			err = RegisterTLS(serverAddr, req.Task, req.Address, certFile, keyFile, caFile)
 		} else {
 			err = RegisterUDPWithCapacity(serverAddr, req.Task, req.Address, req.Capacity)
 		}
@@ -325,6 +348,9 @@ func handleCentralizedRequest(req proxyRequest, serverAddr, backendProto, source
 		)
 		if backendProto == "tcp" {
 			addr, err = QueryTCP(serverAddr, req.Task)
+		} else if backendProto == "tls" {
+			certFile, keyFile, caFile := tlsClientFilesFromEnv()
+			addr, err = QueryTLS(serverAddr, req.Task, certFile, keyFile, caFile)
 		} else {
 			addr, err = QueryUDP(serverAddr, req.Task)
 		}

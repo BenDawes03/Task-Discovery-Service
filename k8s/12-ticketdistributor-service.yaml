@@ -1,17 +1,22 @@
+# ticketdistributor-1 and ticketdistributor-2 are deployed as separate named
+# instances so the TDS firewall can block specific source→dest pairs.
+# Policy: station-1 is blocked from querying ticketdistributor-1 (see 14-firewall-rules.yaml).
+
+# ---- ticketdistributor-1 ----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ticketdistributor
+  name: ticketdistributor-1
   namespace: tds-simulation
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: ticketdistributor
+      app: ticketdistributor-1
   template:
     metadata:
       labels:
-        app: ticketdistributor
+        app: ticketdistributor-1
     spec:
       containers:
       - name: ticketdistributor
@@ -21,7 +26,7 @@ spec:
         - "-task"
         - "sim.ticketdistributor"
         - "-proxy"
-        - "client-proxy:5100"
+        - "ticketdistributor-1-proxy:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -39,18 +44,77 @@ spec:
       - name: tickets-storage
         emptyDir: {}
       initContainers:
-      - name: wait-for-client-proxy
+      - name: wait-for-proxy
         image: busybox:1.28
-        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+        command: ['sh', '-c', 'until nslookup ticketdistributor-1-proxy; do echo waiting for ticketdistributor-1-proxy; sleep 1; done']
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ticketdistributor
+  name: ticketdistributor-1
   namespace: tds-simulation
 spec:
   selector:
-    app: ticketdistributor
+    app: ticketdistributor-1
+  ports:
+  - port: 9110
+    targetPort: 9110
+  type: NodePort
+---
+# ---- ticketdistributor-2 ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketdistributor-2
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticketdistributor-2
+  template:
+    metadata:
+      labels:
+        app: ticketdistributor-2
+    spec:
+      containers:
+      - name: ticketdistributor
+        image: sim-ticketdistributor:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-task"
+        - "sim.ticketdistributor"
+        - "-proxy"
+        - "ticketdistributor-2-proxy:5100"
+        - "-proxy-proto"
+        - "tcp"
+        ports:
+        - containerPort: 9110
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        volumeMounts:
+        - name: tickets-storage
+          mountPath: /data/tickets
+      volumes:
+      - name: tickets-storage
+        emptyDir: {}
+      initContainers:
+      - name: wait-for-proxy
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup ticketdistributor-2-proxy; do echo waiting for ticketdistributor-2-proxy; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ticketdistributor-2
+  namespace: tds-simulation
+spec:
+  selector:
+    app: ticketdistributor-2
   ports:
   - port: 9110
     targetPort: 9110

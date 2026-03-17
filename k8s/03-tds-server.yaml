@@ -18,13 +18,35 @@ spec:
         image: tds-server:latest
         imagePullPolicy: IfNotPresent
         args:
-        - "--tcp"
+        - "--tls"
+        - "--tls-cert"
+        - "/run/tds-tls/server.crt"
+        - "--tls-key"
+        - "/run/tds-tls/server.key"
+        - "--tls-client-ca"
+        - "/run/tds-tls/ca.crt"
         - "--no-ui"
         - "--no-freshness"
+        - "--firewall-rules"
+        - "/etc/tds/firewall/rules.txt"
         ports:
         - containerPort: 5000
           name: http
           protocol: TCP
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+        - name: firewall-rules
+          mountPath: /etc/tds/firewall
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      - name: firewall-rules
+        configMap:
+          name: tds-firewall-rules
 ---
 apiVersion: v1
 kind: Service

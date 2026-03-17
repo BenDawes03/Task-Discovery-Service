@@ -21,7 +21,6 @@ type MemoryRegistry struct {
 func NewMemoryRegistry() *MemoryRegistry {
 	return &MemoryRegistry{
 		services: make(map[string][]ServiceEntry),
-		firewall: nil, // No firewall by default
 	}
 }
 
@@ -57,7 +56,6 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 	newEntry := ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: now,
-		QueryCount:    0,
 		Capacity:      1,
 	}
 	registry.services[task] = append(entries, newEntry)
@@ -91,7 +89,6 @@ func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity
 	newEntry := ServiceEntry{
 		Address:       addr,
 		LastHeartbeat: now,
-		QueryCount:    0,
 		Capacity:      capacity,
 	}
 	registry.services[task] = append(entries, newEntry)
@@ -126,7 +123,7 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	// Filter allowed addresses (if firewall is configured and we know requestor IP).
 	allowedEntries := entryCopy
 	if registry.firewall != nil && requestorIP != nil {
-		allowedEntries = allowedEntries[:0]
+		allowedEntries = make([]ServiceEntry, 0, len(entryCopy))
 		for _, entry := range entryCopy {
 			addr := entry.Address
 			hostPart, _, err := net.SplitHostPort(addr)
@@ -224,11 +221,10 @@ func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {
 }
 
 func (registry *MemoryRegistry) ListServices() map[string][]ServiceEntry {
-	registry.mutex.RLock() // Read lock allows concurrent access from multiple readers (e.g., TUI)
+	registry.mutex.RLock()
 	defer registry.mutex.RUnlock()
 
-	// CRITICAL: Must return a deep copy to prevent callers from mutating internal slices.
-	// Also sync atomic query counts into the returned ServiceEntry structs.
+	// Return a deep copy with current atomic query counts synced into the structs.
 	copyMap := make(map[string][]ServiceEntry)
 	for task, entries := range registry.services {
 		sliceCopy := make([]ServiceEntry, len(entries))

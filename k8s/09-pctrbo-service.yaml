@@ -19,7 +19,7 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - "-proxy"
-        - "client-proxy:5100"
+        - "pctrbo-proxy:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -33,9 +33,9 @@ spec:
               name: tds-config
               key: TDS_SERVER_ADDR
       initContainers:
-      - name: wait-for-client-proxy
+      - name: wait-for-pctrbo-proxy
         image: busybox:1.28
-        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+        command: ['sh', '-c', 'until nslookup pctrbo-proxy; do echo waiting for pctrbo-proxy; sleep 1; done']
       - name: wait-for-pctrbo-db
         image: busybox:1.28
         command: ['sh', '-c', 'until nslookup pctrbo-db; do echo waiting for pctrbo-db; sleep 1; done']

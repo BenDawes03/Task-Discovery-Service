@@ -22,6 +22,18 @@ Deploy everything:
 .\deploy.ps1
 ```
 
+The deploy script now syncs a Kubernetes secret named `tds-tls-certs` from local certificate files in `certs/`:
+- `certs/server.crt`
+- `certs/server.key`
+- `certs/client.crt`
+- `certs/client.key`
+- `certs/ca.crt`
+
+If these files are missing, generate them first:
+```powershell
+.\scripts\generate_certs.ps1
+```
+
 Or deploy specific services:
 ```powershell
 # Infrastructure only (tds-server, client-proxy, databases)

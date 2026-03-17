@@ -115,6 +115,27 @@ curl -X POST http://localhost:9200/tap -d "OY:1001"
 curl -X POST http://localhost:9200/tap -H "Content-Type: application/json" -d '{"tap":"PCTR:2001"}'
 ```
 
+Or use the helper scripts to discover configured gates from `Simulation/orchestrate.env`, choose one interactively, and submit the tap for you:
+
+```powershell
+./Simulation/tap_gate.ps1
+
+# one-shot examples
+./Simulation/tap_gate.ps1 -GateId gate-2 -CardType OY -CardId 1001 -Once
+./Simulation/tap_gate.ps1 -GateUrl http://192.168.100.14:9201 -Tap PCTR:2001 -Once
+```
+
+```bash
+./Simulation/tap_gate.sh
+./Simulation/tap_gate.sh --gate-id gate-2 --card-type OY --card-id 1001 --once
+```
+
+Both scripts:
+- read `GATES` from `Simulation/orchestrate.env`
+- derive each gate listener URL from `<host>,<gate-id>,<station-id>,<listen>`
+- probe `/health` by default so you can see which gates are reachable
+- post JSON to `/tap` so you do not need to type curl payloads manually
+
 (CTRL+C to stop)
 
 ## Per-component start/stop scripts

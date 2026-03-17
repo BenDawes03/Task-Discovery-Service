@@ -1,17 +1,23 @@
+# Per-component client proxies
+# Each simulation component gets its own dedicated proxy pod so the TDS server
+# can identify the source of each query by pod IP, enabling per-component
+# firewall rule enforcement.
+
+# ---- cs-proxy ----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: client-proxy
+  name: cs-proxy
   namespace: tds-simulation
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: client-proxy
+      app: cs-proxy
   template:
     metadata:
       labels:
-        app: client-proxy
+        app: cs-proxy
     spec:
       containers:
       - name: client-proxy
@@ -35,6 +41,22 @@ spec:
             configMapKeyRef:
               name: tds-config
               key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
       initContainers:
       - name: wait-for-tds-server
         image: busybox:1.28
@@ -43,11 +65,455 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: client-proxy
+  name: cs-proxy
   namespace: tds-simulation
 spec:
   selector:
-    app: client-proxy
+    app: cs-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- pctrbo-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pctrbo-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pctrbo-proxy
+  template:
+    metadata:
+      labels:
+        app: pctrbo-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pctrbo-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: pctrbo-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- pa-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pa-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pa-proxy
+  template:
+    metadata:
+      labels:
+        app: pa-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pa-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: pa-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- station-1-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: station-1-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: station-1-proxy
+  template:
+    metadata:
+      labels:
+        app: station-1-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: station-1-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: station-1-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- ticketdistributor-1-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketdistributor-1-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticketdistributor-1-proxy
+  template:
+    metadata:
+      labels:
+        app: ticketdistributor-1-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ticketdistributor-1-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: ticketdistributor-1-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- ticketdistributor-2-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketdistributor-2-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticketdistributor-2-proxy
+  template:
+    metadata:
+      labels:
+        app: ticketdistributor-2-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ticketdistributor-2-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: ticketdistributor-2-proxy
+  ports:
+  - port: 5100
+    targetPort: 5100
+    name: proxy
+    protocol: TCP
+  type: ClusterIP
+---
+# ---- gate-proxy ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gate-proxy
+  namespace: tds-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gate-proxy
+  template:
+    metadata:
+      labels:
+        app: gate-proxy
+    spec:
+      containers:
+      - name: client-proxy
+        image: tds-client-proxy:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-background"
+        - "-tcp"
+        ports:
+        - containerPort: 5100
+          name: proxy
+          protocol: TCP
+        env:
+        - name: TDS_SERVER_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_SERVER_ADDR
+        - name: TDS_PROXY_LISTEN
+          valueFrom:
+            configMapKeyRef:
+              name: tds-config
+              key: TDS_PROXY_LISTEN
+        - name: TDS_SERVER_PROTO
+          value: "tls"
+        - name: TDS_TLS_CERT_FILE
+          value: "/run/tds-tls/client.crt"
+        - name: TDS_TLS_KEY_FILE
+          value: "/run/tds-tls/client.key"
+        - name: TDS_TLS_CA_FILE
+          value: "/run/tds-tls/ca.crt"
+        volumeMounts:
+        - name: tds-tls
+          mountPath: /run/tds-tls
+          readOnly: true
+      volumes:
+      - name: tds-tls
+        secret:
+          secretName: tds-tls-certs
+      initContainers:
+      - name: wait-for-tds-server
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nslookup tds-server; do echo waiting for tds-server; sleep 1; done']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gate-proxy
+  namespace: tds-simulation
+spec:
+  selector:
+    app: gate-proxy
   ports:
   - port: 5100
     targetPort: 5100

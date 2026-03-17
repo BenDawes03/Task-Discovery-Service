@@ -29,7 +29,7 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - "-proxy"
-        - "client-proxy:5100"
+        - "pa-proxy:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -53,9 +53,9 @@ spec:
         configMap:
           name: pa-keys
       initContainers:
-      - name: wait-for-client-proxy
+      - name: wait-for-pa-proxy
         image: busybox:1.28
-        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+        command: ['sh', '-c', 'until nslookup pa-proxy; do echo waiting for pa-proxy; sleep 1; done']
       - name: wait-for-pa-db
         image: busybox:1.28
         command: ['sh', '-c', 'until nslookup pa-db; do echo waiting for pa-db; sleep 1; done']

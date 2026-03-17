@@ -122,23 +122,13 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 			return err
 		}
 
-		rankedTasks := make([]string, 0, len(topTasks))
-		seen := make(map[string]struct{}, len(topTasks))
 		for _, task := range topTasks {
-			if _, ok := seen[task]; ok {
-				continue
-			}
-			seen[task] = struct{}{}
-			rankedTasks = append(rankedTasks, task)
-		}
-
-		for _, task := range rankedTasks {
 			for _, e := range servicesByTask[task] {
 				sr.populateCacheEntry(newCache, task, e.Address, e.QueryCount, e.LastHeartbeat, e.Capacity)
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d tasks (max=%d)\n", len(rankedTasks), sr.cacheMaxSize)
+		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d tasks (max=%d)\n", len(topTasks), sr.cacheMaxSize)
 	}
 
 	// Preserve weighted round-robin cursors for tasks that exist in the new cache.
@@ -308,7 +298,6 @@ func (sr *StoreBackedRegistry) GetServiceForRequestor(task string, requestorIP n
 		sr.populateCacheEntry(cache, task, entry.Address, entry.QueryCount, entry.LastHeartbeat, entry.Capacity)
 	}
 	sr.cacheMissCounts.Delete(task)
-	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', hydrated %d entries from DB\n", task, len(entries))
 
 	return cache.GetServiceForRequestor(task, requestorIP)
 }
@@ -410,10 +399,10 @@ func (sr *StoreBackedRegistry) ListServices() map[string][]ServiceEntry {
 
 	if shouldSync {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if err := sr.WarmCacheFromDB(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "[CACHE] WarmCacheFromDB failed: %v\n", err)
 		}
-		cancel()
 	}
 
 	// Return from cache (fast path)

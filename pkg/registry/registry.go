@@ -26,9 +26,9 @@ type Stats struct {
 type Registry interface {
 	Register(taskName, address string)
 	// GetService returns a service address for the given task.
-	// If requestorIP is provided, the result is filtered based on firewall rules.
 	GetService(taskName string) (string, error)
-	// GetServiceForRequestor returns a service address that the requestor is allowed to reach.
+	// GetServiceForRequestor returns a service address that the requestor is allowed to reach,
+	// filtered by firewall rules when requestorIP is non-nil.
 	GetServiceForRequestor(taskName string, requestorIP net.IP) (string, error)
 	Cleanup(timeout time.Duration) int
 	ListServices() map[string][]ServiceEntry

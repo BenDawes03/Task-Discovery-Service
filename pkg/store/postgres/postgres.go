@@ -169,7 +169,7 @@ func (ps *PostgresStore) GetService(ctx context.Context, task string) (*store.Se
 		return nil, err
 	}
 
-	// Fetch updated entry to return correct query count
+	// Return the entry with updated query count.
 	selected.QueryCount++
 	return selected, nil
 }
@@ -454,7 +454,6 @@ func (ps *PostgresStore) GetServiceHistory(ctx context.Context, task string) ([]
 			return nil, err
 		}
 		e.Capacity = normalizedCapacity(e.Capacity)
-		// You could add a field to ServiceEntry to track active status if needed for display
 		entries = append(entries, e)
 	}
 

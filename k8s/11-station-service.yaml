@@ -21,7 +21,7 @@ spec:
         - "-station-id"
         - "1"
         - "-proxy"
-        - "client-proxy:5100"
+        - "station-1-proxy:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -33,9 +33,9 @@ spec:
               name: tds-config
               key: TDS_SERVER_ADDR
       initContainers:
-      - name: wait-for-client-proxy
+      - name: wait-for-station-1-proxy
         image: busybox:1.28
-        command: ['sh', '-c', 'until nslookup client-proxy; do echo waiting for client-proxy; sleep 1; done']
+        command: ['sh', '-c', 'until nslookup station-1-proxy; do echo waiting for station-1-proxy; sleep 1; done']
 ---
 apiVersion: v1
 kind: Service
