@@ -17,12 +17,17 @@ import (
 type fakeStore struct {
 	mu                sync.Mutex
 	registerCalls     []fakeRegisterCall
+	incrementCalls    []fakeIncrementCall
 	registerErrByTask map[string]error
+	incrementErrByKey map[string]error
 	getEntries        map[string]*store.ServiceEntry
 	getErrByTask      map[string]error
 	listServices      map[string][]store.ServiceEntry
 	listErr           error
 	listCalls         int
+	listTaskCalls     int
+	topTasksCalls     int
+	listSubsetCalls   int
 	cleanupRemoved    int64
 	cleanupErr        error
 }
@@ -32,11 +37,26 @@ type fakeRegisterCall struct {
 	entry store.ServiceEntry
 }
 
+type fakeIncrementCall struct {
+	task    string
+	address string
+}
+
 func (f *fakeStore) Register(_ context.Context, task string, entry *store.ServiceEntry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registerCalls = append(f.registerCalls, fakeRegisterCall{task: task, entry: *entry})
 	if err := f.registerErrByTask[task]; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *fakeStore) IncrementQueryCount(_ context.Context, task, address string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.incrementCalls = append(f.incrementCalls, fakeIncrementCall{task: task, address: address})
+	if err := f.incrementErrByKey[task+":"+address]; err != nil {
 		return err
 	}
 	return nil
@@ -72,6 +92,82 @@ func (f *fakeStore) ListServices(_ context.Context) (map[string][]store.ServiceE
 	return copyMap, nil
 }
 
+func (f *fakeStore) ListTaskServices(_ context.Context, task string) ([]store.ServiceEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listTaskCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	entries, ok := f.listServices[task]
+	if !ok {
+		return []store.ServiceEntry{}, nil
+	}
+	sliceCopy := make([]store.ServiceEntry, len(entries))
+	copy(sliceCopy, entries)
+	return sliceCopy, nil
+}
+
+func (f *fakeStore) ListTopTasksByQueryCount(_ context.Context, limit int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topTasksCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+
+	type taskCount struct {
+		task  string
+		count int64
+	}
+	counts := make([]taskCount, 0, len(f.listServices))
+	for task, entries := range f.listServices {
+		total := int64(0)
+		for _, entry := range entries {
+			total += entry.QueryCount
+		}
+		counts = append(counts, taskCount{task: task, count: total})
+	}
+
+	for i := 0; i < len(counts); i++ {
+		for j := i + 1; j < len(counts); j++ {
+			if counts[j].count > counts[i].count || (counts[j].count == counts[i].count && counts[j].task < counts[i].task) {
+				counts[i], counts[j] = counts[j], counts[i]
+			}
+		}
+	}
+
+	if limit > len(counts) {
+		limit = len(counts)
+	}
+	tasks := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		tasks = append(tasks, counts[i].task)
+	}
+	return tasks, nil
+}
+
+func (f *fakeStore) ListServicesForTasks(_ context.Context, tasks []string) (map[string][]store.ServiceEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listSubsetCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+
+	result := make(map[string][]store.ServiceEntry, len(tasks))
+	for _, task := range tasks {
+		entries, ok := f.listServices[task]
+		if !ok {
+			continue
+		}
+		sliceCopy := make([]store.ServiceEntry, len(entries))
+		copy(sliceCopy, entries)
+		result[task] = sliceCopy
+	}
+	return result, nil
+}
+
 func (f *fakeStore) Cleanup(_ context.Context, _ time.Duration) (int64, error) {
 	return f.cleanupRemoved, f.cleanupErr
 }
@@ -87,11 +183,12 @@ func (f *fakeStore) Close() error {
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		registerErrByTask: make(map[string]error),
+		incrementErrByKey: make(map[string]error),
 		getEntries:        make(map[string]*store.ServiceEntry),
 		getErrByTask:      make(map[string]error),
 		listServices:      make(map[string][]store.ServiceEntry),
 	}
-	}
+}
 
 func testFirewall(t *testing.T, rules string) *firewall.Firewall {
 	t.Helper()
@@ -135,7 +232,7 @@ func TestStoreBackedSyncQueryCountsToDBOnlyWritesQueriedEntries(t *testing.T) {
 func TestWarmCacheFromDBRespectsLFULimitAndPropagatesFirewall(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.listServices = map[string][]store.ServiceEntry{
-		"hot": {{Address: "10.0.0.10:8080", QueryCount: 9, Capacity: 3, LastHeartbeat: time.Now()}},
+		"hot":  {{Address: "10.0.0.10:8080", QueryCount: 9, Capacity: 3, LastHeartbeat: time.Now()}},
 		"warm": {{Address: "10.0.0.11:8080", QueryCount: 4, Capacity: 2, LastHeartbeat: time.Now()}},
 		"cold": {{Address: "10.0.0.12:8080", QueryCount: 1, Capacity: 1, LastHeartbeat: time.Now()}},
 	}
@@ -160,6 +257,15 @@ func TestWarmCacheFromDBRespectsLFULimitAndPropagatesFirewall(t *testing.T) {
 	}
 	if _, ok := services["cold"]; ok {
 		t.Fatalf("did not expect cold task to be cached")
+	}
+	if storeStub.topTasksCalls != 1 {
+		t.Fatalf("expected one top-task query during bounded warm-up, got %d", storeStub.topTasksCalls)
+	}
+	if storeStub.listSubsetCalls != 1 {
+		t.Fatalf("expected one subset task fetch during bounded warm-up, got %d", storeStub.listSubsetCalls)
+	}
+	if storeStub.listCalls != 0 {
+		t.Fatalf("did not expect full ListServices scan during bounded warm-up, got %d", storeStub.listCalls)
 	}
 
 	addr, err := sr.GetServiceForRequestor("hot", net.ParseIP("192.168.1.10"))
@@ -343,8 +449,8 @@ func TestStoreBackedCacheMissHydratesTaskAndUsesUnifiedWeightedCursor(t *testing
 		}
 	}
 
-	if storeStub.listCalls != 1 {
-		t.Fatalf("expected one store list call for first cache miss only, got %d", storeStub.listCalls)
+	if storeStub.listTaskCalls != 1 {
+		t.Fatalf("expected one task-scoped store list call for first cache miss only, got %d", storeStub.listTaskCalls)
 	}
 }
 
@@ -503,5 +609,69 @@ func TestStoreBackedWarmCachePreservesWeightedCursorState(t *testing.T) {
 	}
 	if addrAfterWarm != "10.0.1.2:8080" {
 		t.Fatalf("expected weighted sequence to continue with 10.0.1.2:8080 after warm, got %q", addrAfterWarm)
+	}
+}
+
+func TestStoreBackedAdmissionThresholdDefersCacheHydration(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"deferred": {{Address: "10.0.2.1:8080", Capacity: 1, LastHeartbeat: time.Now()}},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	sr.SetCacheAdmissionMissThreshold(3)
+
+	for i := 0; i < 2; i++ {
+		addr, err := sr.GetService("deferred")
+		if err != nil {
+			t.Fatalf("unexpected GetService error on deferred miss %d: %v", i, err)
+		}
+		if addr != "10.0.2.1:8080" {
+			t.Fatalf("unexpected address on deferred miss %d: %q", i, addr)
+		}
+	}
+
+	if len(storeStub.incrementCalls) != 2 {
+		t.Fatalf("expected DB increment for each non-admitted miss, got %d", len(storeStub.incrementCalls))
+	}
+	if _, ok := sr.currentMemCache().ListServices()["deferred"]; ok {
+		t.Fatalf("task should not be admitted before threshold is reached")
+	}
+
+	addr, err := sr.GetService("deferred")
+	if err != nil {
+		t.Fatalf("unexpected GetService error on admission miss: %v", err)
+	}
+	if addr != "10.0.2.1:8080" {
+		t.Fatalf("unexpected address on admission miss: %q", addr)
+	}
+
+	if len(storeStub.incrementCalls) != 2 {
+		t.Fatalf("expected no direct DB increment once admitted to cache, got %d", len(storeStub.incrementCalls))
+	}
+	if _, ok := sr.currentMemCache().ListServices()["deferred"]; !ok {
+		t.Fatalf("task should be admitted once threshold is reached")
+	}
+}
+
+func TestStoreBackedNonAdmittedMissIncrementErrorPropagates(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"deferred": {{Address: "10.0.2.9:8080", Capacity: 1, LastHeartbeat: time.Now()}},
+	}
+	storeStub.incrementErrByKey["deferred:10.0.2.9:8080"] = errors.New("increment failed")
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	sr.SetCacheAdmissionMissThreshold(5)
+
+	_, err := sr.GetService("deferred")
+	if err == nil || err.Error() != "increment failed" {
+		t.Fatalf("expected increment failure to propagate, got %v", err)
+	}
+	if len(storeStub.incrementCalls) != 1 {
+		t.Fatalf("expected one increment attempt, got %d", len(storeStub.incrementCalls))
+	}
+	if _, ok := sr.currentMemCache().ListServices()["deferred"]; ok {
+		t.Fatalf("task should remain out of cache when admission threshold is not reached")
 	}
 }

@@ -254,9 +254,9 @@ Several enhancements would improve TDS capabilities:
 \textbf{REST API:} Add HTTP REST interface alongside binary protocol for broader language support and web-based tooling.
 
 \subsection{Conclusion}
-In summation, this project has achieved the goals outline in project objectives. It provides a versatile achitecture that provides a trade
+In summation, this project has achieved the goals outline in project objectives. It provides a versatile achitecture that provides a tradeoff between correctness and decentralisation. The client proxy is a stable interface to all services running on a device enabling complete transparency to the task discovery architecture in place. With well established query, registry and reponse formats it can be easily integrated to any service. the Client package provides functions that can replace any previously existing hard coded endpoint with a call. 
 
-
+Centralised mode offers the benefits of a dedicated device for task discovery. In instances with generous amounts of memory, it can be run entirely from memory without disadvantage as all data must be kept fresh through heartbeats so application restarts cause minimal disruption. In conjunction with a database the server retains functionality with greater heartbeat timeouts and broad task space with a high performance cache that keeps highly queried data for fast access. The performance of these operating modes have been tested and the benefits are noticeable. The firewall functionality ensures that responses to queries are usable by a service according to a set of provided routing rules. As discussed in the implementation section, this project does not aim to replace network security management so the routing is a best effort mechanism from a set of imported rules. A further key note is that, in hybrid mode, since both the firewall rules and tasks are stored in databases, multiple instances of this server can be present on a network to reduce load on a single server but it introduces some inconsistency with cached tasks data. Since all register operations are sent directly to the database, the impact is minimal on the correct listing of tasks.
 
 \newpage
 \begin{thebibliography}{99}

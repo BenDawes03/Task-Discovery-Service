@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,6 +82,29 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 
 	_, err := ps.db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// IncrementQueryCount increments query_count for a specific active service entry.
+func (ps *PostgresStore) IncrementQueryCount(ctx context.Context, task, address string) error {
+	query := `
+		UPDATE services
+		SET query_count = query_count + 1, updated_at = NOW()
+		WHERE task = $1 AND address = $2 AND is_active = TRUE
+	`
+	result, err := ps.db.ExecContext(ctx, query, task, address)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 // GetService retrieves a single service by task using capacity-weighted round-robin
@@ -165,6 +189,119 @@ func (ps *PostgresStore) ListServices(ctx context.Context) (map[string][]store.S
 	defer rows.Close()
 
 	result := make(map[string][]store.ServiceEntry)
+	for rows.Next() {
+		var task string
+		var e store.ServiceEntry
+		if err := rows.Scan(&task, &e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity); err != nil {
+			return nil, err
+		}
+		e.Capacity = normalizedCapacity(e.Capacity)
+		result[task] = append(result[task], e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ListTaskServices returns active services for a specific task.
+func (ps *PostgresStore) ListTaskServices(ctx context.Context, task string) ([]store.ServiceEntry, error) {
+	query := `
+		SELECT address, last_heartbeat, query_count, capacity
+		FROM services
+		WHERE task = $1 AND is_active = TRUE
+		ORDER BY address ASC
+	`
+	rows, err := ps.db.QueryContext(ctx, query, task)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]store.ServiceEntry, 0)
+	for rows.Next() {
+		var e store.ServiceEntry
+		if err := rows.Scan(&e.Address, &e.LastHeartbeat, &e.QueryCount, &e.Capacity); err != nil {
+			return nil, err
+		}
+		e.Capacity = normalizedCapacity(e.Capacity)
+		entries = append(entries, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+// ListTopTasksByQueryCount returns up to limit tasks ordered by descending
+// combined query_count across active services.
+func (ps *PostgresStore) ListTopTasksByQueryCount(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+
+	query := `
+		SELECT task
+		FROM services
+		WHERE is_active = TRUE
+		GROUP BY task
+		ORDER BY SUM(query_count) DESC, task ASC
+		LIMIT $1
+	`
+	rows, err := ps.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]string, 0, limit)
+	for rows.Next() {
+		var task string
+		if err := rows.Scan(&task); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+// ListServicesForTasks returns active services for the provided task names.
+func (ps *PostgresStore) ListServicesForTasks(ctx context.Context, tasks []string) (map[string][]store.ServiceEntry, error) {
+	result := make(map[string][]store.ServiceEntry)
+	if len(tasks) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, 0, len(tasks))
+	args := make([]any, 0, len(tasks))
+	for i, task := range tasks {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, task)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT task, address, last_heartbeat, query_count, capacity
+		FROM services
+		WHERE is_active = TRUE
+		  AND task IN (%s)
+		ORDER BY task, address ASC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := ps.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var task string
 		var e store.ServiceEntry

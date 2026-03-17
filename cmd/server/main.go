@@ -26,9 +26,10 @@ import (
 // Config
 var (
 	// Server configuration
-	listenPort   int
-	cacheMaxSize int
-	logDir       string
+	listenPort            int
+	cacheMaxSize          int
+	cacheAdmitAfterMisses int
+	logDir                string
 
 	// Configurable timeouts
 	heartbeatTimeout time.Duration
@@ -394,6 +395,7 @@ func askTerminalOptions() (string, bool, bool) {
 	tlsKeyFlagSet := flagProvided("--tls-key")
 	tlsClientCAFlagSet := flagProvided("--tls-client-ca")
 	cacheMaxSizeFlagSet := flagProvided("--cache-max-size")
+	cacheAdmitAfterMissesFlagSet := flagProvided("--cache-admit-after-misses")
 
 	// Check if firewall was set via flags
 	firewallFlagSet := false
@@ -595,6 +597,17 @@ func askTerminalOptions() (string, bool, bool) {
 						fmt.Sscanf(cacheInput, "%d", &cacheMaxSize)
 					}
 				}
+
+				if !cacheAdmitAfterMissesFlagSet {
+					fmt.Fprint(os.Stderr, "Admit task to cache after T misses [1]: ")
+					admissionInput, _ := reader.ReadString('\n')
+					admissionInput = strings.TrimSpace(admissionInput)
+					if admissionInput != "" {
+						if _, err := fmt.Sscanf(admissionInput, "%d", &cacheAdmitAfterMisses); err != nil || cacheAdmitAfterMisses <= 0 {
+							fmt.Fprintln(os.Stderr, "Invalid admission threshold; keeping existing value")
+						}
+					}
+				}
 			}
 		} else {
 			fmt.Fprintln(os.Stderr, "Using in-memory registry (no persistence)")
@@ -782,6 +795,10 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 		cancel()
 
 		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
+		if cacheAdmitAfterMisses <= 0 {
+			cacheAdmitAfterMisses = 1
+		}
+		storeReg.SetCacheAdmissionMissThreshold(cacheAdmitAfterMisses)
 		if fw != nil {
 			storeReg.SetFirewall(fw)
 		}
@@ -809,9 +826,9 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 		}
 		cancel()
 
-		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", cacheMaxSize))
+		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d, admit-after-misses=%d)", cacheMaxSize, cacheAdmitAfterMisses))
 		if !runTUI {
-			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", cacheMaxSize)
+			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d, admit-after-misses=%d)\n", cacheMaxSize, cacheAdmitAfterMisses)
 		}
 		return storeReg
 	}
@@ -1068,6 +1085,7 @@ func main() {
 	// Database configuration flags
 	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgresql://user:password@localhost:5432/dbname)")
 	flag.IntVar(&cacheMaxSize, "cache-max-size", 100, "Maximum number of tasks to keep in cache (0 = unlimited)")
+	flag.IntVar(&cacheAdmitAfterMisses, "cache-admit-after-misses", 1, "Admit a task into cache after this many misses (min 1)")
 
 	// Logging configuration flags
 	flag.StringVar(&logDir, "log-dir", "logs", "Directory for log files")

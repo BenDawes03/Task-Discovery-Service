@@ -23,6 +23,9 @@ type StoreBackedRegistry struct {
 	lastCacheSync   time.Time
 	cacheSyncPeriod time.Duration // How often to sync cache from DB
 	cacheMaxSize    int           // Maximum number of task entries to cache (0 = unlimited)
+	cacheMissCounts sync.Map      // map[string]*atomic.Int64 tracking consecutive misses per task
+	fallbackCursor  sync.Map      // map[string]*atomic.Int64 weighted cursor for non-admitted misses
+	admitAfterMiss  atomic.Int64  // Number of misses before admitting a task into cache
 }
 
 func (sr *StoreBackedRegistry) currentMemCache() *MemoryRegistry {
@@ -34,13 +37,24 @@ func (sr *StoreBackedRegistry) currentMemCache() *MemoryRegistry {
 // NewStoreBackedRegistry creates a new Registry backed by a Store with in-memory LFU caching.
 // cacheMaxSize: maximum number of tasks to keep in cache (0 = unlimited, loads all from DB)
 func NewStoreBackedRegistry(s store.Store, cacheMaxSize int) *StoreBackedRegistry {
-	return &StoreBackedRegistry{
+	sr := &StoreBackedRegistry{
 		store:           s,
 		memCache:        NewMemoryRegistry(),
 		cacheSyncPeriod: 30 * time.Second,
 		lastCacheSync:   time.Now(),
 		cacheMaxSize:    cacheMaxSize,
 	}
+	sr.admitAfterMiss.Store(1)
+	return sr
+}
+
+// SetCacheAdmissionMissThreshold sets misses required before a task is admitted to cache.
+// Values <= 1 preserve current behavior (admit on first miss).
+func (sr *StoreBackedRegistry) SetCacheAdmissionMissThreshold(threshold int) {
+	if threshold <= 1 {
+		threshold = 1
+	}
+	sr.admitAfterMiss.Store(int64(threshold))
 }
 
 // syncQueryCountsToDB writes query counts from cache to database before cache warming.
@@ -77,11 +91,6 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "[STORE] Warning: failed to sync query counts: %v\n", err)
 	}
 
-	services, err := sr.store.ListServices(ctx)
-	if err != nil {
-		return err
-	}
-
 	newCache := NewMemoryRegistry()
 	oldCache := sr.currentMemCache()
 	oldCache.mutex.RLock()
@@ -91,6 +100,11 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 
 	// If no limit, load everything (backward compatible)
 	if sr.cacheMaxSize <= 0 {
+		services, err := sr.store.ListServices(ctx)
+		if err != nil {
+			return err
+		}
+
 		for task, entries := range services {
 			for _, e := range entries {
 				// Directly populate cache with query counts from DB
@@ -98,50 +112,33 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 			}
 		}
 	} else {
-		// LFU: Select top X tasks by total query count
-		type taskStats struct {
-			task       string
-			totalCount int64
-			entries    []store.ServiceEntry
+		topTasks, err := sr.store.ListTopTasksByQueryCount(ctx, sr.cacheMaxSize)
+		if err != nil {
+			return err
 		}
 
-		taskList := make([]taskStats, 0, len(services))
-		for task, entries := range services {
-			totalCount := int64(0)
-			for _, e := range entries {
-				totalCount += e.QueryCount
+		servicesByTask, err := sr.store.ListServicesForTasks(ctx, topTasks)
+		if err != nil {
+			return err
+		}
+
+		rankedTasks := make([]string, 0, len(topTasks))
+		seen := make(map[string]struct{}, len(topTasks))
+		for _, task := range topTasks {
+			if _, ok := seen[task]; ok {
+				continue
 			}
-			taskList = append(taskList, taskStats{
-				task:       task,
-				totalCount: totalCount,
-				entries:    entries,
-			})
+			seen[task] = struct{}{}
+			rankedTasks = append(rankedTasks, task)
 		}
 
-		// Sort by query count descending (most queried first)
-		for i := 0; i < len(taskList); i++ {
-			for j := i + 1; j < len(taskList); j++ {
-				if taskList[j].totalCount > taskList[i].totalCount {
-					taskList[i], taskList[j] = taskList[j], taskList[i]
-				}
+		for _, task := range rankedTasks {
+			for _, e := range servicesByTask[task] {
+				sr.populateCacheEntry(newCache, task, e.Address, e.QueryCount, e.LastHeartbeat, e.Capacity)
 			}
 		}
 
-		// Take top cacheMaxSize tasks
-		limit := sr.cacheMaxSize
-		if limit > len(taskList) {
-			limit = len(taskList)
-		}
-
-		for i := 0; i < limit; i++ {
-			ts := taskList[i]
-			for _, e := range ts.entries {
-				// Directly populate cache with query counts from DB
-				sr.populateCacheEntry(newCache, ts.task, e.Address, e.QueryCount, e.LastHeartbeat, e.Capacity)
-			}
-		}
-
-		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d/%d tasks (max=%d)\n", limit, len(taskList), sr.cacheMaxSize)
+		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d tasks (max=%d)\n", len(rankedTasks), sr.cacheMaxSize)
 	}
 
 	// Preserve weighted round-robin cursors for tasks that exist in the new cache.
@@ -282,27 +279,100 @@ func (sr *StoreBackedRegistry) GetServiceForRequestor(task string, requestorIP n
 		return addr, nil
 	}
 
-	// Cache miss - hydrate the full task set from the store, then select via cache.
+	// Cache miss - fetch this task from the store, then select/admit via cache policy.
 	// This keeps a single balancer authority (cache cursor) for both hits and misses.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	servicesByTask, err := sr.store.ListServices(ctx)
+	entries, err := sr.store.ListTaskServices(ctx, task)
 	if err != nil {
 		return "", err
 	}
 
-	entries, ok := servicesByTask[task]
-	if !ok || len(entries) == 0 {
+	if len(entries) == 0 {
 		return "", ErrNotFound
+	}
+
+	if !sr.shouldAdmitTaskOnMiss(task) {
+		selectedAddr, err := sr.selectFromStoreEntries(task, entries, requestorIP)
+		if err != nil {
+			return "", err
+		}
+		if err := sr.store.IncrementQueryCount(ctx, task, selectedAddr); err != nil {
+			return "", err
+		}
+		return selectedAddr, nil
 	}
 
 	for _, entry := range entries {
 		sr.populateCacheEntry(cache, task, entry.Address, entry.QueryCount, entry.LastHeartbeat, entry.Capacity)
 	}
+	sr.cacheMissCounts.Delete(task)
 	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', hydrated %d entries from DB\n", task, len(entries))
 
 	return cache.GetServiceForRequestor(task, requestorIP)
+}
+
+func (sr *StoreBackedRegistry) shouldAdmitTaskOnMiss(task string) bool {
+	threshold := sr.admitAfterMiss.Load()
+	if threshold <= 1 {
+		return true
+	}
+
+	counterVal, _ := sr.cacheMissCounts.LoadOrStore(task, &atomic.Int64{})
+	counter := counterVal.(*atomic.Int64)
+	missCount := counter.Add(1)
+	return missCount >= threshold
+}
+
+func (sr *StoreBackedRegistry) selectFromStoreEntries(task string, entries []store.ServiceEntry, requestorIP net.IP) (string, error) {
+	cache := sr.currentMemCache()
+	cache.mutex.RLock()
+	fw := cache.firewall
+	cache.mutex.RUnlock()
+
+	allowed := make([]ServiceEntry, 0, len(entries))
+	for _, entry := range entries {
+		candidate := ServiceEntry{
+			Address:  entry.Address,
+			Capacity: entry.Capacity,
+		}
+
+		if fw != nil && requestorIP != nil {
+			hostPart, _, err := net.SplitHostPort(entry.Address)
+			if err != nil {
+				hostPart = entry.Address
+			}
+			destIP := net.ParseIP(hostPart)
+			if destIP == nil || !fw.IsAllowed(requestorIP, destIP) {
+				continue
+			}
+		}
+
+		allowed = append(allowed, candidate)
+	}
+
+	if len(allowed) == 0 {
+		if fw != nil && requestorIP != nil {
+			return "", ErrNoAllowedService
+		}
+		return "", ErrNotFound
+	}
+
+	totalWeight := totalServiceWeight(allowed)
+	if totalWeight <= 0 {
+		return "", ErrNotFound
+	}
+
+	cursorVal, _ := sr.fallbackCursor.LoadOrStore(task, &atomic.Int64{})
+	cursor := cursorVal.(*atomic.Int64)
+	slot := int(cursor.Add(1)-1) % totalWeight
+	selectedAddr, ok := selectWeightedAddress(allowed, slot)
+	if !ok {
+		return "", ErrNotFound
+	}
+
+	return selectedAddr, nil
 }
 
 // SetFirewall configures the firewall rules for this registry.

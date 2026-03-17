@@ -322,6 +322,138 @@ func TestListServices_RowsErr(t *testing.T) {
 	}
 }
 
+func TestListTaskServices_Success(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"address", "last_heartbeat", "query_count", "capacity"}).
+		AddRow("10.0.0.1:9000", now, int64(2), 3).
+		AddRow("10.0.0.2:9000", now, int64(4), 0)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnRows(rows)
+
+	got, err := ps.ListTaskServices(context.Background(), "task-a")
+	if err != nil {
+		t.Fatalf("ListTaskServices error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(got))
+	}
+	if got[1].Capacity != 1 {
+		t.Fatalf("expected normalized capacity to 1 for non-positive values, got %d", got[1].Capacity)
+	}
+}
+
+func TestListTaskServices_QueryError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	expected := errors.New("query failed")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnError(expected)
+
+	_, err := ps.ListTaskServices(context.Background(), "task-a")
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestListTaskServices_ScanError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"address", "last_heartbeat", "query_count", "capacity"}).
+		AddRow("10.0.0.1:9000", "bad-time", int64(2), 1)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnRows(rows)
+
+	_, err := ps.ListTaskServices(context.Background(), "task-a")
+	if err == nil {
+		t.Fatal("expected scan error, got nil")
+	}
+}
+
+func TestListTopTasksByQueryCount_Success(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"task"}).
+		AddRow("task-hot").
+		AddRow("task-warm")
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task")).
+		WithArgs(2).
+		WillReturnRows(rows)
+
+	tasks, err := ps.ListTopTasksByQueryCount(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("ListTopTasksByQueryCount error: %v", err)
+	}
+	if len(tasks) != 2 || tasks[0] != "task-hot" || tasks[1] != "task-warm" {
+		t.Fatalf("unexpected top task ordering: %v", tasks)
+	}
+}
+
+func TestListTopTasksByQueryCount_QueryError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	expected := errors.New("top tasks query failed")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task")).
+		WithArgs(3).
+		WillReturnError(expected)
+
+	_, err := ps.ListTopTasksByQueryCount(context.Background(), 3)
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestListServicesForTasks_Success(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"task", "address", "last_heartbeat", "query_count", "capacity"}).
+		AddRow("task-a", "10.0.0.1:9000", now, int64(3), 2).
+		AddRow("task-b", "10.0.0.2:9000", now, int64(1), 0)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task, address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a", "task-b").
+		WillReturnRows(rows)
+
+	result, err := ps.ListServicesForTasks(context.Background(), []string{"task-a", "task-b"})
+	if err != nil {
+		t.Fatalf("ListServicesForTasks error: %v", err)
+	}
+	if len(result["task-a"]) != 1 || len(result["task-b"]) != 1 {
+		t.Fatalf("unexpected grouped result: %+v", result)
+	}
+	if result["task-b"][0].Capacity != 1 {
+		t.Fatalf("expected normalized capacity for non-positive values, got %d", result["task-b"][0].Capacity)
+	}
+}
+
+func TestListServicesForTasks_QueryError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	expected := errors.New("subset query failed")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task, address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnError(expected)
+
+	_, err := ps.ListServicesForTasks(context.Background(), []string{"task-a"})
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
 func TestCleanup_Success(t *testing.T) {
 	ps, mock, db := newMockStore(t)
 	defer db.Close()
