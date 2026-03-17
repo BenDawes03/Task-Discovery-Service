@@ -198,10 +198,8 @@ func TestPopulateCacheEntryUpdatesExistingEntry(t *testing.T) {
 
 func TestStoreBackedRegisterGetServiceAndCleanup(t *testing.T) {
 	storeStub := newFakeStore()
-	storeStub.getEntries["dbtask"] = &store.ServiceEntry{
-		Address:       "10.0.0.30:8080",
-		Capacity:      6,
-		LastHeartbeat: time.Now(),
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"dbtask": {{Address: "10.0.0.30:8080", Capacity: 6, LastHeartbeat: time.Now()}},
 	}
 	storeStub.cleanupRemoved = 2
 
@@ -229,7 +227,7 @@ func TestStoreBackedRegisterGetServiceAndCleanup(t *testing.T) {
 		t.Fatalf("unexpected cache-miss GetService error: %v", err)
 	}
 	if addr != "10.0.0.30:8080" {
-		t.Fatalf("expected DB address, got %q", addr)
+		t.Fatalf("expected DB-hydrated address, got %q", addr)
 	}
 
 	if _, err := sr.GetService("   "); err != ErrInvalidTaskName {
@@ -248,15 +246,9 @@ func TestStoreBackedRegisterGetServiceAndCleanup(t *testing.T) {
 
 func TestStoreBackedGetServiceForRequestorUsesDBFallbackAndFirewall(t *testing.T) {
 	storeStub := newFakeStore()
-	storeStub.getEntries["allowed"] = &store.ServiceEntry{
-		Address:       "10.0.0.40:8080",
-		Capacity:      2,
-		LastHeartbeat: time.Now(),
-	}
-	storeStub.getEntries["denied"] = &store.ServiceEntry{
-		Address:       "10.0.0.41:8080",
-		Capacity:      2,
-		LastHeartbeat: time.Now(),
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"allowed": {{Address: "10.0.0.40:8080", Capacity: 2, LastHeartbeat: time.Now()}},
+		"denied":  {{Address: "10.0.0.41:8080", Capacity: 2, LastHeartbeat: time.Now()}},
 	}
 
 	sr := NewStoreBackedRegistry(storeStub, 0)
@@ -267,7 +259,7 @@ func TestStoreBackedGetServiceForRequestorUsesDBFallbackAndFirewall(t *testing.T
 		t.Fatalf("unexpected allowed requestor error: %v", err)
 	}
 	if addr != "10.0.0.40:8080" {
-		t.Fatalf("expected allowed DB address, got %q", addr)
+		t.Fatalf("expected allowed DB-hydrated address, got %q", addr)
 	}
 
 	_, err = sr.GetServiceForRequestor("denied", net.ParseIP("192.168.1.11"))
@@ -315,12 +307,44 @@ func TestStoreBackedListServicesTriggersWarmCacheAndSurvivesWarmErrors(t *testin
 
 func TestStoreBackedGetServicePropagatesStoreErrors(t *testing.T) {
 	storeStub := newFakeStore()
-	storeStub.getErrByTask["missing"] = errors.New("lookup failed")
+	storeStub.listErr = errors.New("lookup failed")
 	sr := NewStoreBackedRegistry(storeStub, 0)
 
 	_, err := sr.GetService("missing")
 	if err == nil || err.Error() != "lookup failed" {
 		t.Fatalf("expected store error to propagate, got %v", err)
+	}
+}
+
+func TestStoreBackedCacheMissHydratesTaskAndUsesUnifiedWeightedCursor(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"weighted": {
+			{Address: "10.1.0.1:8080", Capacity: 3, LastHeartbeat: time.Now()},
+			{Address: "10.1.0.2:8080", Capacity: 1, LastHeartbeat: time.Now()},
+		},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+
+	got := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		addr, err := sr.GetService("weighted")
+		if err != nil {
+			t.Fatalf("unexpected GetService error at %d: %v", i, err)
+		}
+		got = append(got, addr)
+	}
+
+	want := []string{"10.1.0.1:8080", "10.1.0.1:8080", "10.1.0.1:8080", "10.1.0.2:8080", "10.1.0.1:8080"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected weighted sequence at %d: got %q want %q (full=%v)", i, got[i], want[i], got)
+		}
+	}
+
+	if storeStub.listCalls != 1 {
+		t.Fatalf("expected one store list call for first cache miss only, got %d", storeStub.listCalls)
 	}
 }
 
@@ -392,5 +416,92 @@ func TestStoreBackedCleanupReturnsCacheRemovalsWhenStoreCleanupFails(t *testing.
 	removed := sr.Cleanup(30 * time.Second)
 	if removed != 1 {
 		t.Fatalf("expected cache removal count when store cleanup fails, got %d", removed)
+	}
+}
+
+func TestStoreBackedWarmCachePreservesRoundRobinCursor(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"task_web": {
+			{Address: "10.0.0.1:8080", Capacity: 1, LastHeartbeat: time.Now()},
+			{Address: "10.0.0.2:8080", Capacity: 1, LastHeartbeat: time.Now()},
+			{Address: "10.0.0.3:8080", Capacity: 1, LastHeartbeat: time.Now()},
+		},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected initial warm error: %v", err)
+	}
+
+	gotBeforeWarm := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		addr, err := sr.GetService("task_web")
+		if err != nil {
+			t.Fatalf("unexpected GetService error before warm: %v", err)
+		}
+		gotBeforeWarm = append(gotBeforeWarm, addr)
+	}
+
+	wantBeforeWarm := []string{"10.0.0.1:8080", "10.0.0.2:8080", "10.0.0.3:8080", "10.0.0.1:8080"}
+	for i := range wantBeforeWarm {
+		if gotBeforeWarm[i] != wantBeforeWarm[i] {
+			t.Fatalf("unexpected pre-warm sequence at %d: got %q want %q (full=%v)", i, gotBeforeWarm[i], wantBeforeWarm[i], gotBeforeWarm)
+		}
+	}
+
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected second warm error: %v", err)
+	}
+
+	addrAfterWarm, err := sr.GetService("task_web")
+	if err != nil {
+		t.Fatalf("unexpected GetService error after warm: %v", err)
+	}
+	if addrAfterWarm != "10.0.0.2:8080" {
+		t.Fatalf("expected sequence to continue with 10.0.0.2:8080 after warm, got %q", addrAfterWarm)
+	}
+}
+
+func TestStoreBackedWarmCachePreservesWeightedCursorState(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"weighted": {
+			{Address: "10.0.1.1:8080", Capacity: 3, LastHeartbeat: time.Now()},
+			{Address: "10.0.1.2:8080", Capacity: 1, LastHeartbeat: time.Now()},
+		},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected initial warm error: %v", err)
+	}
+
+	gotBeforeWarm := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		addr, err := sr.GetService("weighted")
+		if err != nil {
+			t.Fatalf("unexpected GetService error before warm: %v", err)
+		}
+		gotBeforeWarm = append(gotBeforeWarm, addr)
+	}
+
+	wantBeforeWarm := []string{"10.0.1.1:8080", "10.0.1.1:8080", "10.0.1.1:8080"}
+	for i := range wantBeforeWarm {
+		if gotBeforeWarm[i] != wantBeforeWarm[i] {
+			t.Fatalf("unexpected weighted pre-warm sequence at %d: got %q want %q (full=%v)", i, gotBeforeWarm[i], wantBeforeWarm[i], gotBeforeWarm)
+		}
+	}
+
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected second warm error: %v", err)
+	}
+
+	addrAfterWarm, err := sr.GetService("weighted")
+	if err != nil {
+		t.Fatalf("unexpected GetService error after warm: %v", err)
+	}
+	if addrAfterWarm != "10.0.1.2:8080" {
+		t.Fatalf("expected weighted sequence to continue with 10.0.1.2:8080 after warm, got %q", addrAfterWarm)
 	}
 }

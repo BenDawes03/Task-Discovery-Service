@@ -144,12 +144,43 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d/%d tasks (max=%d)\n", limit, len(taskList), sr.cacheMaxSize)
 	}
 
+	// Preserve weighted round-robin cursors for tasks that exist in the new cache.
+	// Without this, every warm cycle resets selection to the first slot and can skew
+	// short query bursts even when no external traffic is present.
+	sr.copyRoundRobinState(oldCache, newCache)
+
 	sr.cacheMutex.Lock()
 	sr.memCache = newCache
 	sr.lastCacheSync = time.Now()
 	sr.cacheMutex.Unlock()
 
 	return nil
+}
+
+func (sr *StoreBackedRegistry) copyRoundRobinState(from, to *MemoryRegistry) {
+	from.roundRobinIndex.Range(func(key, value any) bool {
+		task, ok := key.(string)
+		if !ok {
+			return true
+		}
+
+		to.mutex.RLock()
+		_, taskInNewCache := to.services[task]
+		to.mutex.RUnlock()
+		if !taskInNewCache {
+			return true
+		}
+
+		cursorPtr, ok := value.(*atomic.Int64)
+		if !ok || cursorPtr == nil {
+			return true
+		}
+
+		copiedCursor := &atomic.Int64{}
+		copiedCursor.Store(cursorPtr.Load())
+		to.roundRobinIndex.Store(task, copiedCursor)
+		return true
+	})
 }
 
 // populateCacheEntry directly adds an entry to cache with existing query count and heartbeat.
@@ -251,29 +282,27 @@ func (sr *StoreBackedRegistry) GetServiceForRequestor(task string, requestorIP n
 		return addr, nil
 	}
 
-	// Cache miss - fetch from database
+	// Cache miss - hydrate the full task set from the store, then select via cache.
+	// This keeps a single balancer authority (cache cursor) for both hits and misses.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entry, err := sr.store.GetService(ctx, task)
+	servicesByTask, err := sr.store.ListServices(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	// Add to cache (will be included in next sync if frequently used)
-	cache.RegisterWithCapacity(task, entry.Address, entry.Capacity)
-	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', fetched from DB: %s\n", task, entry.Address)
-
-	// Now check firewall rules if requestor IP is provided
-	if requestorIP != nil {
-		addr, err = cache.GetServiceForRequestor(task, requestorIP)
-		if err != nil {
-			return "", err
-		}
-		return addr, nil
+	entries, ok := servicesByTask[task]
+	if !ok || len(entries) == 0 {
+		return "", ErrNotFound
 	}
 
-	return entry.Address, nil
+	for _, entry := range entries {
+		sr.populateCacheEntry(cache, task, entry.Address, entry.QueryCount, entry.LastHeartbeat, entry.Capacity)
+	}
+	fmt.Fprintf(os.Stderr, "[CACHE] Miss for task '%s', hydrated %d entries from DB\n", task, len(entries))
+
+	return cache.GetServiceForRequestor(task, requestorIP)
 }
 
 // SetFirewall configures the firewall rules for this registry.
