@@ -65,12 +65,13 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 		`
 		args = []any{task, entry.Address, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
 	} else {
-		// Normal registration: preserve existing query count if record already exists.
+		// Normal registration: reset query count when reactivating an inactive record.
 		query = `
 			INSERT INTO services (task, address, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
 			VALUES ($1, $2, $3, 0, $4, TRUE, NOW(), NOW())
 			ON CONFLICT (task, address) DO UPDATE
 			SET last_heartbeat = EXCLUDED.last_heartbeat,
+			    query_count = CASE WHEN services.is_active = FALSE THEN 0 ELSE services.query_count END,
 			    capacity = EXCLUDED.capacity,
 			    is_active = TRUE,
 			    updated_at = NOW()
