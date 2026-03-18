@@ -26,6 +26,7 @@ type StoreBackedRegistry struct {
 	cacheMissCounts sync.Map      // map[string]*atomic.Int64 tracking consecutive misses per task
 	fallbackCursor  sync.Map      // map[string]*atomic.Int64 weighted cursor for non-admitted misses
 	admitAfterMiss  atomic.Int64  // Number of misses before admitting a task into cache
+	logger          func(string)
 }
 
 func (sr *StoreBackedRegistry) currentMemCache() *MemoryRegistry {
@@ -57,6 +58,29 @@ func (sr *StoreBackedRegistry) SetCacheAdmissionMissThreshold(threshold int) {
 	sr.admitAfterMiss.Store(int64(threshold))
 }
 
+// SetLogger configures an optional event logger used for store/cache warnings.
+// When unset, messages fall back to stderr.
+func (sr *StoreBackedRegistry) SetLogger(logger func(string)) {
+	sr.cacheMutex.Lock()
+	defer sr.cacheMutex.Unlock()
+	sr.logger = logger
+}
+
+func (sr *StoreBackedRegistry) logMessage(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+
+	sr.cacheMutex.RLock()
+	logger := sr.logger
+	sr.cacheMutex.RUnlock()
+
+	if logger != nil {
+		logger(message)
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, message)
+}
+
 // syncQueryCountsToDB writes query counts from cache to database before cache warming.
 // This ensures LFU cache selection picks tasks based on current query activity.
 func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
@@ -74,7 +98,7 @@ func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 					Capacity:      entry.Capacity,
 				}
 				if err := sr.store.Register(ctx, task, storeEntry); err != nil {
-					fmt.Fprintf(os.Stderr, "[STORE] Failed to sync query count for %s/%s: %v\n", task, entry.Address, err)
+					sr.logMessage("[STORE] Failed to sync query count for %s/%s: %v", task, entry.Address, err)
 				}
 			}
 		}
@@ -88,7 +112,7 @@ func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	// First, sync query counts from cache to DB so LFU selection uses current data
 	if err := sr.syncQueryCountsToDB(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "[STORE] Warning: failed to sync query counts: %v\n", err)
+		sr.logMessage("[STORE] Warning: failed to sync query counts: %v", err)
 	}
 
 	newCache := NewMemoryRegistry()
@@ -128,7 +152,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[CACHE] Loaded top %d tasks (max=%d)\n", len(topTasks), sr.cacheMaxSize)
+		sr.logMessage("[CACHE] Loaded top %d tasks (max=%d)", len(topTasks), sr.cacheMaxSize)
 	}
 
 	// Preserve weighted round-robin cursors for tasks that exist in the new cache.
@@ -245,8 +269,7 @@ func (sr *StoreBackedRegistry) RegisterWithCapacity(task, addr string, capacity 
 	defer cancel()
 
 	if err := sr.store.Register(ctx, task, entry); err != nil {
-		// Log to stderr so we can see failures
-		fmt.Fprintf(os.Stderr, "[STORE] Register failed: %v\n", err)
+		sr.logMessage("[STORE] Register failed: %v", err)
 	}
 }
 
@@ -381,7 +404,7 @@ func (sr *StoreBackedRegistry) Cleanup(timeout time.Duration) int {
 
 	dbFlagged, err := sr.store.Cleanup(ctx, timeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[STORE] Cleanup failed: %v\n", err)
+		sr.logMessage("[STORE] Cleanup failed: %v", err)
 	}
 
 	// Return total: removed from cache + flagged as inactive in DB
@@ -400,7 +423,7 @@ func (sr *StoreBackedRegistry) ListServices() map[string][]ServiceEntry {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := sr.WarmCacheFromDB(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "[CACHE] WarmCacheFromDB failed: %v\n", err)
+			sr.logMessage("[CACHE] WarmCacheFromDB failed: %v", err)
 		}
 	}
 

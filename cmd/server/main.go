@@ -766,19 +766,19 @@ func startTransportServer(transportMode string, runTUI bool) {
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
-			if err := transport.StartTCPServerTLS(reg, listenPort, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+			if err := transport.StartTCPServerTLS(reg, listenPort, 0, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TLS server error: %v", err))
 			}
 		}()
 	case "tcp":
 		go func() {
-			if err := transport.StartTCPServer(reg, listenPort, logEvent); err != nil {
+			if err := transport.StartTCPServer(reg, listenPort, 0, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TCP server error: %v", err))
 			}
 		}()
 	default:
 		go func() {
-			if err := transport.StartUDPServer(reg, listenPort, logEvent); err != nil {
+			if err := transport.StartUDPServer(reg, listenPort, 0, logEvent); err != nil {
 				fatalError(fmt.Sprintf("UDP server error: %v", err))
 			}
 		}()

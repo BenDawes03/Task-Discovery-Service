@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -476,6 +477,31 @@ func TestStoreBackedRegisterAliasInvalidInputAndStats(t *testing.T) {
 	stats := sr.GetStats()
 	if stats.TotalTasks != 1 || stats.TotalQueries != 1 {
 		t.Fatalf("unexpected stats after alias Register/GetService: %+v", stats)
+	}
+}
+
+func TestStoreBackedRegisterFailureUsesLogger(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.registerErrByTask["task-a"] = errors.New("db write failed")
+	sr := NewStoreBackedRegistry(storeStub, 0)
+
+	var messages []string
+	var messagesMu sync.Mutex
+	sr.SetLogger(func(message string) {
+		messagesMu.Lock()
+		defer messagesMu.Unlock()
+		messages = append(messages, message)
+	})
+
+	sr.RegisterWithCapacity("task-a", "10.0.0.99:8080", 1)
+
+	messagesMu.Lock()
+	defer messagesMu.Unlock()
+	if len(messages) != 1 {
+		t.Fatalf("expected one logged message, got %d", len(messages))
+	}
+	if !strings.Contains(messages[0], "[STORE] Register failed: db write failed") {
+		t.Fatalf("unexpected log message: %q", messages[0])
 	}
 }
 
