@@ -82,10 +82,10 @@ func handleQuery(reg registry.Registry, msg CentralizedMessage, requestorIP net.
 	switch {
 	case err == nil && addrStr != "":
 		return CentralizedResponse{Status: "OK", Address: addrStr}
-	case err == registry.ErrNotFound || addrStr == "":
-		return CentralizedResponse{Status: "NOTFOUND"}
 	case err == registry.ErrNoAllowedService:
 		return CentralizedResponse{Status: "FORBIDDEN"}
+	case err == registry.ErrNotFound || addrStr == "":
+		return CentralizedResponse{Status: "NOTFOUND"}
 	default:
 		return CentralizedResponse{Status: "ERR", Error: err.Error()}
 	}

@@ -146,6 +146,13 @@ func TestHandleUDPRequestQueryStatusMapping(t *testing.T) {
 	if resp.Status != "FORBIDDEN" {
 		t.Fatalf("expected FORBIDDEN, got %+v", resp)
 	}
+
+	fake.queryAddress = ""
+	fake.queryError = registry.ErrNoAllowedService
+	resp = sendAndHandleUDP(t, fake, []byte(`{"cmd":"QUERY","task":"ticket"}`))
+	if resp.Status != "FORBIDDEN" {
+		t.Fatalf("expected FORBIDDEN with empty address, got %+v", resp)
+	}
 }
 
 func TestHandleUDPRequestProtocolErrors(t *testing.T) {
@@ -963,7 +970,7 @@ func TestHandleMessageErrorStatuses(t *testing.T) {
 		{
 			name:       "no allowed service",
 			queryError: registry.ErrNoAllowedService,
-			queryAddr:  "10.0.0.1:8000",
+			queryAddr:  "",
 			wantStatus: "FORBIDDEN",
 		},
 		{

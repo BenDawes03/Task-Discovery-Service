@@ -351,6 +351,22 @@ func TestQueryUDP(t *testing.T) {
 			wantErr:    true,
 			errContain: "internal error",
 		},
+		{
+			name:       "forbidden",
+			task:       "test-task",
+			response:   transport.CentralizedResponse{Status: "FORBIDDEN"},
+			wantAddr:   "",
+			wantErr:    true,
+			errContain: "forbidden",
+		},
+		{
+			name:       "unexpected status",
+			task:       "test-task",
+			response:   transport.CentralizedResponse{Status: "MYSTERY"},
+			wantAddr:   "",
+			wantErr:    true,
+			errContain: "MYSTERY",
+		},
 	}
 
 	for _, tt := range tests {
@@ -406,6 +422,22 @@ func TestQueryTCP(t *testing.T) {
 			wantAddr: "",
 			wantErr:  false,
 		},
+		{
+			name:       "forbidden",
+			task:       "blocked-task",
+			response:   transport.CentralizedResponse{Status: "FORBIDDEN"},
+			wantAddr:   "",
+			wantErr:    true,
+			errContain: "forbidden",
+		},
+		{
+			name:       "unexpected status",
+			task:       "test-task",
+			response:   transport.CentralizedResponse{Status: "MYSTERY"},
+			wantAddr:   "",
+			wantErr:    true,
+			errContain: "MYSTERY",
+		},
 	}
 
 	for _, tt := range tests {
@@ -421,6 +453,8 @@ func TestQueryTCP(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error but got nil")
+				} else if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("expected error to contain %q, got %q", tt.errContain, err.Error())
 				}
 			} else {
 				if err != nil {
