@@ -13,46 +13,51 @@
 \citation{consul,consuldocs}
 \citation{chord,kademlia}
 \citation{dynamo}
+\citation{swim}
+\citation{mdns,dnssd}
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Contribution}{2}{subsection.1.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {2}Project Background and Context}{2}{section.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Service Discovery in Distributed Systems}{2}{subsection.2.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.1}Centralised registry approaches}{2}{subsubsection.2.1.1}\protected@file@percent }
-\citation{swim}
-\citation{mdns,dnssd}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.2}Decentralised approaches}{2}{subsubsection.2.1.2}\protected@file@percent }
 \citation{consuldocs,istio}
 \citation{k8snetworkpolicy}
 \citation{firewallqueries,firewallmodelcheck}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.2}Decentralised approaches}{3}{subsubsection.2.1.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {2.1.3}Traffic-management, load-balancing, and policy-enforcement approaches}{3}{subsubsection.2.1.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Security, Reachability, and Policy Correctness}{3}{subsection.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}How TDS Differs, and Its Strengths and Weaknesses}{4}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}How TDS Differs, and Its Strengths and Weaknesses}{3}{subsection.2.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {3}Design}{4}{section.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.1}services, tasks, and the client proxy}{4}{subsection.3.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Client machine service registration and discovery via client proxy}}{5}{figure.caption.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Client machine service registration and discovery via client proxy}}{4}{figure.caption.1}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{fig:ClientDevice}{{1}{5}{Client machine service registration and discovery via client proxy}{figure.caption.1}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.1}Message format}{5}{subsubsection.3.1.1}\protected@file@percent }
+\newlabel{fig:ClientDevice}{{1}{4}{Client machine service registration and discovery via client proxy}{figure.caption.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.1}Message format}{4}{subsubsection.3.1.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Centralised mode}{5}{subsection.3.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Client machines operating in server architecture}}{5}{figure.caption.2}\protected@file@percent }
+\newlabel{fig:ServerArchitecture}{{2}{5}{Client machines operating in server architecture}{figure.caption.2}{}}
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}load balancing}{5}{subsubsection.3.2.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Client machines operating in server architecture}}{6}{figure.caption.2}\protected@file@percent }
-\newlabel{fig:ServerArchitecture}{{2}{6}{Client machines operating in server architecture}{figure.caption.2}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Firewall-mode}{6}{subsubsection.3.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Hybrid storage: cache and persistence}{5}{subsubsection.3.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.3}Firewall-mode}{6}{subsubsection.3.2.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Peer-to-Peer mode}{6}{subsection.3.3}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Client machines operating in P2P architecture}}{6}{figure.caption.3}\protected@file@percent }
+\newlabel{fig:P2P-Architecture}{{3}{6}{Client machines operating in P2P architecture}{figure.caption.3}{}}
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.1}Distributed Hash Table (DHT)}{6}{subsubsection.3.3.1}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Client machines operating in P2P architecture}}{7}{figure.caption.3}\protected@file@percent }
-\newlabel{fig:P2P-Architecture}{{3}{7}{Client machines operating in P2P architecture}{figure.caption.3}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.2}Eventual consistency and node discovery}{8}{subsubsection.3.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.3}K-Nearest Neighbours}{8}{subsubsection.3.3.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation details and testing}{8}{section.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Implementation Challenges}{8}{subsection.4.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.1}Server Cache Performance}{8}{subsubsection.4.1.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.2}Peer-to-Peer Challenges}{9}{subsubsection.4.1.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.1.3}Firewall-Mode}{9}{subsubsection.4.1.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5}Functional testing}{9}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {6}Realistic Application Testing}{9}{section.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusion and future work}{10}{section.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {8}Future Work}{10}{section.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Conclusion}{10}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.2}Eventual consistency and node discovery}{7}{subsubsection.3.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation}{7}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Tools and technologies}{7}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Codebase structure}{7}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Database schema}{8}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Functional testing}{9}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Integration testing: Realistic application scenario}{9}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Technical highlights and optimisations}{9}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Cache and concurrency performance}{9}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.1}Batched query count updates}{9}{subsubsection.5.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.2}Lock-free round-robin with atomics}{9}{subsubsection.5.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3}Peer-to-Peer Challenges}{10}{subsubsection.5.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.4}Firewall-Mode}{10}{subsubsection.5.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusion and Discussion}{10}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Future Work}{10}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Conclusion}{10}{subsection.6.2}\protected@file@percent }
 \bibcite{chord}{1}
 \bibcite{consul}{2}
 \bibcite{etcd}{3}
@@ -75,4 +80,4 @@
 \bibcite{etcdapi}{20}
 \bibcite{firewallqueries}{21}
 \bibcite{firewallmodelcheck}{22}
-\gdef \@abspage@last{13}
+\gdef \@abspage@last{12}

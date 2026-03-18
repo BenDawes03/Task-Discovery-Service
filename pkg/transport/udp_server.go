@@ -3,10 +3,8 @@ package transport
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -29,11 +27,6 @@ import (
 // maxConcurrent limits the number of concurrent request handlers. If 0, defaults to 1000.
 // onEvent, if non-nil, will be called with short human-readable messages for UI/logging.
 func StartUDPServer(reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
-	return StartUDPServerWithContext(context.Background(), reg, port, maxConcurrent, onEvent)
-}
-
-// StartUDPServerWithContext starts a UDP server that shuts down when ctx is canceled.
-func StartUDPServerWithContext(ctx context.Context, reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1000 // Default limit
 	}
@@ -45,23 +38,13 @@ func StartUDPServerWithContext(ctx context.Context, reg registry.Registry, port 
 	}
 	defer conn.Close()
 
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
-
 	sem := semaphore.NewWeighted(maxConcurrent)
 	const acquireTimeout = 100 * time.Millisecond
-	var handlers sync.WaitGroup
 
 	for {
 		buf := make([]byte, 4096)
 		n, remote, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				handlers.Wait()
-				return nil
-			}
 			// transient read error: log and continue
 			fmt.Printf("udp read error: %v\n", err)
 			continue
@@ -73,9 +56,7 @@ func StartUDPServerWithContext(ctx context.Context, reg registry.Registry, port 
 
 		ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
 		if err := sem.Acquire(ctx, 1); err == nil {
-			handlers.Add(1)
 			go func(d []byte, r *net.UDPAddr) {
-				defer handlers.Done()
 				defer sem.Release(1)
 				handleUDPRequest(conn, reg, d, r, onEvent)
 			}(data, remote)

@@ -185,6 +185,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(targetCache *MemoryRegistry, t
 		if e.Address == addr {
 			// Update with DB values
 			entries[i].LastHeartbeat = lastHeartbeat
+			entries[i].ParsedIP = parseDestinationIP(addr)
 			entries[i].Capacity = capacity
 			targetCache.services[task] = entries
 			// Set atomic query counter
@@ -199,6 +200,7 @@ func (sr *StoreBackedRegistry) populateCacheEntry(targetCache *MemoryRegistry, t
 	// New entry - add with DB values
 	newEntry := ServiceEntry{
 		Address:       addr,
+		ParsedIP:      parseDestinationIP(addr),
 		LastHeartbeat: lastHeartbeat,
 		Capacity:      capacity,
 	}
@@ -324,15 +326,12 @@ func (sr *StoreBackedRegistry) selectFromStoreEntries(task string, entries []sto
 	for _, entry := range entries {
 		candidate := ServiceEntry{
 			Address:  entry.Address,
+			ParsedIP: parseDestinationIP(entry.Address),
 			Capacity: entry.Capacity,
 		}
 
 		if fw != nil && requestorIP != nil {
-			hostPart, _, err := net.SplitHostPort(entry.Address)
-			if err != nil {
-				hostPart = entry.Address
-			}
-			destIP := net.ParseIP(hostPart)
+			destIP := candidate.ParsedIP
 			if destIP == nil || !fw.IsAllowed(requestorIP, destIP) {
 				continue
 			}
@@ -365,7 +364,7 @@ func (sr *StoreBackedRegistry) selectFromStoreEntries(task string, entries []sto
 }
 
 // SetFirewall configures the firewall rules for this registry.
-func (sr *StoreBackedRegistry) SetFirewall(fw *firewall.Firewall) {
+func (sr *StoreBackedRegistry) SetFirewall(fw firewall.Evaluator) {
 	sr.currentMemCache().SetFirewall(fw)
 }
 

@@ -47,7 +47,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
 	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
 	kClosestFlag := flag.Int("k-closest", dht.ReplicationFactor, "Number of k-closest nodes used by DHT replication/query in p2p mode")
-	simpleUIFlag := flag.Bool("simple-ui", false, "Use a simplified P2P dashboard focused on DHT activity")
+	simpleUIFlag := flag.Bool("simple-ui", false, "Use simplified P2P dashboard UI focused on DHT activity")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
 	backgroundFlag := flag.Bool("background", false, "Run in background (no interactive stdin); exit on SIGINT/SIGTERM or proxy error")
 	flag.Parse()
@@ -121,7 +121,6 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 		// Ask for bootstrap nodes
 		bootstrapNodes = askBootstrapNodes(reader)
 
-		// Ask for dashboard style
 		fmt.Fprint(os.Stderr, "Use simplified dashboard UI focused on DHT events? [Y/n]: ")
 		simpleInput, _ := reader.ReadString('\n')
 		simpleInput = strings.ToLower(strings.TrimSpace(simpleInput))
@@ -253,23 +252,6 @@ func main() {
 		})
 	}
 
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	signalForwardStop := make(chan struct{})
-	go func() {
-		select {
-		case sig := <-sigCh:
-			if !background {
-				fmt.Fprintf(os.Stderr, "\nreceived %s, shutting down...\n", sig.String())
-			}
-			shutdown()
-		case <-signalForwardStop:
-		}
-	}()
-	defer close(signalForwardStop)
-
 	go func() {
 		err := <-done
 		setProxyErr(err)
@@ -367,11 +349,18 @@ func main() {
 	}
 
 	if background {
-		<-proxyExited
-		if err := getProxyErr(); err != nil {
-			os.Exit(1)
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		select {
+		case <-proxyExited:
+			if err := getProxyErr(); err != nil {
+				os.Exit(1)
+			}
+			return
+		case <-sigCh:
+			shutdown()
+			return
 		}
-		return
 	}
 
 	// simple interactive loop

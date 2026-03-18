@@ -21,6 +21,11 @@ type Firewall struct {
 	rules []FirewallRule
 }
 
+// Evaluator defines the minimal firewall decision interface used by registries.
+type Evaluator interface {
+	IsAllowed(sourceIP, destIP net.IP) bool
+}
+
 // NewFirewall creates a new empty Firewall
 func NewFirewall() *Firewall {
 	return &Firewall{
