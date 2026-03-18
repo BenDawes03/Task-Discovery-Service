@@ -411,6 +411,34 @@ func (sr *StoreBackedRegistry) Cleanup(timeout time.Duration) int {
 	return cacheRemoved + int(dbFlagged)
 }
 
+// ListServicesForDashboard returns a UI snapshot sourced from active DB rows.
+// This is intentionally DB-backed (not cache-backed) so the TUI reflects the
+// complete active task set rather than bounded cache contents.
+func (sr *StoreBackedRegistry) ListServicesForDashboard(ctx context.Context) map[string][]ServiceEntry {
+	dbServices, err := sr.store.ListServices(ctx)
+	if err != nil {
+		sr.logMessage("[CACHE] Dashboard DB snapshot failed: %v", err)
+		return map[string][]ServiceEntry{}
+	}
+
+	result := make(map[string][]ServiceEntry, len(dbServices))
+	for task, entries := range dbServices {
+		converted := make([]ServiceEntry, len(entries))
+		for i, entry := range entries {
+			converted[i] = ServiceEntry{
+				Address:       entry.Address,
+				ParsedIP:      parseDestinationIP(entry.Address),
+				LastHeartbeat: entry.LastHeartbeat,
+				QueryCount:    entry.QueryCount,
+				Capacity:      entry.Capacity,
+			}
+		}
+		result[task] = converted
+	}
+
+	return result
+}
+
 // ListServices returns services from the in-memory cache.
 // Periodically syncs with the database to pick up changes from other servers.
 func (sr *StoreBackedRegistry) ListServices() map[string][]ServiceEntry {

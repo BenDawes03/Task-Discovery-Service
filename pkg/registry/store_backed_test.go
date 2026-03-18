@@ -551,6 +551,39 @@ func TestStoreBackedCleanupReturnsCacheRemovalsWhenStoreCleanupFails(t *testing.
 	}
 }
 
+func TestStoreBackedListServicesForDashboardUsesFullDBList(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"dbtask": {{Address: "10.0.0.100:8080", QueryCount: 5, Capacity: 2, LastHeartbeat: time.Now()}},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 1)
+	sr.currentMemCache().RegisterWithCapacity("cache-only", "10.0.0.101:8080", 1)
+
+	services := sr.ListServicesForDashboard(context.Background())
+	if storeStub.listCalls != 1 {
+		t.Fatalf("expected one DB ListServices call, got %d", storeStub.listCalls)
+	}
+	if _, ok := services["dbtask"]; !ok {
+		t.Fatalf("expected dbtask in dashboard snapshot")
+	}
+	if _, ok := services["cache-only"]; ok {
+		t.Fatalf("did not expect cache-only task in DB-backed dashboard snapshot")
+	}
+}
+
+func TestStoreBackedListServicesForDashboardReturnsEmptyOnDBError(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listErr = errors.New("db unavailable")
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	sr.currentMemCache().RegisterWithCapacity("cached", "10.0.0.102:8080", 1)
+
+	services := sr.ListServicesForDashboard(context.Background())
+	if len(services) != 0 {
+		t.Fatalf("expected empty snapshot on DB error, got %+v", services)
+	}
+}
+
 func TestStoreBackedWarmCachePreservesRoundRobinCursor(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.listServices = map[string][]store.ServiceEntry{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net"
 	"regexp"
 	"testing"
 	"time"
@@ -94,6 +95,26 @@ func TestRegister_ExecError(t *testing.T) {
 	err := ps.Register(context.Background(), "task-a", entry)
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestResolveHostForInetIPPassthrough(t *testing.T) {
+	host, err := resolveHostForInet("10.0.0.5")
+	if err != nil {
+		t.Fatalf("unexpected resolve error: %v", err)
+	}
+	if host != "10.0.0.5" {
+		t.Fatalf("expected passthrough IP, got %q", host)
+	}
+}
+
+func TestResolveHostForInetHostname(t *testing.T) {
+	host, err := resolveHostForInet("localhost")
+	if err != nil {
+		t.Fatalf("unexpected resolve error for localhost: %v", err)
+	}
+	if net.ParseIP(host) == nil {
+		t.Fatalf("expected resolved IP for localhost, got %q", host)
 	}
 }
 

@@ -55,6 +55,10 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 	if err != nil {
 		return fmt.Errorf("invalid service address %q: %w", entry.Address, err)
 	}
+	storageHost, err := resolveHostForInet(host)
+	if err != nil {
+		return fmt.Errorf("invalid service host %q: %w", host, err)
+	}
 	canonicalAddress := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var query string
@@ -73,7 +77,7 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, canonicalAddress, host, port, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
+		args = []any{task, canonicalAddress, storageHost, port, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
 	} else {
 		// Normal registration: reset query count when reactivating an inactive record.
 		query = `
@@ -87,7 +91,7 @@ func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, canonicalAddress, host, port, entry.LastHeartbeat, normalizedCapacity(entry.Capacity)}
+		args = []any{task, canonicalAddress, storageHost, port, entry.LastHeartbeat, normalizedCapacity(entry.Capacity)}
 	}
 
 	_, err = ps.db.ExecContext(ctx, query, args...)
@@ -584,4 +588,31 @@ func splitAddress(address string) (string, int, error) {
 	}
 
 	return host, port, nil
+}
+
+func resolveHostForInet(host string) (string, error) {
+	trimmed := strings.TrimSpace(host)
+	if idx := strings.Index(trimmed, "%"); idx != -1 {
+		trimmed = trimmed[:idx]
+	}
+
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return ip.String(), nil
+	}
+
+	ips, err := net.LookupIP(trimmed)
+	if err != nil {
+		return "", err
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("no IPs resolved")
+	}
+
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+	}
+
+	return ips[0].String(), nil
 }
