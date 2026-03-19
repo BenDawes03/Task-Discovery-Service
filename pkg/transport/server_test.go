@@ -2,9 +2,15 @@ package transport
 
 import (
 	"bufio"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +29,8 @@ type fakeRegistry struct {
 
 	queryAddress string
 	queryError   error
+
+	lastRequestorIP net.IP
 }
 
 func (f *fakeRegistry) Register(taskName, address string) {
@@ -44,6 +52,11 @@ func (f *fakeRegistry) GetService(taskName string) (string, error) {
 func (f *fakeRegistry) GetServiceForRequestor(taskName string, requestorIP net.IP) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if requestorIP != nil {
+		f.lastRequestorIP = append(net.IP(nil), requestorIP...)
+	} else {
+		f.lastRequestorIP = nil
+	}
 	return f.queryAddress, f.queryError
 }
 
@@ -63,6 +76,41 @@ func (f *fakeRegistry) snapshotRegister() (string, string, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registeredTask, f.registeredAddress, f.registeredCapacity
+}
+
+func (f *fakeRegistry) snapshotLastRequestorIP() net.IP {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lastRequestorIP == nil {
+		return nil
+	}
+	return append(net.IP(nil), f.lastRequestorIP...)
+}
+
+type stubAddr string
+
+func (a stubAddr) Network() string { return "stub" }
+func (a stubAddr) String() string  { return string(a) }
+
+type wrappedConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *wrappedConn) RemoteAddr() net.Addr {
+	if c.remote != nil {
+		return c.remote
+	}
+	return c.Conn.RemoteAddr()
+}
+
+func transportRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
 func readUDPResponse(t *testing.T, conn *net.UDPConn) CentralizedResponse {
@@ -324,9 +372,309 @@ func TestHandleTCPConnForbiddenMapping(t *testing.T) {
 	}
 }
 
+func TestHandleTCPConnUsesNilRequestorIPForNonTCPRemoteAddr(t *testing.T) {
+	fake := &fakeRegistry{queryAddress: "10.1.1.1:7000"}
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	go handleTCPConn(&wrappedConn{Conn: serverConn, remote: stubAddr("not-a-tcp-addr")}, fake, nil)
+
+	writer := bufio.NewWriter(clientConn)
+	if _, err := writer.WriteString(`{"cmd":"QUERY","task":"ticket"}` + "\n"); err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("flush request failed: %v", err)
+	}
+
+	reader := bufio.NewReader(clientConn)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read response failed: %v", err)
+	}
+
+	var resp CentralizedResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if resp.Status != "OK" {
+		t.Fatalf("expected OK response, got %+v", resp)
+	}
+
+	if got := fake.snapshotLastRequestorIP(); got != nil {
+		t.Fatalf("expected nil requestor IP for non-TCP remote addr, got %v", got)
+	}
+}
+
+func TestStartTCPServerTLSReturnsCertLoadError(t *testing.T) {
+	err := StartTCPServerTLS(registry.NewMemoryRegistry(), 0, 1, "missing-server.crt", "missing-server.key", "missing-ca.crt", nil)
+	if err == nil || !strings.Contains(err.Error(), "load server cert") {
+		t.Fatalf("expected server cert load error, got %v", err)
+	}
+}
+
+func TestStartTCPServerTLSReturnsClientCAReadError(t *testing.T) {
+	repoRoot := transportRepoRoot(t)
+	certFile := filepath.Join(repoRoot, "certs", "server.crt")
+	keyFile := filepath.Join(repoRoot, "certs", "server.key")
+
+	err := StartTCPServerTLS(registry.NewMemoryRegistry(), 0, 1, certFile, keyFile, "missing-client-ca.crt", nil)
+	if err == nil || !strings.Contains(err.Error(), "load client CA cert") {
+		t.Fatalf("expected client CA read error, got %v", err)
+	}
+}
+
+func TestStartTCPServerTLSReturnsInvalidClientCAError(t *testing.T) {
+	repoRoot := transportRepoRoot(t)
+	certFile := filepath.Join(repoRoot, "certs", "server.crt")
+	keyFile := filepath.Join(repoRoot, "certs", "server.key")
+	invalidCA := filepath.Join(t.TempDir(), "invalid-ca.pem")
+	if err := os.WriteFile(invalidCA, []byte("not-a-pem-certificate"), 0o600); err != nil {
+		t.Fatalf("failed to write invalid CA file: %v", err)
+	}
+
+	err := StartTCPServerTLS(registry.NewMemoryRegistry(), 0, 1, certFile, keyFile, invalidCA, nil)
+	if err == nil || !strings.Contains(err.Error(), "failed to parse client CA certificate") {
+		t.Fatalf("expected invalid CA parse error, got %v", err)
+	}
+}
+
+func TestHandleTCPConnReadDeadlineClosesIdleConnection(t *testing.T) {
+	oldReadTimeout := tcpReadTimeout
+	tcpReadTimeout = 40 * time.Millisecond
+	defer func() { tcpReadTimeout = oldReadTimeout }()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		handleTCPConn(serverConn, &fakeRegistry{}, nil)
+		close(done)
+	}()
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline failed: %v", err)
+	}
+	buf := make([]byte, 1)
+	_, err := clientConn.Read(buf)
+	if err == nil {
+		t.Fatalf("expected idle connection to close")
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("expected server-side close, got read timeout instead")
+	}
+	if err != io.EOF {
+		t.Fatalf("expected EOF after idle timeout close, got %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("handleTCPConn did not return after idle timeout")
+	}
+}
+
+func TestStartTCPServerWithContextShutsDownCleanly(t *testing.T) {
+	port := freeTCPPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartTCPServerWithContext(ctx, registry.NewMemoryRegistry(), port, 10, nil)
+	}()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := waitForTCPServer(addr, 2*time.Second); err != nil {
+		t.Fatalf("TCP server did not start: %v", err)
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to TCP server: %v", err)
+	}
+	_ = conn.Close()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("TCP server did not shut down after context cancellation")
+	}
+}
+
+func TestStartTCPServerTLSWithContextAuthenticatesAndShutsDownCleanly(t *testing.T) {
+	repoRoot := transportRepoRoot(t)
+	certFile := filepath.Join(repoRoot, "certs", "server.crt")
+	keyFile := filepath.Join(repoRoot, "certs", "server.key")
+	caFile := filepath.Join(repoRoot, "certs", "ca.crt")
+	clientCertFile := filepath.Join(repoRoot, "certs", "client.crt")
+	clientKeyFile := filepath.Join(repoRoot, "certs", "client.key")
+
+	clientCert, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
+	if err != nil {
+		t.Fatalf("failed to load client cert: %v", err)
+	}
+
+	port := freeTCPPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		eventsMu sync.Mutex
+		events   []string
+	)
+	onEvent := func(msg string) {
+		eventsMu.Lock()
+		events = append(events, msg)
+		eventsMu.Unlock()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- StartTCPServerTLSWithContext(ctx, registry.NewMemoryRegistry(), port, 10, certFile, keyFile, caFile, onEvent)
+	}()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := waitForTLSServer(addr, clientCert, 3*time.Second); err != nil {
+		t.Fatalf("TLS server did not become ready: %v", err)
+	}
+
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		Certificates:       []tls.Certificate{clientCert},
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to connect to TLS server: %v", err)
+	}
+
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+	if err := encoder.Encode(CentralizedMessage{Command: "QUERY", Task: "missing"}); err != nil {
+		_ = conn.Close()
+		t.Fatalf("failed to send TLS query: %v", err)
+	}
+
+	var resp CentralizedResponse
+	if err := decoder.Decode(&resp); err != nil {
+		_ = conn.Close()
+		t.Fatalf("failed to read TLS response: %v", err)
+	}
+	_ = conn.Close()
+
+	if resp.Status != "NOTFOUND" {
+		t.Fatalf("expected NOTFOUND for empty registry, got %+v", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		eventsMu.Lock()
+		found := false
+		for _, event := range events {
+			if strings.Contains(event, "TLS client authenticated") {
+				found = true
+				break
+			}
+		}
+		eventsMu.Unlock()
+
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	eventsMu.Lock()
+	foundAuthEvent := false
+	for _, event := range events {
+		if strings.Contains(event, "TLS client authenticated") {
+			foundAuthEvent = true
+			break
+		}
+	}
+	eventsMu.Unlock()
+	if !foundAuthEvent {
+		t.Fatalf("expected TLS client authenticated event, got events: %+v", events)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean TLS shutdown, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("TLS server did not shut down after context cancellation")
+	}
+}
+
 // ========================================================================
 // Test Infrastructure Helpers
 // ========================================================================
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate tcp port: %v", err)
+	}
+	defer listener.Close()
+
+	_, portStr, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to parse listener addr: %v", err)
+	}
+
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("failed to parse listener port: %v", err)
+	}
+	return port
+}
+
+func waitForTCPServer(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout waiting for tcp server")
+	}
+	return lastErr
+}
+
+func waitForTLSServer(addr string, clientCert tls.Certificate, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := tls.Dial("tcp", addr, &tls.Config{
+			Certificates:       []tls.Certificate{clientCert},
+			InsecureSkipVerify: true,
+		})
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(30 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout waiting for tls server")
+	}
+	return lastErr
+}
 
 // slowRegistry simulates a slow-processing registry for concurrency tests
 type slowRegistry struct {
