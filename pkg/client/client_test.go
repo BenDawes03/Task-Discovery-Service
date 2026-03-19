@@ -951,3 +951,203 @@ func BenchmarkQueryUDP(b *testing.B) {
 		QueryUDP(addr, "bench-task")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// QueryTCP additional error-path coverage
+// -----------------------------------------------------------------------------
+
+func TestQueryTCP_ForbiddenWithMessage(t *testing.T) {
+	server, addr := createMockTCPServer(t, func(line string) string {
+		resp := transport.CentralizedResponse{Status: "FORBIDDEN", Error: "client not allowed"}
+		respData, _ := json.Marshal(resp)
+		return string(respData)
+	})
+	defer server.Close()
+
+	_, err := QueryTCP(addr, "blocked-task")
+	if err == nil {
+		t.Fatal("expected error for FORBIDDEN+message, got nil")
+	}
+	if !strings.Contains(err.Error(), "client not allowed") {
+		t.Errorf("expected error to contain message, got %v", err)
+	}
+}
+
+func TestQueryTCP_ERR(t *testing.T) {
+	server, addr := createMockTCPServer(t, func(line string) string {
+		resp := transport.CentralizedResponse{Status: "ERR", Error: "internal error"}
+		respData, _ := json.Marshal(resp)
+		return string(respData)
+	})
+	defer server.Close()
+
+	_, err := QueryTCP(addr, "task")
+	if err == nil {
+		t.Fatal("expected error for ERR status, got nil")
+	}
+	if !strings.Contains(err.Error(), "internal error") {
+		t.Errorf("expected error to contain 'internal error', got %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// loadTLSConfig error paths
+// -----------------------------------------------------------------------------
+
+func TestLoadTLSConfig_MissingCAFile(t *testing.T) {
+	certFile, keyFile, _ := generateTestCert(t)
+
+	// CA file does not exist.
+	_, err := loadTLSConfig(certFile, keyFile, "/nonexistent/ca.crt")
+	if err == nil {
+		t.Fatal("expected error for missing CA file, got nil")
+	}
+	if !strings.Contains(err.Error(), "ca cert") {
+		t.Errorf("expected 'ca cert' in error, got %v", err)
+	}
+}
+
+func TestLoadTLSConfig_InvalidCAPEM(t *testing.T) {
+	certFile, keyFile, _ := generateTestCert(t)
+
+	// Write a file that exists but is not valid PEM.
+	tmpDir := t.TempDir()
+	badCA := tmpDir + "/bad_ca.crt"
+	if err := os.WriteFile(badCA, []byte("this is not a PEM certificate"), 0644); err != nil {
+		t.Fatalf("write bad CA: %v", err)
+	}
+
+	_, err := loadTLSConfig(certFile, keyFile, badCA)
+	if err == nil {
+		t.Fatal("expected error for invalid CA PEM, got nil")
+	}
+	if !strings.Contains(err.Error(), "CA certificate") {
+		t.Errorf("expected 'CA certificate' in error, got %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// RegisterTLS / QueryTLS error-response paths
+// -----------------------------------------------------------------------------
+
+// startMockTLSServer starts a TLS listener that responds with the given response to one connection.
+func startMockTLSServer(t *testing.T, certFile, keyFile, caFile string, respFn func(transport.CentralizedMessage) transport.CentralizedResponse) net.Listener {
+	t.Helper()
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("load server cert: %v", err)
+	}
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCert)
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", config)
+	if err != nil {
+		t.Fatalf("TLS listen: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				var msg transport.CentralizedMessage
+				if err := json.NewDecoder(c).Decode(&msg); err != nil {
+					return
+				}
+				json.NewEncoder(c).Encode(respFn(msg))
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+func TestRegisterTLS_ServerError(t *testing.T) {
+	certFile, keyFile, caFile := generateTestCert(t)
+	ln := startMockTLSServer(t, certFile, keyFile, caFile, func(_ transport.CentralizedMessage) transport.CentralizedResponse {
+		return transport.CentralizedResponse{Status: "ERR", Error: "db write failed"}
+	})
+	defer ln.Close()
+
+	err := RegisterTLS(ln.Addr().String(), "task", "addr", certFile, keyFile, caFile)
+	if err == nil {
+		t.Fatal("expected error for server ERR response, got nil")
+	}
+	if !strings.Contains(err.Error(), "db write failed") {
+		t.Errorf("expected 'db write failed' in error, got %v", err)
+	}
+}
+
+func TestRegisterTLS_UnknownStatus(t *testing.T) {
+	certFile, keyFile, caFile := generateTestCert(t)
+	ln := startMockTLSServer(t, certFile, keyFile, caFile, func(_ transport.CentralizedMessage) transport.CentralizedResponse {
+		return transport.CentralizedResponse{Status: "MYSTERY"}
+	})
+	defer ln.Close()
+
+	err := RegisterTLS(ln.Addr().String(), "task", "addr", certFile, keyFile, caFile)
+	if err == nil {
+		t.Fatal("expected error for unknown status, got nil")
+	}
+	if !strings.Contains(err.Error(), "MYSTERY") {
+		t.Errorf("expected 'MYSTERY' in error, got %v", err)
+	}
+}
+
+func TestQueryTLS_ServerError(t *testing.T) {
+	certFile, keyFile, caFile := generateTestCert(t)
+	ln := startMockTLSServer(t, certFile, keyFile, caFile, func(_ transport.CentralizedMessage) transport.CentralizedResponse {
+		return transport.CentralizedResponse{Status: "ERR", Error: "lookup failed"}
+	})
+	defer ln.Close()
+
+	_, err := QueryTLS(ln.Addr().String(), "task", certFile, keyFile, caFile)
+	if err == nil {
+		t.Fatal("expected error for ERR response, got nil")
+	}
+	if !strings.Contains(err.Error(), "lookup failed") {
+		t.Errorf("expected 'lookup failed' in error, got %v", err)
+	}
+}
+
+func TestQueryTLS_NotFound(t *testing.T) {
+	certFile, keyFile, caFile := generateTestCert(t)
+	ln := startMockTLSServer(t, certFile, keyFile, caFile, func(_ transport.CentralizedMessage) transport.CentralizedResponse {
+		return transport.CentralizedResponse{Status: "NOTFOUND"}
+	})
+	defer ln.Close()
+
+	addr, err := QueryTLS(ln.Addr().String(), "task", certFile, keyFile, caFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if addr != "" {
+		t.Fatalf("expected empty address for NOTFOUND, got %q", addr)
+	}
+}
+
+func TestQueryTLS_UnknownStatus(t *testing.T) {
+	certFile, keyFile, caFile := generateTestCert(t)
+	ln := startMockTLSServer(t, certFile, keyFile, caFile, func(_ transport.CentralizedMessage) transport.CentralizedResponse {
+		return transport.CentralizedResponse{Status: "STRANGE"}
+	})
+	defer ln.Close()
+
+	_, err := QueryTLS(ln.Addr().String(), "task", certFile, keyFile, caFile)
+	if err == nil {
+		t.Fatal("expected error for unknown status, got nil")
+	}
+	if !strings.Contains(err.Error(), "STRANGE") {
+		t.Errorf("expected 'STRANGE' in error, got %v", err)
+	}
+}

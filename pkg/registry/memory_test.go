@@ -362,3 +362,104 @@ func TestCleanupKeepsFreshEntries(t *testing.T) {
 		t.Fatalf("expected fresh entry to remain, got %+v", services["mixed"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// parseDestinationIP
+// ---------------------------------------------------------------------------
+
+func TestParseDestinationIP(t *testing.T) {
+	cases := []struct {
+		addr    string
+		wantIP  string // empty string means we expect nil
+	}{
+		// Normal host:port
+		{"10.0.0.1:8080", "10.0.0.1"},
+		// IPv6 bracketed
+		{"[::1]:8080", "127.0.0.1"}, // ::1 is loopback → normalised to 127.0.0.1
+		// Plain IP (no port)
+		{"192.168.1.5", "192.168.1.5"},
+		// Loopback aliases → all map to 127.0.0.1
+		{"localhost:9000", "127.0.0.1"},
+		{"0.0.0.0:9000", "127.0.0.1"},
+		{"::1", "127.0.0.1"},
+		{"[::]:9000", "127.0.0.1"}, // "::" is wildcard, normalises to 127.0.0.1
+		// Empty host part
+		{":9000", "127.0.0.1"},
+		// Completely unparseable → nil
+		{"not_an_ip", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.addr, func(t *testing.T) {
+			got := parseDestinationIP(tc.addr)
+			if tc.wantIP == "" {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+			} else {
+				if got == nil {
+					t.Fatalf("expected %s, got nil", tc.wantIP)
+				}
+				if got.String() != tc.wantIP {
+					t.Errorf("expected %s, got %s", tc.wantIP, got.String())
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RegisterWithCapacity validation
+// ---------------------------------------------------------------------------
+
+func TestRegisterWithCapacityInvalidInputs(t *testing.T) {
+	r := NewMemoryRegistry()
+
+	// Empty task name should be silently ignored.
+	r.RegisterWithCapacity("", "10.0.0.1:8080", 1)
+	if svcs := r.ListServices(); len(svcs) != 0 {
+		t.Errorf("expected no services for empty task, got %+v", svcs)
+	}
+
+	// Empty address should also be ignored.
+	r.RegisterWithCapacity("good-task", "", 1)
+	if svcs := r.ListServices(); len(svcs) != 0 {
+		t.Errorf("expected no services for empty address, got %+v", svcs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetService / GetServiceForRequestor – branch coverage
+// ---------------------------------------------------------------------------
+
+func TestGetServiceNotFound(t *testing.T) {
+	r := NewMemoryRegistry()
+	_, err := r.GetService("no-such-task")
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestGetServiceForRequestorAllServicesBlockedByFirewall(t *testing.T) {
+	// Write a firewall rule file that allows a different source IP, so our
+	// requestor (192.0.2.99) has no allowed destinations.
+	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
+	// Allow only 192.0.2.1 → 10.0.0.1; requestor 192.0.2.99 is not covered.
+	if err := os.WriteFile(rulesPath, []byte("192.0.2.1 10.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+
+	r := NewMemoryRegistry()
+	r.SetFirewall(fw)
+	r.RegisterWithCapacity("svc", "10.0.0.1:8080", 1)
+
+	requestorIP := net.ParseIP("192.0.2.99") // not in rules
+	_, err = r.GetServiceForRequestor("svc", requestorIP)
+	if err != ErrNoAllowedService {
+		t.Fatalf("expected ErrNoAllowedService, got %v", err)
+	}
+}

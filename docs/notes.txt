@@ -61,7 +61,7 @@ Firewall mode:
     -- Research into details of how firewall rules work
 
 
-testing
-- Use the test scripts and the commit history to document the improvements made to the project
-- Place the simulation environment on the gitlab. Keep it switched off after some test runs
-- 
+testing and cleanup
+- Use the test scripts and the commit history to document the improvements made to the project: copmplete
+- Place the simulation environment on the gitlab. Keep it switched off after some test runs: complete
+- Fix bug in demo where it shows the intentionally incorrect query in stats

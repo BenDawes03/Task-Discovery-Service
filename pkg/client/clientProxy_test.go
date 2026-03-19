@@ -1321,3 +1321,58 @@ func TestSetLogOutputNil(t *testing.T) {
 	// Passing nil should be a no-op (not a panic).
 	SetLogOutput(nil)
 }
+
+// ========================================================================
+// tlsClientFilesFromEnv
+// ========================================================================
+
+func TestTlsClientFilesFromEnv_Defaults(t *testing.T) {
+	t.Setenv("TDS_TLS_CERT_FILE", "")
+	t.Setenv("TDS_TLS_KEY_FILE", "")
+	t.Setenv("TDS_TLS_CA_FILE", "")
+
+	cert, key, ca := tlsClientFilesFromEnv()
+	if cert != "certs/client.crt" {
+		t.Errorf("expected default cert path, got %q", cert)
+	}
+	if key != "certs/client.key" {
+		t.Errorf("expected default key path, got %q", key)
+	}
+	if ca != "certs/ca.crt" {
+		t.Errorf("expected default CA path, got %q", ca)
+	}
+}
+
+func TestTlsClientFilesFromEnv_EnvOverrides(t *testing.T) {
+	t.Setenv("TDS_TLS_CERT_FILE", "/custom/cert.crt")
+	t.Setenv("TDS_TLS_KEY_FILE", "/custom/cert.key")
+	t.Setenv("TDS_TLS_CA_FILE", "/custom/ca.crt")
+
+	cert, key, ca := tlsClientFilesFromEnv()
+	if cert != "/custom/cert.crt" {
+		t.Errorf("expected env cert path, got %q", cert)
+	}
+	if key != "/custom/cert.key" {
+		t.Errorf("expected env key path, got %q", key)
+	}
+	if ca != "/custom/ca.crt" {
+		t.Errorf("expected env CA path, got %q", ca)
+	}
+}
+
+func TestTlsClientFilesFromEnv_WhitespaceTrimmed(t *testing.T) {
+	t.Setenv("TDS_TLS_CERT_FILE", "  /trimmed/cert.crt  ")
+	t.Setenv("TDS_TLS_KEY_FILE", "  /trimmed/cert.key  ")
+	t.Setenv("TDS_TLS_CA_FILE", "  /trimmed/ca.crt  ")
+
+	cert, key, ca := tlsClientFilesFromEnv()
+	if cert != "/trimmed/cert.crt" {
+		t.Errorf("expected trimmed cert path, got %q", cert)
+	}
+	if key != "/trimmed/cert.key" {
+		t.Errorf("expected trimmed key path, got %q", key)
+	}
+	if ca != "/trimmed/ca.crt" {
+		t.Errorf("expected trimmed CA path, got %q", ca)
+	}
+}

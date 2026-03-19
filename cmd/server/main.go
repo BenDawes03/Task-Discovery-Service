@@ -60,6 +60,7 @@ var (
 	detailTable = tview.NewTable()
 	logView     = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	searchField = tview.NewInputField().SetLabel(" Filter: ")
+	footerView  = tview.NewTextView().SetDynamicColors(true)
 
 	// Filter state
 	currentFilter       = ""
@@ -275,10 +276,26 @@ func renderDetailsTable(services []registry.ServiceEntry) {
 		SetExpansion(1).
 		SetTextColor(tcell.ColorYellow).
 		SetAttributes(tcell.AttrBold))
+
+	if len(services) == 0 {
+		return
+	}
+
 	for i, e := range services {
-		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").SetExpansion(1))
-		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").SetExpansion(1))
-		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").SetExpansion(1))
+		rowColor := tcell.ColorDefault
+		if i%2 == 1 {
+			rowColor = tcell.Color235
+		}
+
+		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
+		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
+		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
 	}
 }
 
@@ -794,6 +811,12 @@ func startTransportServer(transportMode string, runTUI bool) {
 
 func setupUILayout() {
 	// Build layout
+	headerView := tview.NewTextView().SetDynamicColors(true)
+	headerView.SetTextAlign(tview.AlignCenter)
+	headerView.SetWrap(false)
+	headerView.SetText("[white::b]Task Distribution Server[white:-:-]")
+	headerView.SetBackgroundColor(tcell.Color24)
+
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
 	left.AddItem(searchField, 3, 0, false)
@@ -804,8 +827,16 @@ func setupUILayout() {
 	flex.AddItem(left, 30, 0, true)
 	flex.AddItem(right, 0, 1, false)
 
+	root := tview.NewFlex().SetDirection(tview.FlexRow)
+	root.AddItem(headerView, 1, 0, false)
+	root.AddItem(flex, 0, 1, true)
+	root.AddItem(footerView, 1, 0, false)
+
 	// Configure search field with live filtering
-	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
+	searchField.SetBorder(true).SetTitle("Task Filter")
+	searchField.SetLabel(" Task: ")
+	searchField.SetFieldBackgroundColor(tcell.Color236)
+	searchField.SetLabelColor(tcell.ColorWhite)
 	searchField.SetChangedFunc(func(text string) {
 		currentFilter = text
 		requestDashboardUpdate() // Trigger refresh with filter
@@ -816,13 +847,35 @@ func setupUILayout() {
 		}
 	})
 
-	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
-	detailTable.SetBorder(true).SetTitle("Details")
+	taskList.SetBorder(true).SetTitle("Tasks")
+	taskList.ShowSecondaryText(false)
+	taskList.SetMainTextColor(tcell.ColorWhite)
+	taskList.SetSelectedBackgroundColor(tcell.Color30)
+	taskList.SetSelectedTextColor(tcell.ColorWhite)
+	detailTable.SetBorder(true).SetTitle("Service Details")
 	detailTable.SetSeparator('|') // Add column separators
-	logView.SetBorder(true).SetTitle("Log")
+	logView.SetBorder(true).SetTitle("Events")
+	logView.SetTextColor(tcell.ColorWhite)
+	logView.SetBackgroundColor(tcell.Color234)
+	logView.SetRegions(false)
+
+	footerView.SetTextAlign(tview.AlignCenter)
+	footerView.SetBackgroundColor(tcell.Color236)
+	footerView.SetText("[yellow]Tab[white] switch focus   [yellow]Esc[white] leave filter   [yellow]q[white] quit TUI   [yellow]Ctrl+C[white] interrupt")
 
 	// Set up keyboard navigation
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC {
+			app.Stop()
+			return nil
+		}
+
+		switch strings.ToLower(string(event.Rune())) {
+		case "q":
+			app.Stop()
+			return nil
+		}
+
 		if event.Key() == tcell.KeyTab {
 			// Toggle between filter and task list
 			if app.GetFocus() == searchField {
@@ -836,7 +889,7 @@ func setupUILayout() {
 	})
 
 	// Start TUI
-	if err := app.SetRoot(flex, true).Run(); err != nil {
+	if err := app.SetRoot(root, true).Run(); err != nil {
 		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
 		os.Exit(1)
 	}

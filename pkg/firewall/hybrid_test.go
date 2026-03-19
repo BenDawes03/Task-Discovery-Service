@@ -224,3 +224,89 @@ func TestIndexedFirewallEmptyRules(t *testing.T) {
 		t.Errorf("Empty rules should allow all connections")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// canonicalIPString
+// ---------------------------------------------------------------------------
+
+func TestCanonicalIPString(t *testing.T) {
+	cases := []struct {
+		in   net.IP
+		want string
+	}{
+		{nil, ""},
+		{net.ParseIP("10.0.0.1"), "10.0.0.1"},
+		// IPv4-mapped IPv6 → should return IPv4 string.
+		{net.ParseIP("::ffff:10.0.0.1"), "10.0.0.1"},
+		// Pure IPv6
+		{net.ParseIP("2001:db8::1"), "2001:db8::1"},
+	}
+
+	for _, tc := range cases {
+		got := canonicalIPString(tc.in)
+		if got != tc.want {
+			t.Errorf("canonicalIPString(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// allowedDestinationNetworksLocked – nil source IP
+// ---------------------------------------------------------------------------
+
+func TestAllowedDestinationNetworksLockedNilSource(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "fw_nil_*.txt")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.WriteString("192.168.1.1 10.0.0.1\n")
+	tmpFile.Close()
+
+	provider, _ := NewFileRulesProvider(tmpFile.Name())
+	defer provider.Close()
+	fw, _ := NewIndexedFirewall(provider)
+	defer fw.Close()
+
+	fw.mu.RLock()
+	nets := fw.allowedDestinationNetworksLocked(nil)
+	fw.mu.RUnlock()
+
+	if len(nets) != 0 {
+		t.Errorf("expected nil source to return empty slice, got %v", nets)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ipToNetwork edge cases
+// ---------------------------------------------------------------------------
+
+func TestIpToNetworkNilReturnsNil(t *testing.T) {
+	if got := ipToNetwork(nil); got != nil {
+		t.Errorf("expected nil for nil IP, got %v", got)
+	}
+}
+
+func TestIpToNetworkIPv4(t *testing.T) {
+	ip := net.ParseIP("10.0.0.1")
+	n := ipToNetwork(ip)
+	if n == nil {
+		t.Fatal("expected non-nil network for IPv4 IP")
+	}
+	ones, bits := n.Mask.Size()
+	if ones != 32 || bits != 32 {
+		t.Errorf("expected /32 mask for IPv4, got /%d", ones)
+	}
+}
+
+func TestIpToNetworkIPv6(t *testing.T) {
+	ip := net.ParseIP("2001:db8::1")
+	n := ipToNetwork(ip)
+	if n == nil {
+		t.Fatal("expected non-nil network for IPv6 IP")
+	}
+	ones, bits := n.Mask.Size()
+	if ones != 128 || bits != 128 {
+		t.Errorf("expected /128 mask for IPv6, got /%d", ones)
+	}
+}

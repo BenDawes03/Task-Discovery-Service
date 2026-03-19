@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -858,5 +859,289 @@ func TestStoreServiceWeight(t *testing.T) {
 	}
 	if got := storeServiceWeight(store.ServiceEntry{Capacity: 0}); got != 1 {
 		t.Fatalf("expected zero capacity to normalize to 1, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IncrementQueryCount
+// ---------------------------------------------------------------------------
+
+func TestIncrementQueryCount_Success(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).
+		WithArgs("task-a", "10.0.0.1:9000").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := ps.IncrementQueryCount(context.Background(), "task-a", "10.0.0.1:9000"); err != nil {
+		t.Fatalf("IncrementQueryCount error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestIncrementQueryCount_NotFound(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).
+		WithArgs("task-a", "10.0.0.1:9000").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := ps.IncrementQueryCount(context.Background(), "task-a", "10.0.0.1:9000")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestIncrementQueryCount_QueryError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	expected := errors.New("exec failed")
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).
+		WithArgs("task-a", "10.0.0.1:9000").
+		WillReturnError(expected)
+
+	err := ps.IncrementQueryCount(context.Background(), "task-a", "10.0.0.1:9000")
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestIncrementQueryCount_RowsAffectedError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	expected := errors.New("rows affected failed")
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).
+		WithArgs("task-a", "10.0.0.1:9000").
+		WillReturnResult(sqlmock.NewErrorResult(expected))
+
+	err := ps.IncrementQueryCount(context.Background(), "task-a", "10.0.0.1:9000")
+	if !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// splitAddress edge cases
+// ---------------------------------------------------------------------------
+
+func TestSplitAddress_MissingHost(t *testing.T) {
+	_, _, err := splitAddress(":9000")
+	if err == nil || !strings.Contains(err.Error(), "missing host") {
+		t.Fatalf("expected missing host error, got %v", err)
+	}
+}
+
+func TestSplitAddress_InvalidPort(t *testing.T) {
+	_, _, err := splitAddress("10.0.0.1:notaport")
+	if err == nil || !strings.Contains(err.Error(), "invalid port") {
+		t.Fatalf("expected invalid port error, got %v", err)
+	}
+}
+
+func TestSplitAddress_PortOutOfRange(t *testing.T) {
+	for _, addr := range []string{"10.0.0.1:0", "10.0.0.1:65536"} {
+		_, _, err := splitAddress(addr)
+		if err == nil || !strings.Contains(err.Error(), "port out of range") {
+			t.Fatalf("expected port out of range error for %q, got %v", addr, err)
+		}
+	}
+}
+
+func TestSplitAddress_IPv6(t *testing.T) {
+	host, port, err := splitAddress("[::1]:8080")
+	if err != nil {
+		t.Fatalf("splitAddress IPv6 error: %v", err)
+	}
+	if host != "::1" || port != 8080 {
+		t.Fatalf("unexpected result: host=%q port=%d", host, port)
+	}
+}
+
+func TestSplitAddress_Whitespace(t *testing.T) {
+	host, port, err := splitAddress("  10.0.0.1:9000  ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "10.0.0.1" || port != 9000 {
+		t.Fatalf("unexpected result after trim: host=%q port=%d", host, port)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListServicesForTasks additional error paths
+// ---------------------------------------------------------------------------
+
+func TestListServicesForTasks_EmptyTasks(t *testing.T) {
+	ps, _, db := newMockStore(t)
+	defer db.Close()
+
+	result, err := ps.ListServicesForTasks(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty tasks: %v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected empty result, got %+v", result)
+	}
+}
+
+func TestListServicesForTasks_ScanError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"task", "address", "last_heartbeat", "query_count", "capacity"}).
+		AddRow("task-a", "10.0.0.1:9000", "bad-time", int64(1), 1)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task, address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnRows(rows)
+
+	_, err := ps.ListServicesForTasks(context.Background(), []string{"task-a"})
+	if err == nil {
+		t.Fatal("expected scan error, got nil")
+	}
+}
+
+func TestListServicesForTasks_RowsErr(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"task", "address", "last_heartbeat", "query_count", "capacity"}).
+		AddRow("task-a", "10.0.0.1:9000", now, int64(1), 1).
+		RowError(0, errors.New("row error"))
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task, address, last_heartbeat, query_count, capacity")).
+		WithArgs("task-a").
+		WillReturnRows(rows)
+
+	_, err := ps.ListServicesForTasks(context.Background(), []string{"task-a"})
+	if err == nil {
+		t.Fatal("expected rows error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListTopTasksByQueryCount additional error paths
+// ---------------------------------------------------------------------------
+
+func TestListTopTasksByQueryCount_ZeroLimit(t *testing.T) {
+	ps, _, db := newMockStore(t)
+	defer db.Close()
+
+	tasks, err := ps.ListTopTasksByQueryCount(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("expected empty result for zero limit, got %v", tasks)
+	}
+}
+
+func TestListTopTasksByQueryCount_ScanError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	// Use a float column instead of text to force scan failure.
+	rows := sqlmock.NewRows([]string{"task"}).AddRow(nil)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task")).
+		WithArgs(5).
+		WillReturnRows(rows)
+
+	_, err := ps.ListTopTasksByQueryCount(context.Background(), 5)
+	if err == nil {
+		t.Fatal("expected scan error, got nil")
+	}
+}
+
+func TestListTopTasksByQueryCount_RowsErr(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"task"}).
+		AddRow("task-a").
+		RowError(0, errors.New("row iteration error"))
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT task")).
+		WithArgs(5).
+		WillReturnRows(rows)
+
+	_, err := ps.ListTopTasksByQueryCount(context.Background(), 5)
+	if err == nil {
+		t.Fatal("expected rows error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pruneRoundRobinIndex
+// ---------------------------------------------------------------------------
+
+func TestPruneRoundRobinIndex_RemovesStaleTask(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	// Seed the in-memory round-robin index with two tasks.
+	ps.roundRobinIndexMu.Lock()
+	ps.roundRobinIndex["task-active"] = 3
+	ps.roundRobinIndex["task-stale"] = 7
+	ps.roundRobinIndexMu.Unlock()
+
+	// DB only returns task-active as still having active services.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).
+		WillReturnRows(sqlmock.NewRows([]string{"task"}).AddRow("task-active"))
+
+	if err := ps.pruneRoundRobinIndex(context.Background()); err != nil {
+		t.Fatalf("pruneRoundRobinIndex error: %v", err)
+	}
+
+	ps.roundRobinIndexMu.RLock()
+	_, hasActive := ps.roundRobinIndex["task-active"]
+	_, hasStale := ps.roundRobinIndex["task-stale"]
+	ps.roundRobinIndexMu.RUnlock()
+
+	if !hasActive {
+		t.Error("expected task-active to remain in index")
+	}
+	if hasStale {
+		t.Error("expected task-stale to be removed from index")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestPruneRoundRobinIndex_ScanError(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	// Return a nil value to force scan failure.
+	rows := sqlmock.NewRows([]string{"task"}).AddRow(nil)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).
+		WillReturnRows(rows)
+
+	if err := ps.pruneRoundRobinIndex(context.Background()); err == nil {
+		t.Fatal("expected scan error, got nil")
+	}
+}
+
+func TestPruneRoundRobinIndex_RowsErr(t *testing.T) {
+	ps, mock, db := newMockStore(t)
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"task"}).
+		AddRow("task-a").
+		RowError(0, errors.New("row error"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).
+		WillReturnRows(rows)
+
+	if err := ps.pruneRoundRobinIndex(context.Background()); err == nil {
+		t.Fatal("expected rows error, got nil")
 	}
 }
