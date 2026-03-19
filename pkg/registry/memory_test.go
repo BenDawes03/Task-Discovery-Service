@@ -233,6 +233,56 @@ func TestGetServiceForRequestorKeepsWeightedRotationWithinAllowedSubset(t *testi
 	}
 }
 
+func TestGetServiceForRequestorAllowsLocalhostDestinations(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "localhost-task"
+	r.RegisterWithCapacity(task, "localhost:8080", 1)
+
+	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
+	if err := os.WriteFile(rulesPath, []byte("127.0.0.1 127.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("failed to write firewall rules: %v", err)
+	}
+
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load firewall rules: %v", err)
+	}
+	r.SetFirewall(fw)
+
+	addr, err := r.GetServiceForRequestor(task, net.ParseIP("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("unexpected GetServiceForRequestor error: %v", err)
+	}
+	if addr != "localhost:8080" {
+		t.Fatalf("expected localhost service address, got %q", addr)
+	}
+}
+
+func TestGetServiceForRequestorAllowsIPv6LoopbackDestinations(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "ipv6-loopback-task"
+	r.RegisterWithCapacity(task, "[::1]:8080", 1)
+
+	rulesPath := filepath.Join(t.TempDir(), "rules.txt")
+	if err := os.WriteFile(rulesPath, []byte("127.0.0.1 127.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("failed to write firewall rules: %v", err)
+	}
+
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load firewall rules: %v", err)
+	}
+	r.SetFirewall(fw)
+
+	addr, err := r.GetServiceForRequestor(task, net.ParseIP("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("unexpected GetServiceForRequestor error: %v", err)
+	}
+	if addr != "[::1]:8080" {
+		t.Fatalf("expected IPv6 loopback service address, got %q", addr)
+	}
+}
+
 func TestListServicesReturnsDeepCopyAndSyncedQueryCounts(t *testing.T) {
 	r := NewMemoryRegistry()
 	task := "copy-task"

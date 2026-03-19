@@ -375,6 +375,24 @@ func TestStoreBackedGetServiceForRequestorUsesDBFallbackAndFirewall(t *testing.T
 	}
 }
 
+func TestStoreBackedGetServiceForRequestorAllowsLocalhostDBDestination(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"local": {{Address: "localhost:8080", Capacity: 1, LastHeartbeat: time.Now()}},
+	}
+
+	sr := NewStoreBackedRegistry(storeStub, 0)
+	sr.SetFirewall(testFirewall(t, "127.0.0.1 127.0.0.1\n"))
+
+	addr, err := sr.GetServiceForRequestor("local", net.ParseIP("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("unexpected localhost requestor error: %v", err)
+	}
+	if addr != "localhost:8080" {
+		t.Fatalf("expected localhost DB-hydrated address, got %q", addr)
+	}
+}
+
 func TestStoreBackedListServicesTriggersWarmCacheAndSurvivesWarmErrors(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.listServices = map[string][]store.ServiceEntry{

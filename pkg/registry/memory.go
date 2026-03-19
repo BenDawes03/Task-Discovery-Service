@@ -202,6 +202,16 @@ func parseDestinationIP(addr string) net.IP {
 	if err != nil {
 		hostPart = addr
 	}
+	hostPart = strings.TrimSpace(hostPart)
+	hostPart = strings.Trim(hostPart, "[]")
+
+	// Normalize loopback/wildcard aliases so firewall rules written for
+	// 127.0.0.1 continue to work when demos register localhost-style addresses.
+	switch strings.ToLower(hostPart) {
+	case "", "localhost", "0.0.0.0", "::", "::1":
+		hostPart = "127.0.0.1"
+	}
+
 	return net.ParseIP(hostPart)
 }
 
