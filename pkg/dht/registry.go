@@ -24,11 +24,11 @@ type Snapshot struct {
 
 // DHTRegistry wraps DHT functionality to match the proxy's expected interface
 type DHTRegistry struct {
-	network       *DHTNetwork
-	roundRobinCursor sync.Map // map[string]*atomic.Int64 keyed by task
-	regCount      uint64
-	queryCount    uint64
-	errorCount    uint64
+	network          *DHTNetwork
+	roundRobinCursor sync.Map // map[string]*atomic.Int64, keyed by task
+	regCount         uint64
+	queryCount       uint64
+	errorCount       uint64
 }
 
 func normalizeListenAddr(listenAddr string) string {
@@ -92,7 +92,8 @@ func (dr *DHTRegistry) Register(task, address string) error {
 	return nil
 }
 
-// Query retrieves an address for a task from the DHT using round-robin across returned addresses.
+// Query retrieves an address for a task from the DHT
+// Returns the first available address (round-robin could be added)
 func (dr *DHTRegistry) Query(task string) (string, error) {
 	registryLogger.Printf("querying %s", task)
 	
@@ -108,9 +109,9 @@ func (dr *DHTRegistry) Query(task string) (string, error) {
 		return "", nil
 	}
 
-	cursorVal, _ := dr.roundRobinCursor.LoadOrStore(task, &atomic.Int64{})
-	cursor := cursorVal.(*atomic.Int64)
-	idx := int(cursor.Add(1)-1) % len(addrs)
+	counterVal, _ := dr.roundRobinCursor.LoadOrStore(task, &atomic.Int64{})
+	counter := counterVal.(*atomic.Int64)
+	idx := int(counter.Add(1)-1) % len(addrs)
 	return addrs[idx], nil
 }
 

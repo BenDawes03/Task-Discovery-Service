@@ -13,7 +13,6 @@ var ErrInvalidAddress = errors.New("invalid service address")
 
 type ServiceEntry struct {
 	Address       string
-	ParsedIP      net.IP
 	LastHeartbeat time.Time
 	QueryCount    int64
 	Capacity      int

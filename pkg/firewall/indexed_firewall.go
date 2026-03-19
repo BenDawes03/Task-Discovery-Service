@@ -3,34 +3,25 @@ package firewall
 import (
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-type sourceDestRule struct {
-	sourceNet *net.IPNet
-	destNets  []*net.IPNet
-}
-
-// IndexedFirewall provides fast firewall rule checking using an in-memory source index.
-// Exact source IP rules are O(1) hash lookups; CIDR source rules are matched in O(k_cidr).
+// IndexedFirewall provides fast firewall rule checking using an in-memory index.
+// Rules are organized by source IP/CIDR for O(1) hash lookup, followed by O(k)
+// network checks where k is the number of rules for that source.
+// It uses a RulesProvider to load rules, which can be a file or database.
 type IndexedFirewall struct {
 	provider RulesProvider
 
-	// mu protects index structures during reload.
+	// mu protects the index and stats
 	mu sync.RWMutex
 
-	// index maps exact source IP string -> allowed destination networks.
+	// index maps source CIDR strings to their allowed destination networks
+	// Key format: "192.168.1.0/24" or "192.168.1.10" (single IPs stored as /32)
 	index map[string][]*net.IPNet
 
-	// cidrRules holds source CIDR rules that cannot be exact-hashed.
-	cidrRules []sourceDestRule
-
-	// stats for observability (atomic to avoid lock contention/races on read path).
-	totalChecks    atomic.Int64
-	totalAllowed   atomic.Int64
-	totalBlocked   atomic.Int64
-	lastReloadTime atomic.Int64
+	// stats for observability
+	stats FirewallStats
 }
 
 // FirewallStats tracks firewall decision statistics
@@ -50,18 +41,15 @@ func NewIndexedFirewall(provider RulesProvider) (*IndexedFirewall, error) {
 	}
 
 	// Build the initial index
-	ifw.mu.Lock()
 	if err := ifw.rebuildIndex(); err != nil {
-		ifw.mu.Unlock()
 		return nil, err
 	}
-	ifw.mu.Unlock()
 
 	return ifw, nil
 }
 
 // rebuildIndex rebuilds the in-memory index from the current set of rules.
-// Caller must ensure synchronization if concurrent readers/writers may exist.
+// Must be called with the write lock held.
 func (ifw *IndexedFirewall) rebuildIndex() error {
 	rules, err := ifw.provider.GetRules()
 	if err != nil {
@@ -69,71 +57,46 @@ func (ifw *IndexedFirewall) rebuildIndex() error {
 	}
 
 	newIndex := make(map[string][]*net.IPNet)
-	newCIDR := make([]sourceDestRule, 0)
-	cidrPos := make(map[string]int)
 
 	for _, rule := range rules {
-		// Normalize destination to network form for unified matching.
+		// Get the source key (CIDR string or /32)
+		sourceKey := ifw.getSourceKey(rule)
+
+		// Get destination network
 		var destNet *net.IPNet
 		if rule.DestNetwork != nil {
 			destNet = rule.DestNetwork
 		} else {
+			// Convert single IP to /32 or /128
 			destNet = ipToNetwork(rule.DestIP)
 		}
-		if destNet == nil {
-			continue
-		}
 
-		if rule.SourceNetwork != nil {
-			key := rule.SourceNetwork.String()
-			idx, ok := cidrPos[key]
-			if !ok {
-				newCIDR = append(newCIDR, sourceDestRule{sourceNet: rule.SourceNetwork})
-				idx = len(newCIDR) - 1
-				cidrPos[key] = idx
-			}
-			newCIDR[idx].destNets = append(newCIDR[idx].destNets, destNet)
-			continue
-		}
-
-		sourceKey := canonicalIPString(rule.SourceIP)
-		if sourceKey == "" {
-			continue
-		}
 		newIndex[sourceKey] = append(newIndex[sourceKey], destNet)
 	}
 
 	ifw.index = newIndex
-	ifw.cidrRules = newCIDR
 	return nil
 }
 
-func canonicalIPString(ip net.IP) string {
-	if ip == nil {
-		return ""
+// getSourceKey returns the index key for a rule's source.
+// Single IPs are converted to /32 or /128 notation for consistent indexing.
+func (ifw *IndexedFirewall) getSourceKey(rule FirewallRule) string {
+	if rule.SourceNetwork != nil {
+		return rule.SourceNetwork.String()
 	}
-	if v4 := ip.To4(); v4 != nil {
-		return v4.String()
-	}
-	if v16 := ip.To16(); v16 != nil {
-		return v16.String()
-	}
-	return ""
+	return ipToNetwork(rule.SourceIP).String()
 }
 
 // ipToNetwork converts a single IP to a /32 or /128 network.
 func ipToNetwork(ip net.IP) *net.IPNet {
-	if ip == nil {
-		return nil
-	}
 	if ip.To4() != nil {
 		return &net.IPNet{
-			IP:   ip.To4(),
+			IP:   ip,
 			Mask: net.CIDRMask(32, 32),
 		}
 	}
 	return &net.IPNet{
-		IP:   ip.To16(),
+		IP:   ip,
 		Mask: net.CIDRMask(128, 128),
 	}
 }
@@ -142,54 +105,38 @@ func ipToNetwork(ip net.IP) *net.IPNet {
 // according to the firewall rules.
 func (ifw *IndexedFirewall) IsAllowed(sourceIP, destIP net.IP) bool {
 	ifw.mu.RLock()
-	allowed := ifw.isAllowedLocked(sourceIP, destIP)
-	ifw.mu.RUnlock()
+	defer ifw.mu.RUnlock()
 
-	ifw.totalChecks.Add(1)
-	if allowed {
-		ifw.totalAllowed.Add(1)
-		return true
-	}
-	ifw.totalBlocked.Add(1)
-	return false
-}
-
-func (ifw *IndexedFirewall) isAllowedLocked(sourceIP, destIP net.IP) bool {
-	// Empty index means no rules loaded (permissive by default).
-	if len(ifw.index) == 0 && len(ifw.cidrRules) == 0 {
+	// Empty index means no rules loaded (permissive by default)
+	if len(ifw.index) == 0 {
+		ifw.stats.TotalChecks++
+		ifw.stats.TotalAllowed++
 		return true
 	}
 
-	destNets := ifw.allowedDestinationNetworksLocked(sourceIP)
-	for _, destNet := range destNets {
-		if destNet.Contains(destIP) {
-			return true
+	// Try to find a matching rule by iterating index keys
+	// This is O(n) in the number of source rules, but typically much smaller
+	// than total number of rules since they're grouped by source.
+	for sourceKey, destNets := range ifw.index {
+		// Check if sourceIP matches this key
+		if ifw.sourceMatches(sourceKey, sourceIP) {
+			// Check if destIP is in any of this source's allowed destinations
+			for _, destNet := range destNets {
+				if destNet.Contains(destIP) {
+					ifw.stats.TotalChecks++
+					ifw.stats.TotalAllowed++
+					return true
+				}
+			}
 		}
 	}
+
+	ifw.stats.TotalChecks++
+	ifw.stats.TotalBlocked++
 	return false
-}
-
-func (ifw *IndexedFirewall) allowedDestinationNetworksLocked(sourceIP net.IP) []*net.IPNet {
-	if sourceIP == nil {
-		return nil
-	}
-
-	allowed := make([]*net.IPNet, 0)
-	if exact := ifw.index[canonicalIPString(sourceIP)]; len(exact) > 0 {
-		allowed = append(allowed, exact...)
-	}
-
-	for _, rule := range ifw.cidrRules {
-		if rule.sourceNet.Contains(sourceIP) {
-			allowed = append(allowed, rule.destNets...)
-		}
-	}
-
-	return allowed
 }
 
 // sourceMatches checks if an IP matches a source key (CIDR notation).
-// Kept for backward compatibility with tests/helpers.
 func (ifw *IndexedFirewall) sourceMatches(sourceKey string, sourceIP net.IP) bool {
 	_, network, err := net.ParseCIDR(sourceKey)
 	if err != nil {
@@ -203,35 +150,44 @@ func (ifw *IndexedFirewall) sourceMatches(sourceKey string, sourceIP net.IP) boo
 // sourceIP is allowed to communicate with according to the firewall rules.
 func (ifw *IndexedFirewall) FilterAddresses(sourceIP net.IP, addresses []string) []string {
 	ifw.mu.RLock()
+	defer ifw.mu.RUnlock()
+
 	// Empty index means no rules loaded (permissive by default)
-	if len(ifw.index) == 0 && len(ifw.cidrRules) == 0 {
-		ifw.mu.RUnlock()
+	if len(ifw.index) == 0 {
 		return addresses
-	}
-
-	allowedDests := ifw.allowedDestinationNetworksLocked(sourceIP)
-	ifw.mu.RUnlock()
-
-	if len(allowedDests) == 0 {
-		return []string{}
 	}
 
 	allowed := make([]string, 0, len(addresses))
 	for _, addr := range addresses {
+		// Extract IP from address (handle "ip:port" format)
 		hostPart, _, err := net.SplitHostPort(addr)
 		if err != nil {
+			// No port, treat the whole string as IP
 			hostPart = addr
 		}
 
 		destIP := net.ParseIP(hostPart)
 		if destIP == nil {
+			// Invalid IP, skip it
 			continue
 		}
 
-		for _, destNet := range allowedDests {
-			if destNet.Contains(destIP) {
-				allowed = append(allowed, addr)
-				break
+		// Check in-memory index (without updating stats)
+		allowed = ifw.filterAddressHelper(sourceIP, destIP, allowed, addr)
+	}
+
+	return allowed
+}
+
+// filterAddressHelper is a helper for FilterAddresses that checks a single address.
+// Called with read lock held.
+func (ifw *IndexedFirewall) filterAddressHelper(sourceIP, destIP net.IP, allowed []string, addr string) []string {
+	for sourceKey, destNets := range ifw.index {
+		if ifw.sourceMatches(sourceKey, sourceIP) {
+			for _, destNet := range destNets {
+				if destNet.Contains(destIP) {
+					return append(allowed, addr)
+				}
 			}
 		}
 	}
@@ -248,18 +204,16 @@ func (ifw *IndexedFirewall) Reload() error {
 		return err
 	}
 
-	ifw.lastReloadTime.Store(getCurrentUnixTime())
+	ifw.stats.LastReloadTime = getCurrentUnixTime()
 	return nil
 }
 
 // GetStats returns a copy of the current firewall statistics.
 func (ifw *IndexedFirewall) GetStats() FirewallStats {
-	return FirewallStats{
-		TotalChecks:    ifw.totalChecks.Load(),
-		TotalAllowed:   ifw.totalAllowed.Load(),
-		TotalBlocked:   ifw.totalBlocked.Load(),
-		LastReloadTime: ifw.lastReloadTime.Load(),
-	}
+	ifw.mu.RLock()
+	defer ifw.mu.RUnlock()
+
+	return ifw.stats
 }
 
 // Close closes the underlying RulesProvider.

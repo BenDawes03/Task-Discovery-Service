@@ -26,13 +26,18 @@ import (
 // Config
 var (
 	// Server configuration
-	listenPort   int
-	cacheMaxSize int
-	logDir       string
+	listenPort            int
+	cacheMaxSize          int
+	cacheAdmitAfterMisses int
+	logDir                string
 
 	// Configurable timeouts
 	heartbeatTimeout time.Duration
 	cleanupInterval  time.Duration
+
+	// Concurrency limits
+	maxConcurrentUDP int64
+	maxConcurrentTCP int64
 
 	// TLS configuration
 	useTLS          bool
@@ -60,6 +65,7 @@ var (
 	detailTable = tview.NewTable()
 	logView     = tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	searchField = tview.NewInputField().SetLabel(" Filter: ")
+	footerView  = tview.NewTextView().SetDynamicColors(true)
 
 	// Filter state
 	currentFilter       = ""
@@ -275,10 +281,26 @@ func renderDetailsTable(services []registry.ServiceEntry) {
 		SetExpansion(1).
 		SetTextColor(tcell.ColorYellow).
 		SetAttributes(tcell.AttrBold))
+
+	if len(services) == 0 {
+		return
+	}
+
 	for i, e := range services {
-		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").SetExpansion(1))
-		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").SetExpansion(1))
-		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").SetExpansion(1))
+		rowColor := tcell.ColorDefault
+		if i%2 == 1 {
+			rowColor = tcell.Color235
+		}
+
+		detailTable.SetCell(i+1, 0, tview.NewTableCell(" "+e.Address+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
+		detailTable.SetCell(i+1, 1, tview.NewTableCell(" "+e.LastHeartbeat.Format("2006-01-02 15:04:05")+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
+		detailTable.SetCell(i+1, 2, tview.NewTableCell(" "+fmt.Sprintf("%d", e.QueryCount)+" ").
+			SetExpansion(1).
+			SetBackgroundColor(rowColor))
 	}
 }
 
@@ -328,6 +350,16 @@ func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
 	skipPrompts := false
+	argHas := func(names ...string) bool {
+		for _, a := range os.Args[1:] {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	flagProvided := func(names ...string) bool {
 		for _, a := range os.Args[1:] {
 			for _, n := range names {
@@ -350,23 +382,20 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// Check if transport mode was set via flags
-	transportFlagSet := false
-	for _, a := range os.Args[1:] {
-		if a == "--tcp" || a == "--udp" || a == "--tls" {
-			transportFlagSet = true
-			break
-		}
-	}
+	transportFlagSet := argHas("-tcp", "--tcp") || argHas("-udp", "--udp") || argHas("-tls", "--tls")
 
 	// Check if specific config values were set via flags
 	portFlagSet := flagProvided("--port")
 	heartbeatTimeoutFlagSet := flagProvided("--heartbeat-timeout")
 	cleanupIntervalFlagSet := flagProvided("--cleanup-interval")
+	maxUDPHandlersFlagSet := flagProvided("--max-udp-handlers")
+	maxTCPConnectionsFlagSet := flagProvided("--max-tcp-connections")
 	logDirFlagSet := flagProvided("--log-dir")
 	tlsCertFlagSet := flagProvided("--tls-cert")
 	tlsKeyFlagSet := flagProvided("--tls-key")
 	tlsClientCAFlagSet := flagProvided("--tls-client-ca")
 	cacheMaxSizeFlagSet := flagProvided("--cache-max-size")
+	cacheAdmitAfterMissesFlagSet := flagProvided("--cache-admit-after-misses")
 
 	// Check if firewall was set via flags
 	firewallFlagSet := false
@@ -383,9 +412,13 @@ func askTerminalOptions() (string, bool, bool) {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to no TUI")
 			runTUI = false
 		}
-		// Use flag value or default
-		if useTLS {
+		// Use explicit transport flag value in headless mode.
+		if argHas("-tls", "--tls") || useTLS {
 			transportMode = "tls"
+		} else if argHas("-tcp", "--tcp") {
+			transportMode = "tcp"
+		} else if argHas("-udp", "--udp") {
+			transportMode = "udp"
 		}
 		return transportMode, runTUI, forceUI
 	}
@@ -465,6 +498,47 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
+	// Concurrency limit prompts are transport-specific.
+	if transportMode == "udp" && !maxUDPHandlersFlagSet {
+		defaultUDP := int64(1000)
+		if maxConcurrentUDP > 0 {
+			defaultUDP = maxConcurrentUDP
+		}
+		fmt.Fprintf(os.Stderr, "Max concurrent UDP handlers [%d]: ", defaultUDP)
+		udpInput, _ := reader.ReadString('\n')
+		udpInput = strings.TrimSpace(udpInput)
+		if udpInput != "" {
+			var parsed int64
+			if _, err := fmt.Sscanf(udpInput, "%d", &parsed); err == nil && parsed >= 0 {
+				maxConcurrentUDP = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid number; keeping existing value")
+			}
+		}
+	}
+
+	if (transportMode == "tcp" || transportMode == "tls") && !maxTCPConnectionsFlagSet {
+		defaultTCP := int64(5000)
+		if maxConcurrentTCP > 0 {
+			defaultTCP = maxConcurrentTCP
+		}
+		if transportMode == "tls" {
+			fmt.Fprintf(os.Stderr, "Max concurrent TLS connections [%d]: ", defaultTCP)
+		} else {
+			fmt.Fprintf(os.Stderr, "Max concurrent TCP connections [%d]: ", defaultTCP)
+		}
+		tcpInput, _ := reader.ReadString('\n')
+		tcpInput = strings.TrimSpace(tcpInput)
+		if tcpInput != "" {
+			var parsed int64
+			if _, err := fmt.Sscanf(tcpInput, "%d", &parsed); err == nil && parsed >= 0 {
+				maxConcurrentTCP = parsed
+			} else {
+				fmt.Fprintln(os.Stderr, "Invalid number; keeping existing value")
+			}
+		}
+	}
+
 	if !logDirFlagSet {
 		fmt.Fprintf(os.Stderr, "Log directory [%s]: ", logDir)
 		logDirInput, _ := reader.ReadString('\n')
@@ -521,6 +595,17 @@ func askTerminalOptions() (string, bool, bool) {
 					cacheInput = strings.TrimSpace(cacheInput)
 					if cacheInput != "" {
 						fmt.Sscanf(cacheInput, "%d", &cacheMaxSize)
+					}
+				}
+
+				if !cacheAdmitAfterMissesFlagSet {
+					fmt.Fprint(os.Stderr, "Admit task to cache after T misses [1]: ")
+					admissionInput, _ := reader.ReadString('\n')
+					admissionInput = strings.TrimSpace(admissionInput)
+					if admissionInput != "" {
+						if _, err := fmt.Sscanf(admissionInput, "%d", &cacheAdmitAfterMisses); err != nil || cacheAdmitAfterMisses <= 0 {
+							fmt.Fprintln(os.Stderr, "Invalid admission threshold; keeping existing value")
+						}
 					}
 				}
 			}
@@ -710,6 +795,10 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 		cancel()
 
 		storeReg := registry.NewStoreBackedRegistry(s, cacheMaxSize)
+		if cacheAdmitAfterMisses <= 0 {
+			cacheAdmitAfterMisses = 1
+		}
+		storeReg.SetCacheAdmissionMissThreshold(cacheAdmitAfterMisses)
 		if fw != nil {
 			storeReg.SetFirewall(fw)
 		}
@@ -737,9 +826,9 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 		}
 		cancel()
 
-		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d)", cacheMaxSize))
+		logEvent(fmt.Sprintf("Using postgres persistent store with LFU cache (max=%d, admit-after-misses=%d)", cacheMaxSize, cacheAdmitAfterMisses))
 		if !runTUI {
-			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d)\n", cacheMaxSize)
+			fmt.Fprintf(os.Stderr, "using postgres persistent store with LFU cache (max=%d, admit-after-misses=%d)\n", cacheMaxSize, cacheAdmitAfterMisses)
 		}
 		return storeReg
 	}
@@ -762,23 +851,54 @@ func startTransportServer(transportMode string, runTUI bool) {
 		fmt.Fprintln(os.Stderr, "starting server (mode=", transportMode, ")")
 	}
 
+	// Log concurrency limits
+	switch transportMode {
+	case "udp":
+		udpLimit := maxConcurrentUDP
+		if udpLimit <= 0 {
+			udpLimit = 1000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d UDP handlers", udpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d UDP handlers\n", udpLimit)
+		}
+	case "tcp":
+		tcpLimit := maxConcurrentTCP
+		if tcpLimit <= 0 {
+			tcpLimit = 5000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d TCP connections", tcpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d TCP connections\n", tcpLimit)
+		}
+	case "tls":
+		tcpLimit := maxConcurrentTCP
+		if tcpLimit <= 0 {
+			tcpLimit = 5000
+		}
+		logEvent(fmt.Sprintf("Concurrency limit: %d TLS connections", tcpLimit))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "concurrency limit: %d TLS connections\n", tcpLimit)
+		}
+	}
+
 	switch transportMode {
 	case "tls":
 		logEvent(fmt.Sprintf("TLS mode: cert=%s key=%s ca=%s", tlsCertFile, tlsKeyFile, tlsClientCAFile))
 		go func() {
-			if err := transport.StartTCPServerTLS(reg, listenPort, 0, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
+			if err := transport.StartTCPServerTLS(reg, listenPort, maxConcurrentTCP, tlsCertFile, tlsKeyFile, tlsClientCAFile, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TLS server error: %v", err))
 			}
 		}()
 	case "tcp":
 		go func() {
-			if err := transport.StartTCPServer(reg, listenPort, 0, logEvent); err != nil {
+			if err := transport.StartTCPServer(reg, listenPort, maxConcurrentTCP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("TCP server error: %v", err))
 			}
 		}()
 	default:
 		go func() {
-			if err := transport.StartUDPServer(reg, listenPort, 0, logEvent); err != nil {
+			if err := transport.StartUDPServer(reg, listenPort, maxConcurrentUDP, logEvent); err != nil {
 				fatalError(fmt.Sprintf("UDP server error: %v", err))
 			}
 		}()
@@ -794,6 +914,12 @@ func startTransportServer(transportMode string, runTUI bool) {
 
 func setupUILayout() {
 	// Build layout
+	headerView := tview.NewTextView().SetDynamicColors(true)
+	headerView.SetTextAlign(tview.AlignCenter)
+	headerView.SetWrap(false)
+	headerView.SetText("[white::b]Task Distribution Server[white:-:-]")
+	headerView.SetBackgroundColor(tcell.Color24)
+
 	flex := tview.NewFlex()
 	left := tview.NewFlex().SetDirection(tview.FlexRow)
 	left.AddItem(searchField, 3, 0, false)
@@ -804,8 +930,16 @@ func setupUILayout() {
 	flex.AddItem(left, 30, 0, true)
 	flex.AddItem(right, 0, 1, false)
 
+	root := tview.NewFlex().SetDirection(tview.FlexRow)
+	root.AddItem(headerView, 1, 0, false)
+	root.AddItem(flex, 0, 1, true)
+	root.AddItem(footerView, 1, 0, false)
+
 	// Configure search field with live filtering
-	searchField.SetBorder(true).SetTitle("Filter (Tab to focus, Esc to return)")
+	searchField.SetBorder(true).SetTitle("Task Filter")
+	searchField.SetLabel(" Task: ")
+	searchField.SetFieldBackgroundColor(tcell.Color236)
+	searchField.SetLabelColor(tcell.ColorWhite)
 	searchField.SetChangedFunc(func(text string) {
 		currentFilter = text
 		requestDashboardUpdate() // Trigger refresh with filter
@@ -816,13 +950,35 @@ func setupUILayout() {
 		}
 	})
 
-	taskList.SetBorder(true).SetTitle("Tasks (Tab to filter)")
-	detailTable.SetBorder(true).SetTitle("Details")
+	taskList.SetBorder(true).SetTitle("Tasks")
+	taskList.ShowSecondaryText(false)
+	taskList.SetMainTextColor(tcell.ColorWhite)
+	taskList.SetSelectedBackgroundColor(tcell.Color30)
+	taskList.SetSelectedTextColor(tcell.ColorWhite)
+	detailTable.SetBorder(true).SetTitle("Service Details")
 	detailTable.SetSeparator('|') // Add column separators
-	logView.SetBorder(true).SetTitle("Log")
+	logView.SetBorder(true).SetTitle("Events")
+	logView.SetTextColor(tcell.ColorWhite)
+	logView.SetBackgroundColor(tcell.Color234)
+	logView.SetRegions(false)
+
+	footerView.SetTextAlign(tview.AlignCenter)
+	footerView.SetBackgroundColor(tcell.Color236)
+	footerView.SetText("[yellow]Tab[white] switch focus   [yellow]Esc[white] leave filter   [yellow]q[white] quit TUI   [yellow]Ctrl+C[white] interrupt")
 
 	// Set up keyboard navigation
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC {
+			app.Stop()
+			return nil
+		}
+
+		switch strings.ToLower(string(event.Rune())) {
+		case "q":
+			app.Stop()
+			return nil
+		}
+
 		if event.Key() == tcell.KeyTab {
 			// Toggle between filter and task list
 			if app.GetFocus() == searchField {
@@ -836,7 +992,7 @@ func setupUILayout() {
 	})
 
 	// Start TUI
-	if err := app.SetRoot(flex, true).Run(); err != nil {
+	if err := app.SetRoot(root, true).Run(); err != nil {
 		logEvent(fmt.Sprintf("ERROR: tview run error: %v", err))
 		os.Exit(1)
 	}
@@ -912,6 +1068,8 @@ func main() {
 	flag.IntVar(&listenPort, "port", 5000, "Port to listen on")
 	flag.DurationVar(&heartbeatTimeout, "heartbeat-timeout", 60*time.Second, "Timeout for service heartbeats")
 	flag.DurationVar(&cleanupInterval, "cleanup-interval", 10*time.Second, "Interval for cleanup of stale entries")
+	flag.Int64Var(&maxConcurrentUDP, "max-udp-handlers", 1000, "Maximum concurrent UDP request handlers (0 = use default)")
+	flag.Int64Var(&maxConcurrentTCP, "max-tcp-connections", 5000, "Maximum concurrent TCP connections (0 = use default)")
 	flag.StringVar(&firewallRulesPath, "firewall-rules", "", "Path to firewall rules file (optional)")
 
 	// Transport mode flags
@@ -927,6 +1085,7 @@ func main() {
 	// Database configuration flags
 	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgresql://user:password@localhost:5432/dbname)")
 	flag.IntVar(&cacheMaxSize, "cache-max-size", 100, "Maximum number of tasks to keep in cache (0 = unlimited)")
+	flag.IntVar(&cacheAdmitAfterMisses, "cache-admit-after-misses", 1, "Admit a task into cache after this many misses (min 1)")
 
 	// Logging configuration flags
 	flag.StringVar(&logDir, "log-dir", "logs", "Directory for log files")
@@ -936,7 +1095,6 @@ func main() {
 	flag.BoolVar(&forceUI, "ui", false, "Alias for --force-ui")
 	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
 	flag.BoolVar(&noUI, "no-tui", false, "Alias for --no-ui")
-
 	flag.Parse()
 
 	processTransportModeFlags(*tcpMode, *udpMode, *tlsMode)

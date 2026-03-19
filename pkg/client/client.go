@@ -185,17 +185,8 @@ func QueryUDP(serverAddr, task string) (string, error) {
 	if resp.Status == "NOTFOUND" {
 		return "", nil
 	}
-	if resp.Status == "FORBIDDEN" {
-		if resp.Error != "" {
-			return "", fmt.Errorf("server forbidden: %s", resp.Error)
-		}
-		return "", fmt.Errorf("server forbidden")
-	}
 	if resp.Status == "ERR" {
 		return "", fmt.Errorf("server error: %s", resp.Error)
-	}
-	if resp.Status != "OK" {
-		return "", fmt.Errorf("server error: %s", resp.Status)
 	}
 	return resp.Address, nil
 }
@@ -239,17 +230,8 @@ func QueryTCP(serverAddr, task string) (string, error) {
 	if resp.Status == "NOTFOUND" {
 		return "", nil
 	}
-	if resp.Status == "FORBIDDEN" {
-		if resp.Error != "" {
-			return "", fmt.Errorf("server forbidden: %s", resp.Error)
-		}
-		return "", fmt.Errorf("server forbidden")
-	}
 	if resp.Status == "ERR" {
 		return "", fmt.Errorf("server error: %s", resp.Error)
-	}
-	if resp.Status != "OK" {
-		return "", fmt.Errorf("server error: %s", resp.Status)
 	}
 	return resp.Address, nil
 }

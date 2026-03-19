@@ -15,7 +15,7 @@ type MemoryRegistry struct {
 	roundRobinIndex  sync.Map // map[string]*atomic.Int64 for lock-free weighted round-robin cursor
 	queryCounters    sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
 	totalQueries     atomic.Int64
-	firewall         firewall.Evaluator
+	firewall         *firewall.Firewall
 }
 
 func NewMemoryRegistry() *MemoryRegistry {
@@ -26,7 +26,7 @@ func NewMemoryRegistry() *MemoryRegistry {
 
 // SetFirewall configures the firewall rules for this registry.
 // If fw is nil, firewall filtering is disabled.
-func (registry *MemoryRegistry) SetFirewall(fw firewall.Evaluator) {
+func (registry *MemoryRegistry) SetFirewall(fw *firewall.Firewall) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	registry.firewall = fw
@@ -47,7 +47,6 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 		if e.Address == addr {
 			// Heartbeat-only update: preserve configured capacity.
 			entries[i].LastHeartbeat = now
-			entries[i].ParsedIP = parseDestinationIP(addr)
 			registry.services[task] = entries
 			return
 		}
@@ -56,7 +55,6 @@ func (registry *MemoryRegistry) Register(task, addr string) {
 	// New entry via legacy register path defaults to capacity 1.
 	newEntry := ServiceEntry{
 		Address:       addr,
-		ParsedIP:      parseDestinationIP(addr),
 		LastHeartbeat: now,
 		Capacity:      1,
 	}
@@ -82,7 +80,6 @@ func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity
 		if e.Address == addr {
 			// update heartbeat
 			entries[i].LastHeartbeat = now
-			entries[i].ParsedIP = parseDestinationIP(addr)
 			entries[i].Capacity = capacity
 			registry.services[task] = entries
 			return
@@ -91,7 +88,6 @@ func (registry *MemoryRegistry) RegisterWithCapacity(task, addr string, capacity
 	// not found -> append
 	newEntry := ServiceEntry{
 		Address:       addr,
-		ParsedIP:      parseDestinationIP(addr),
 		LastHeartbeat: now,
 		Capacity:      capacity,
 	}
@@ -129,12 +125,13 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	if registry.firewall != nil && requestorIP != nil {
 		allowedEntries = make([]ServiceEntry, 0, len(entryCopy))
 		for _, entry := range entryCopy {
-			destIP := entry.ParsedIP
-			if destIP == nil {
-				destIP = parseDestinationIP(entry.Address)
+			addr := entry.Address
+			hostPart, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				hostPart = addr
 			}
+			destIP := net.ParseIP(hostPart)
 			if destIP != nil && registry.firewall.IsAllowed(requestorIP, destIP) {
-				entry.ParsedIP = destIP
 				allowedEntries = append(allowedEntries, entry)
 			}
 		}
@@ -195,24 +192,6 @@ func serviceWeight(entry ServiceEntry) int {
 		capacity = 1
 	}
 	return capacity
-}
-
-func parseDestinationIP(addr string) net.IP {
-	hostPart, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		hostPart = addr
-	}
-	hostPart = strings.TrimSpace(hostPart)
-	hostPart = strings.Trim(hostPart, "[]")
-
-	// Normalize loopback/wildcard aliases so firewall rules written for
-	// 127.0.0.1 continue to work when demos register localhost-style addresses.
-	switch strings.ToLower(hostPart) {
-	case "", "localhost", "0.0.0.0", "::", "::1":
-		hostPart = "127.0.0.1"
-	}
-
-	return net.ParseIP(hostPart)
 }
 
 func (registry *MemoryRegistry) Cleanup(timeout time.Duration) int {

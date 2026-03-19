@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,50 +49,38 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 // Register adds or updates a service entry.
 // If entry.QueryCount > 0, it will update the query count as well (for syncing from cache).
 func (ps *PostgresStore) Register(ctx context.Context, task string, entry *store.ServiceEntry) error {
-	host, port, err := splitAddress(entry.Address)
-	if err != nil {
-		return fmt.Errorf("invalid service address %q: %w", entry.Address, err)
-	}
-	storageHost, err := resolveHostForInet(host)
-	if err != nil {
-		return fmt.Errorf("invalid service host %q: %w", host, err)
-	}
-	canonicalAddress := net.JoinHostPort(host, strconv.Itoa(port))
-
 	var query string
 	var args []any
 
 	if entry.QueryCount > 0 {
 		// Sync query count as well (used when syncing from cache).
 		query = `
-			INSERT INTO services (task, address, host, port, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
-			VALUES ($1, $2, $3::inet, $4, $5, $6, $7, TRUE, NOW(), NOW())
-			ON CONFLICT (task, host, port) DO UPDATE
+			INSERT INTO services (task, address, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
+			ON CONFLICT (task, address) DO UPDATE
 			SET last_heartbeat = EXCLUDED.last_heartbeat,
-			    address = EXCLUDED.address,
 			    query_count = EXCLUDED.query_count,
 			    capacity = EXCLUDED.capacity,
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, canonicalAddress, storageHost, port, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
+		args = []any{task, entry.Address, entry.LastHeartbeat, entry.QueryCount, normalizedCapacity(entry.Capacity)}
 	} else {
 		// Normal registration: reset query count when reactivating an inactive record.
 		query = `
-			INSERT INTO services (task, address, host, port, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
-			VALUES ($1, $2, $3::inet, $4, $5, 0, $6, TRUE, NOW(), NOW())
-			ON CONFLICT (task, host, port) DO UPDATE
+			INSERT INTO services (task, address, last_heartbeat, query_count, capacity, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, 0, $4, TRUE, NOW(), NOW())
+			ON CONFLICT (task, address) DO UPDATE
 			SET last_heartbeat = EXCLUDED.last_heartbeat,
-			    address = EXCLUDED.address,
 			    query_count = CASE WHEN services.is_active = FALSE THEN 0 ELSE services.query_count END,
 			    capacity = EXCLUDED.capacity,
 			    is_active = TRUE,
 			    updated_at = NOW()
 		`
-		args = []any{task, canonicalAddress, storageHost, port, entry.LastHeartbeat, normalizedCapacity(entry.Capacity)}
+		args = []any{task, entry.Address, entry.LastHeartbeat, normalizedCapacity(entry.Capacity)}
 	}
 
-	_, err = ps.db.ExecContext(ctx, query, args...)
+	_, err := ps.db.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -347,42 +333,8 @@ func (ps *PostgresStore) Cleanup(ctx context.Context, timeout time.Duration) (in
 		return 0, err
 	}
 
-	if err := ps.pruneRoundRobinIndex(ctx); err != nil {
-		return 0, err
-	}
-
 	count, err := result.RowsAffected()
 	return count, err
-}
-
-func (ps *PostgresStore) pruneRoundRobinIndex(ctx context.Context) error {
-	rows, err := ps.db.QueryContext(ctx, `SELECT DISTINCT task FROM services WHERE is_active = TRUE`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	activeTasks := make(map[string]struct{})
-	for rows.Next() {
-		var task string
-		if err := rows.Scan(&task); err != nil {
-			return err
-		}
-		activeTasks[task] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	ps.roundRobinIndexMu.Lock()
-	for task := range ps.roundRobinIndex {
-		if _, ok := activeTasks[task]; !ok {
-			delete(ps.roundRobinIndex, task)
-		}
-	}
-	ps.roundRobinIndexMu.Unlock()
-
-	return nil
 }
 
 // Migrate runs database migrations.
@@ -407,8 +359,6 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 			id SERIAL PRIMARY KEY,
 			task TEXT NOT NULL,
 			address TEXT NOT NULL,
-			host INET,
-			port INTEGER,
 			last_heartbeat TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			query_count BIGINT NOT NULL DEFAULT 0,
 			capacity INTEGER NOT NULL DEFAULT 1,
@@ -424,27 +374,12 @@ func (ps *PostgresStore) Migrate(ctx context.Context) error {
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
 		`ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();`,
-		`ALTER TABLE services ADD COLUMN IF NOT EXISTS host INET;`,
-		`ALTER TABLE services ADD COLUMN IF NOT EXISTS port INTEGER;`,
-
-		// Backfill typed columns from legacy address text where possible.
-		`UPDATE services SET host = split_part(address, ':', 1)::inet WHERE host IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';`,
-		`UPDATE services SET port = split_part(address, ':', 2)::INTEGER WHERE port IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';`,
-		`UPDATE services SET host = substring(address from '^\\[(.*)\\]:')::inet WHERE host IS NULL AND address LIKE '[%]:%';`,
-		`UPDATE services SET port = substring(address from '\\]:(\\d+)$')::INTEGER WHERE port IS NULL AND address LIKE '[%]:%';`,
-		`DELETE FROM services WHERE host IS NULL OR port IS NULL;`,
-		`ALTER TABLE services ALTER COLUMN host SET NOT NULL;`,
-		`ALTER TABLE services ALTER COLUMN port SET NOT NULL;`,
-		`ALTER TABLE services DROP CONSTRAINT IF EXISTS chk_services_port_range;`,
-		`ALTER TABLE services ADD CONSTRAINT chk_services_port_range CHECK (port BETWEEN 1 AND 65535);`,
 
 		// Required for ON CONFLICT (task, address)
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_address_unique ON services(task, address);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_host_port_unique ON services(task, host, port);`,
 
 		// Indexes
 		`CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);`,
-		`CREATE INDEX IF NOT EXISTS idx_services_task_host_port ON services(task, host, port);`,
 		`CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);`,
 		`CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);`,
 	}
@@ -560,59 +495,4 @@ func selectWeightedEntryIndex(entries []store.ServiceEntry, slot int) (int, bool
 
 func storeServiceWeight(entry store.ServiceEntry) int {
 	return normalizedCapacity(entry.Capacity)
-}
-
-func splitAddress(address string) (string, int, error) {
-	trimmed := strings.TrimSpace(address)
-	host, portStr, err := net.SplitHostPort(trimmed)
-	if err != nil {
-		if strings.Count(trimmed, ":") == 1 {
-			parts := strings.SplitN(trimmed, ":", 2)
-			host = parts[0]
-			portStr = parts[1]
-		} else {
-			return "", 0, err
-		}
-	}
-
-	if host == "" {
-		return "", 0, fmt.Errorf("missing host")
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return "", 0, fmt.Errorf("invalid port: %w", err)
-	}
-	if port < 1 || port > 65535 {
-		return "", 0, fmt.Errorf("port out of range: %d", port)
-	}
-
-	return host, port, nil
-}
-
-func resolveHostForInet(host string) (string, error) {
-	trimmed := strings.TrimSpace(host)
-	if idx := strings.Index(trimmed, "%"); idx != -1 {
-		trimmed = trimmed[:idx]
-	}
-
-	if ip := net.ParseIP(trimmed); ip != nil {
-		return ip.String(), nil
-	}
-
-	ips, err := net.LookupIP(trimmed)
-	if err != nil {
-		return "", err
-	}
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IPs resolved")
-	}
-
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String(), nil
-		}
-	}
-
-	return ips[0].String(), nil
 }

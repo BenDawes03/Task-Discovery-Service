@@ -271,7 +271,7 @@ func (d *p2pDashboard) render() {
 		)
 	} else {
 		summary = fmt.Sprintf(
-			"[yellow]Mode:[white] P2P    [yellow]Uptime:[white] %s    [yellow]Replication (k):[white] %d\n"+
+			"[red::b]DHT VIEW[white:-:-]    [yellow]Uptime:[white] %s    [yellow]Replication (k):[white] %d\n"+
 				"[yellow]Proxy listen:[white] %s    [yellow]DHT listen:[white] %s\n"+
 				"[yellow]Node ID:[white] %s    [yellow]Ring size:[white] %d    [yellow]Peers:[white] %d\n"+
 				"[yellow]Local storage:[white] %d task(s)    [yellow]Bootstraps:[white] %s\n"+
@@ -303,7 +303,7 @@ func (d *p2pDashboard) render() {
 	if d.simplified {
 		d.footerView.SetText("[green::b]UI MODE: SIMPLIFIED[white:-:-]    [yellow]q[white] quit    [yellow]c[white] clear events    [yellow]r[white] refresh")
 	} else {
-		d.footerView.SetText("[yellow]q[white] quit    [yellow]c[white] clear logs    [yellow]r[white] refresh")
+		d.footerView.SetText("[red::b]UI MODE: STANDARD[white:-:-]    [yellow]q[white] quit    [yellow]c[white] clear logs    [yellow]r[white] refresh")
 	}
 }
 
@@ -336,10 +336,8 @@ func (d *p2pDashboard) renderTasks(taskNames []string, stored map[string][]strin
 
 	if len(taskNames) == 0 {
 		d.tasksTable.SetCell(1, 0, plainCell("No tasks stored on this node"))
-		if d.simplified {
-			d.tasksTable.SetCell(1, 1, plainCell("0"))
-		} else {
-			d.tasksTable.SetCell(1, 1, plainCell(""))
+		d.tasksTable.SetCell(1, 1, plainCell("0"))
+		if !d.simplified {
 			d.tasksTable.SetCell(1, 2, plainCell("0"))
 		}
 		return
@@ -471,6 +469,7 @@ func simplifyLogLine(line string) string {
 		return "Proxy stopped"
 	}
 
+	// In simplified mode, drop noisy unclassified logs.
 	return ""
 }
 

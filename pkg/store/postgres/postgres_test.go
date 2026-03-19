@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net"
 	"regexp"
 	"testing"
 	"time"
@@ -43,7 +42,7 @@ func TestRegister_WithQueryCountSync(t *testing.T) {
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO services")).
-		WithArgs("task-a", entry.Address, "10.0.0.1", 9000, entry.LastHeartbeat, entry.QueryCount, entry.Capacity).
+		WithArgs("task-a", entry.Address, entry.LastHeartbeat, entry.QueryCount, entry.Capacity).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := ps.Register(context.Background(), "task-a", entry); err != nil {
@@ -68,7 +67,7 @@ func TestRegister_NormalRegistrationNormalizesCapacity(t *testing.T) {
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO services")).
-		WithArgs("task-a", entry.Address, "10.0.0.2", 9000, entry.LastHeartbeat, 1).
+		WithArgs("task-a", entry.Address, entry.LastHeartbeat, 1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := ps.Register(context.Background(), "task-a", entry); err != nil {
@@ -89,32 +88,12 @@ func TestRegister_ExecError(t *testing.T) {
 
 	expected := errors.New("insert failed")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO services")).
-		WithArgs("task-a", entry.Address, "10.0.0.3", 9000, entry.LastHeartbeat, entry.Capacity).
+		WithArgs("task-a", entry.Address, entry.LastHeartbeat, entry.Capacity).
 		WillReturnError(expected)
 
 	err := ps.Register(context.Background(), "task-a", entry)
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected %v, got %v", expected, err)
-	}
-}
-
-func TestResolveHostForInetIPPassthrough(t *testing.T) {
-	host, err := resolveHostForInet("10.0.0.5")
-	if err != nil {
-		t.Fatalf("unexpected resolve error: %v", err)
-	}
-	if host != "10.0.0.5" {
-		t.Fatalf("expected passthrough IP, got %q", host)
-	}
-}
-
-func TestResolveHostForInetHostname(t *testing.T) {
-	host, err := resolveHostForInet("localhost")
-	if err != nil {
-		t.Fatalf("unexpected resolve error for localhost: %v", err)
-	}
-	if net.ParseIP(host) == nil {
-		t.Fatalf("expected resolved IP for localhost, got %q", host)
 	}
 }
 
@@ -480,8 +459,6 @@ func TestCleanup_Success(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 3))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).
-		WillReturnRows(sqlmock.NewRows([]string{"task"}).AddRow("task-a"))
 
 	count, err := ps.Cleanup(context.Background(), 30*time.Second)
 	if err != nil {
@@ -511,22 +488,6 @@ func TestCleanup_RowsAffectedError(t *testing.T) {
 
 	expected := errors.New("rows affected failed")
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewErrorResult(expected))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).
-		WillReturnRows(sqlmock.NewRows([]string{"task"}).AddRow("task-a"))
-
-	_, err := ps.Cleanup(context.Background(), 30*time.Second)
-	if !errors.Is(err, expected) {
-		t.Fatalf("expected %v, got %v", expected, err)
-	}
-}
-
-func TestCleanup_PruneRoundRobinIndexQueryError(t *testing.T) {
-	ps, mock, db := newMockStore(t)
-	defer db.Close()
-
-	expected := errors.New("active task query failed")
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE services")).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT task FROM services WHERE is_active = TRUE")).WillReturnError(expected)
 
 	_, err := ps.Cleanup(context.Background(), 30*time.Second)
 	if !errors.Is(err, expected) {
@@ -545,21 +506,8 @@ func TestMigrate_Success(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS host INET;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS port INTEGER;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE services SET host = split_part(address, ':', 1)::inet WHERE host IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE services SET port = split_part(address, ':', 2)::INTEGER WHERE port IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("UPDATE services SET host = substring\\(address from").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("UPDATE services SET port = substring\\(address from").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM services WHERE host IS NULL OR port IS NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ALTER COLUMN host SET NOT NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ALTER COLUMN port SET NOT NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services DROP CONSTRAINT IF EXISTS chk_services_port_range;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD CONSTRAINT chk_services_port_range CHECK (port BETWEEN 1 AND 65535);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_address_unique ON services(task, address);")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_host_port_unique ON services(task, host, port);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_task_host_port ON services(task, host, port);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
@@ -617,21 +565,8 @@ func TestMigrate_CommitError(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS host INET;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD COLUMN IF NOT EXISTS port INTEGER;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE services SET host = split_part(address, ':', 1)::inet WHERE host IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE services SET port = split_part(address, ':', 2)::INTEGER WHERE port IS NULL AND address LIKE '%:%' AND address NOT LIKE '[%';")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("UPDATE services SET host = substring\\(address from").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("UPDATE services SET port = substring\\(address from").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM services WHERE host IS NULL OR port IS NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ALTER COLUMN host SET NOT NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ALTER COLUMN port SET NOT NULL;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services DROP CONSTRAINT IF EXISTS chk_services_port_range;")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE services ADD CONSTRAINT chk_services_port_range CHECK (port BETWEEN 1 AND 65535);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_address_unique ON services(task, address);")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_task_host_port_unique ON services(task, host, port);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_task ON services(task);")).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_task_host_port ON services(task, host, port);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_last_heartbeat ON services(last_heartbeat);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE INDEX IF NOT EXISTS idx_services_is_active ON services(is_active);")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit().WillReturnError(expected)

@@ -420,11 +420,11 @@ func TestDatabaseRulesProviderBehaviors(t *testing.T) {
 			t.Fatalf("NewDatabaseRulesProvider failed: %v", err)
 		}
 
-		rows := sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-			AddRow("192.168.1.10", "10.0.0.5").
-			AddRow("192.168.1.0/24", "10.0.0.0/24")
+		rows := sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+			AddRow("192.168.1.10", nil, "10.0.0.5", nil).
+			AddRow(nil, "192.168.1.0/24", nil, "10.0.0.0/24")
 
-		mock.ExpectQuery("SELECT").WillReturnRows(rows)
+		mock.ExpectQuery("SELECT source_ip, source_network, dest_ip, dest_network").WillReturnRows(rows)
 
 		rules, err := provider.GetRules()
 		if err != nil {
@@ -470,32 +470,32 @@ func TestDatabaseRulesProviderBehaviors(t *testing.T) {
 			},
 			{
 				name: "invalid source cidr",
-				rows: sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-					AddRow("192.168.1.0/99", "10.0.0.5"),
-				want: "invalid source CIDR",
+				rows: sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+					AddRow(nil, "192.168.1.0/99", "10.0.0.5", nil),
+				want: "invalid source CIDR in database",
 			},
 			{
 				name: "invalid source ip",
-				rows: sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-					AddRow("bad-ip", "10.0.0.5"),
-				want: "invalid source IP",
+				rows: sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+					AddRow("bad-ip", nil, "10.0.0.5", nil),
+				want: "invalid source IP in database",
 			},
 			{
 				name: "invalid destination cidr",
-				rows: sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-					AddRow("192.168.1.10", "10.0.0.0/99"),
-				want: "invalid destination CIDR",
+				rows: sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+					AddRow("192.168.1.10", nil, nil, "10.0.0.0/99"),
+				want: "invalid destination CIDR in database",
 			},
 			{
 				name: "invalid destination ip",
-				rows: sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-					AddRow("192.168.1.10", "bad-ip"),
-				want: "invalid destination IP",
+				rows: sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+					AddRow("192.168.1.10", nil, "bad-ip", nil),
+				want: "invalid destination IP in database",
 			},
 			{
 				name: "row iteration error",
-				rows: sqlmock.NewRows([]string{"source_rule", "dest_rule"}).
-					AddRow("192.168.1.10", "10.0.0.5").
+				rows: sqlmock.NewRows([]string{"source_ip", "source_network", "dest_ip", "dest_network"}).
+					AddRow("192.168.1.10", nil, "10.0.0.5", nil).
 					RowError(0, errors.New("row failure")),
 				want: "error iterating rows",
 			},
@@ -515,7 +515,7 @@ func TestDatabaseRulesProviderBehaviors(t *testing.T) {
 					t.Fatalf("NewDatabaseRulesProvider failed: %v", err)
 				}
 
-				query := mock.ExpectQuery("SELECT")
+				query := mock.ExpectQuery("SELECT source_ip, source_network, dest_ip, dest_network")
 				if tt.query != nil {
 					query.WillReturnError(tt.query)
 				} else {
@@ -555,49 +555,6 @@ func TestDatabaseRulesProviderBehaviors(t *testing.T) {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS firewall_rules").WillReturnError(errors.New("exec failure"))
 		if err := provider.CreateTablesIfNotExist(); err == nil || !strings.Contains(err.Error(), "failed to create tables") {
 			t.Fatalf("expected create tables error, got %v", err)
-		}
-
-		mock.ExpectClose()
-		if err := provider.Close(); err != nil {
-			t.Fatalf("Close failed: %v", err)
-		}
-
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatalf("unmet sqlmock expectations: %v", err)
-		}
-	})
-
-	t.Run("replace rules from file", func(t *testing.T) {
-		db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
-		if err != nil {
-			t.Fatalf("sqlmock.New failed: %v", err)
-		}
-		defer db.Close()
-
-		mock.ExpectPing()
-		provider, err := NewDatabaseRulesProvider(db)
-		if err != nil {
-			t.Fatalf("NewDatabaseRulesProvider failed: %v", err)
-		}
-
-		rulesPath := writeRulesFile(t, "192.168.1.10 10.0.0.5\n192.168.1.0/24 10.0.0.0/24\n")
-
-		mock.ExpectBegin()
-		mock.ExpectExec("DELETE FROM firewall_rules").WillReturnResult(sqlmock.NewResult(0, 2))
-		mock.ExpectExec("INSERT INTO firewall_rules").
-			WithArgs("192.168.1.10", nil, "10.0.0.5", nil, "192.168.1.10/32", "10.0.0.5/32").
-			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectExec("INSERT INTO firewall_rules").
-			WithArgs(nil, "192.168.1.0/24", nil, "10.0.0.0/24", "192.168.1.0/24", "10.0.0.0/24").
-			WillReturnResult(sqlmock.NewResult(2, 1))
-		mock.ExpectCommit()
-
-		count, err := provider.ReplaceRulesFromFile(rulesPath)
-		if err != nil {
-			t.Fatalf("ReplaceRulesFromFile failed: %v", err)
-		}
-		if count != 2 {
-			t.Fatalf("expected 2 imported rules, got %d", count)
 		}
 
 		mock.ExpectClose()

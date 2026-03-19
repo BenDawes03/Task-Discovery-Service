@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -375,24 +374,6 @@ func TestStoreBackedGetServiceForRequestorUsesDBFallbackAndFirewall(t *testing.T
 	}
 }
 
-func TestStoreBackedGetServiceForRequestorAllowsLocalhostDBDestination(t *testing.T) {
-	storeStub := newFakeStore()
-	storeStub.listServices = map[string][]store.ServiceEntry{
-		"local": {{Address: "localhost:8080", Capacity: 1, LastHeartbeat: time.Now()}},
-	}
-
-	sr := NewStoreBackedRegistry(storeStub, 0)
-	sr.SetFirewall(testFirewall(t, "127.0.0.1 127.0.0.1\n"))
-
-	addr, err := sr.GetServiceForRequestor("local", net.ParseIP("127.0.0.1"))
-	if err != nil {
-		t.Fatalf("unexpected localhost requestor error: %v", err)
-	}
-	if addr != "localhost:8080" {
-		t.Fatalf("expected localhost DB-hydrated address, got %q", addr)
-	}
-}
-
 func TestStoreBackedListServicesTriggersWarmCacheAndSurvivesWarmErrors(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.listServices = map[string][]store.ServiceEntry{
@@ -498,31 +479,6 @@ func TestStoreBackedRegisterAliasInvalidInputAndStats(t *testing.T) {
 	}
 }
 
-func TestStoreBackedRegisterFailureUsesLogger(t *testing.T) {
-	storeStub := newFakeStore()
-	storeStub.registerErrByTask["task-a"] = errors.New("db write failed")
-	sr := NewStoreBackedRegistry(storeStub, 0)
-
-	var messages []string
-	var messagesMu sync.Mutex
-	sr.SetLogger(func(message string) {
-		messagesMu.Lock()
-		defer messagesMu.Unlock()
-		messages = append(messages, message)
-	})
-
-	sr.RegisterWithCapacity("task-a", "10.0.0.99:8080", 1)
-
-	messagesMu.Lock()
-	defer messagesMu.Unlock()
-	if len(messages) != 1 {
-		t.Fatalf("expected one logged message, got %d", len(messages))
-	}
-	if !strings.Contains(messages[0], "[STORE] Register failed: db write failed") {
-		t.Fatalf("unexpected log message: %q", messages[0])
-	}
-}
-
 func TestStoreBackedWarmCacheWithoutLimitAndSyncErrorsIgnored(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.registerErrByTask["queried"] = errors.New("sync failed")
@@ -566,39 +522,6 @@ func TestStoreBackedCleanupReturnsCacheRemovalsWhenStoreCleanupFails(t *testing.
 	removed := sr.Cleanup(30 * time.Second)
 	if removed != 1 {
 		t.Fatalf("expected cache removal count when store cleanup fails, got %d", removed)
-	}
-}
-
-func TestStoreBackedListServicesForDashboardUsesFullDBList(t *testing.T) {
-	storeStub := newFakeStore()
-	storeStub.listServices = map[string][]store.ServiceEntry{
-		"dbtask": {{Address: "10.0.0.100:8080", QueryCount: 5, Capacity: 2, LastHeartbeat: time.Now()}},
-	}
-
-	sr := NewStoreBackedRegistry(storeStub, 1)
-	sr.currentMemCache().RegisterWithCapacity("cache-only", "10.0.0.101:8080", 1)
-
-	services := sr.ListServicesForDashboard(context.Background())
-	if storeStub.listCalls != 1 {
-		t.Fatalf("expected one DB ListServices call, got %d", storeStub.listCalls)
-	}
-	if _, ok := services["dbtask"]; !ok {
-		t.Fatalf("expected dbtask in dashboard snapshot")
-	}
-	if _, ok := services["cache-only"]; ok {
-		t.Fatalf("did not expect cache-only task in DB-backed dashboard snapshot")
-	}
-}
-
-func TestStoreBackedListServicesForDashboardReturnsEmptyOnDBError(t *testing.T) {
-	storeStub := newFakeStore()
-	storeStub.listErr = errors.New("db unavailable")
-	sr := NewStoreBackedRegistry(storeStub, 0)
-	sr.currentMemCache().RegisterWithCapacity("cached", "10.0.0.102:8080", 1)
-
-	services := sr.ListServicesForDashboard(context.Background())
-	if len(services) != 0 {
-		t.Fatalf("expected empty snapshot on DB error, got %+v", services)
 	}
 }
 

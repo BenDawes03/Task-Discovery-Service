@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,97 +17,6 @@ import (
 	"tds/pkg/registry"
 )
 
-var (
-	tcpAcquireTimeout        = 1 * time.Second
-	tcpReadTimeout           = 120 * time.Second
-	tcpWriteTimeout          = 15 * time.Second
-	tlsHandshakeTimeout      = 5 * time.Second
-	tcpKeepAlivePeriod       = 3 * time.Minute
-	serverShutdownWaitPeriod = 3 * time.Second
-)
-
-type connTracker struct {
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
-}
-
-func newConnTracker() *connTracker {
-	return &connTracker{conns: make(map[net.Conn]struct{})}
-}
-
-func (ct *connTracker) Add(conn net.Conn) {
-	ct.mu.Lock()
-	ct.conns[conn] = struct{}{}
-	ct.mu.Unlock()
-}
-
-func (ct *connTracker) Remove(conn net.Conn) {
-	ct.mu.Lock()
-	delete(ct.conns, conn)
-	ct.mu.Unlock()
-}
-
-func (ct *connTracker) CloseAll() {
-	ct.mu.Lock()
-	conns := make([]net.Conn, 0, len(ct.conns))
-	for conn := range ct.conns {
-		conns = append(conns, conn)
-	}
-	ct.mu.Unlock()
-
-	for _, conn := range conns {
-		_ = conn.Close()
-	}
-}
-
-func configureTCPKeepAlive(conn net.Conn) {
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetKeepAlive(true)
-		if tcpKeepAlivePeriod > 0 {
-			_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlivePeriod)
-		}
-		return
-	}
-
-	if tlsConn, ok := conn.(*tls.Conn); ok {
-		if tcpConn, ok := tlsConn.NetConn().(*net.TCPConn); ok {
-			_ = tcpConn.SetKeepAlive(true)
-			if tcpKeepAlivePeriod > 0 {
-				_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlivePeriod)
-			}
-		}
-	}
-}
-
-func encodeWithTimeout(conn net.Conn, encoder *json.Encoder, resp CentralizedResponse) error {
-	if tcpWriteTimeout > 0 {
-		_ = conn.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
-	}
-	err := encoder.Encode(resp)
-	if tcpWriteTimeout > 0 {
-		_ = conn.SetWriteDeadline(time.Time{})
-	}
-	return err
-}
-
-func waitForHandlers(wg *sync.WaitGroup) {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	if serverShutdownWaitPeriod <= 0 {
-		<-done
-		return
-	}
-
-	select {
-	case <-done:
-	case <-time.After(serverShutdownWaitPeriod):
-	}
-}
-
 // StartTCPServer starts a JSON-based TCP server that understands the same JSON
 // messages as the UDP server. Each connection is handled concurrently and may
 // send multiple commands (one JSON object per line).
@@ -116,7 +26,7 @@ func StartTCPServer(reg registry.Registry, port int, maxConcurrent int64, onEven
 	return StartTCPServerWithContext(context.Background(), reg, port, maxConcurrent, onEvent)
 }
 
-// StartTCPServerWithContext starts the TCP server and allows graceful shutdown via context cancellation.
+// StartTCPServerWithContext starts a TCP server that shuts down when ctx is canceled.
 func StartTCPServerWithContext(ctx context.Context, reg registry.Registry, port int, maxConcurrent int64, onEvent func(string)) error {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 5000 // Default limit
@@ -129,41 +39,57 @@ func StartTCPServerWithContext(ctx context.Context, reg registry.Registry, port 
 	}
 	defer ln.Close()
 
-	tracker := newConnTracker()
-	var handlers sync.WaitGroup
+	var (
+		connMu      sync.Mutex
+		activeConns = make(map[net.Conn]struct{})
+		handlers    sync.WaitGroup
+	)
+
 	go func() {
 		<-ctx.Done()
-		tracker.CloseAll()
 		_ = ln.Close()
+		connMu.Lock()
+		for c := range activeConns {
+			_ = c.Close()
+		}
+		connMu.Unlock()
 	}()
 
 	sem := semaphore.NewWeighted(maxConcurrent)
+	const acquireTimeout = 1 * time.Second
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				waitForHandlers(&handlers)
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				handlers.Wait()
 				return nil
 			}
 			// transient accept error: log and continue
 			fmt.Printf("tcp accept error: %v\n", err)
 			continue
 		}
-		configureTCPKeepAlive(conn)
-		tracker.Add(conn)
+		connMu.Lock()
+		activeConns[conn] = struct{}{}
+		connMu.Unlock()
 
-		acquireCtx, cancel := context.WithTimeout(ctx, tcpAcquireTimeout)
+		acquireCtx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
 		if err := sem.Acquire(acquireCtx, 1); err == nil {
 			handlers.Add(1)
 			go func(c net.Conn) {
 				defer handlers.Done()
-				defer tracker.Remove(c)
 				defer sem.Release(1)
+				defer func() {
+					connMu.Lock()
+					delete(activeConns, c)
+					connMu.Unlock()
+				}()
 				handleTCPConn(c, reg, onEvent)
 			}(conn)
 		} else {
-			tracker.Remove(conn)
+			connMu.Lock()
+			delete(activeConns, conn)
+			connMu.Unlock()
 			conn.Close() // Reject connection due to overload
 		}
 		cancel()
@@ -180,23 +106,16 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 		requestorIP = tcpAddr.IP
 	}
 
-	if tcpReadTimeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
-	}
-
 	scanner := bufio.NewScanner(conn)
 	encoder := json.NewEncoder(conn)
 
 	for scanner.Scan() {
-		if tcpReadTimeout > 0 {
-			_ = conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
-		}
 		line := scanner.Bytes()
 
 		var msg CentralizedMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			errResp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
-			if err := encodeWithTimeout(conn, encoder, errResp); err != nil {
+			if err := encoder.Encode(errResp); err != nil {
 				fmt.Printf("tcp encode error (invalid JSON response): %v\n", err)
 				return
 			}
@@ -204,7 +123,7 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 		}
 
 		resp := HandleMessage(reg, msg, requestorIP, remote, onEvent)
-		if err := encodeWithTimeout(conn, encoder, resp); err != nil {
+		if err := encoder.Encode(resp); err != nil {
 			fmt.Printf("tcp encode error: %v\n", err)
 			return
 		}
@@ -223,7 +142,7 @@ func StartTCPServerTLS(reg registry.Registry, port int, maxConcurrent int64, cer
 	return StartTCPServerTLSWithContext(context.Background(), reg, port, maxConcurrent, certFile, keyFile, clientCAFile, onEvent)
 }
 
-// StartTCPServerTLSWithContext starts the TLS server and allows graceful shutdown via context cancellation.
+// StartTCPServerTLSWithContext starts a TLS server that shuts down when ctx is canceled.
 func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, port int, maxConcurrent int64, certFile, keyFile, clientCAFile string, onEvent func(string)) error {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 5000 // Default limit
@@ -265,12 +184,20 @@ func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, po
 	}
 	defer ln.Close()
 
-	tracker := newConnTracker()
-	var handlers sync.WaitGroup
+	var (
+		connMu      sync.Mutex
+		activeConns = make(map[net.Conn]struct{})
+		handlers    sync.WaitGroup
+	)
+
 	go func() {
 		<-ctx.Done()
-		tracker.CloseAll()
 		_ = ln.Close()
+		connMu.Lock()
+		for c := range activeConns {
+			_ = c.Close()
+		}
+		connMu.Unlock()
 	}()
 
 	if onEvent != nil {
@@ -278,33 +205,24 @@ func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, po
 	}
 
 	sem := semaphore.NewWeighted(maxConcurrent)
+	const acquireTimeout = 1 * time.Second
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				waitForHandlers(&handlers)
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				handlers.Wait()
 				return nil
 			}
 			fmt.Printf("tls accept error: %v\n", err)
 			continue
 		}
-		configureTCPKeepAlive(conn)
-		tracker.Add(conn)
+		connMu.Lock()
+		activeConns[conn] = struct{}{}
+		connMu.Unlock()
 
 		// Extract client certificate info from TLS connection
 		if tlsConn, ok := conn.(*tls.Conn); ok {
-			if tlsHandshakeTimeout > 0 {
-				_ = tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
-			}
-			if err := tlsConn.Handshake(); err != nil {
-				tracker.Remove(conn)
-				_ = conn.Close()
-				continue
-			}
-			if tlsHandshakeTimeout > 0 {
-				_ = tlsConn.SetDeadline(time.Time{})
-			}
 			state := tlsConn.ConnectionState()
 			if len(state.PeerCertificates) > 0 {
 				clientCert := state.PeerCertificates[0]
@@ -315,17 +233,23 @@ func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, po
 			}
 		}
 
-		acquireCtx, cancel := context.WithTimeout(ctx, tcpAcquireTimeout)
+		acquireCtx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
 		if err := sem.Acquire(acquireCtx, 1); err == nil {
 			handlers.Add(1)
 			go func(c net.Conn) {
 				defer handlers.Done()
-				defer tracker.Remove(c)
 				defer sem.Release(1)
+				defer func() {
+					connMu.Lock()
+					delete(activeConns, c)
+					connMu.Unlock()
+				}()
 				handleTCPConn(c, reg, onEvent)
 			}(conn)
 		} else {
-			tracker.Remove(conn)
+			connMu.Lock()
+			delete(activeConns, conn)
+			connMu.Unlock()
 			conn.Close() // Reject connection due to overload
 		}
 		cancel()

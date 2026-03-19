@@ -1,43 +1,57 @@
 package firewall
 
 import (
-	"fmt"
+	"sync"
 )
 
-// FileRulesProvider implements RulesProvider for a static rules file (for test compatibility only).
+// FileRulesProvider loads firewall rules from a file.
+// Rules are loaded once at initialization and remain static.
 type FileRulesProvider struct {
-	path  string
-	rules []FirewallRule
+	filePath string
+	mu       sync.RWMutex
+	rules    []FirewallRule
 }
 
-// NewFileRulesProvider loads rules from a file and returns a FileRulesProvider.
-func NewFileRulesProvider(path string) (*FileRulesProvider, error) {
-	fw, err := LoadFromFile(path)
-	if err != nil {
+// NewFileRulesProvider creates a new FileRulesProvider and loads rules from the file.
+func NewFileRulesProvider(filePath string) (*FileRulesProvider, error) {
+	frp := &FileRulesProvider{
+		filePath: filePath,
+	}
+
+	// Load rules immediately from file
+	if err := frp.reload(); err != nil {
 		return nil, err
 	}
-	return &FileRulesProvider{path: path, rules: fw.rules}, nil
+
+	return frp, nil
 }
 
-// GetRules returns a copy of the loaded rules.
-func (f *FileRulesProvider) GetRules() ([]FirewallRule, error) {
-	copyRules := make([]FirewallRule, len(f.rules))
-	copy(copyRules, f.rules)
-	return copyRules, nil
+// GetRules returns a copy of the currently loaded rules.
+func (frp *FileRulesProvider) GetRules() ([]FirewallRule, error) {
+	frp.mu.RLock()
+	defer frp.mu.RUnlock()
+
+	// Return a copy to prevent external modification
+	rules := make([]FirewallRule, len(frp.rules))
+	copy(rules, frp.rules)
+	return rules, nil
 }
 
-// reload reloads the rules from the file (for tests that mutate the file).
-func (f *FileRulesProvider) reload() error {
-	fw, err := LoadFromFile(f.path)
+// reload loads rules from disk (internal, not thread-safe on its own).
+func (frp *FileRulesProvider) reload() error {
+	fw, err := LoadFromFile(frp.filePath)
 	if err != nil {
-		return fmt.Errorf("reload failed: %w", err)
+		return err
 	}
-	f.rules = fw.rules
+
+	frp.mu.Lock()
+	defer frp.mu.Unlock()
+
+	frp.rules = fw.rules
 	return nil
 }
 
-// Close is a no-op for FileRulesProvider.
-func (f *FileRulesProvider) Close() error {
+// Close releases any resources held by the provider.
+func (frp *FileRulesProvider) Close() error {
 	return nil
 }
-
