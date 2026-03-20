@@ -311,6 +311,172 @@ func TestAskTerminalOptionsMalformedPromptInputKeepsDefaults(t *testing.T) {
 	}
 }
 
+func TestAskTerminalOptionsFirewallDatabaseSourcePrompt(t *testing.T) {
+	oldForceUI := forceUI
+	oldNoUI := noUI
+	oldUseTLS := useTLS
+	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
+	oldPromptReaderFn := promptReaderFn
+	oldListenPort := listenPort
+	oldHeartbeatTimeout := heartbeatTimeout
+	oldCleanupInterval := cleanupInterval
+	oldLogDir := logDir
+	oldStoreURL := storeURL
+	oldFirewallEnabledFlag := firewallEnabledFlag
+	oldFirewallDisabledFlag := firewallDisabledFlag
+	oldFirewallRulesPath := firewallRulesPath
+	oldFirewallSource := firewallSource
+	oldFirewallDBURL := firewallDBURL
+	defer func() {
+		forceUI = oldForceUI
+		noUI = oldNoUI
+		useTLS = oldUseTLS
+		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
+		promptReaderFn = oldPromptReaderFn
+		listenPort = oldListenPort
+		heartbeatTimeout = oldHeartbeatTimeout
+		cleanupInterval = oldCleanupInterval
+		logDir = oldLogDir
+		storeURL = oldStoreURL
+		firewallEnabledFlag = oldFirewallEnabledFlag
+		firewallDisabledFlag = oldFirewallDisabledFlag
+		firewallRulesPath = oldFirewallRulesPath
+		firewallSource = oldFirewallSource
+		firewallDBURL = oldFirewallDBURL
+	}()
+
+	forceUI = false
+	noUI = false
+	useTLS = false
+	os.Args = []string{"server.test"}
+	listenPort = 5000
+	heartbeatTimeout = 60 * time.Second
+	cleanupInterval = 10 * time.Second
+	logDir = "logs"
+	storeURL = ""
+	firewallEnabledFlag = false
+	firewallDisabledFlag = false
+	firewallRulesPath = ""
+	firewallSource = "file"
+	firewallDBURL = ""
+
+	isTerminalFn = func(fd int) bool { return true }
+	promptReaderFn = func() *bufio.Reader {
+		input := strings.Join([]string{
+			"",                       // transport default udp
+			"",                       // port default
+			"",                       // heartbeat default
+			"",                       // cleanup default
+			"",                       // max udp handlers default
+			"",                       // log dir default
+			"n",                      // db persistence disabled
+			"y",                      // firewall enabled
+			"2",                      // firewall source database
+			"postgresql://fw-rules", // firewall db url
+			"n",                      // no tui
+		}, "\n") + "\n"
+		return bufio.NewReader(strings.NewReader(input))
+	}
+
+	_, runTUI, _ := askTerminalOptions()
+
+	if runTUI {
+		t.Fatalf("expected runTUI=false from interactive choice")
+	}
+	if !firewallEnabledFlag || firewallDisabledFlag {
+		t.Fatalf("expected firewall to be enabled from interactive choice")
+	}
+	if firewallSource != "database" {
+		t.Fatalf("expected firewall source to be database, got %q", firewallSource)
+	}
+	if firewallDBURL != "postgresql://fw-rules" {
+		t.Fatalf("expected firewall db url to be captured, got %q", firewallDBURL)
+	}
+	if firewallRulesPath != "" {
+		t.Fatalf("expected no firewall file path when source is database, got %q", firewallRulesPath)
+	}
+}
+
+func TestResolveFirewallDatabaseURLPrecedence(t *testing.T) {
+	oldFirewallDBURL := firewallDBURL
+	oldStoreURL := storeURL
+	oldEnv := os.Getenv("DATABASE_URL")
+	defer func() {
+		firewallDBURL = oldFirewallDBURL
+		storeURL = oldStoreURL
+		_ = os.Setenv("DATABASE_URL", oldEnv)
+	}()
+
+	firewallDBURL = "postgresql://firewall"
+	storeURL = "postgresql://store"
+	_ = os.Setenv("DATABASE_URL", "postgresql://env")
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://firewall" {
+		t.Fatalf("expected firewall-db-url to take precedence, got %q", got)
+	}
+
+	firewallDBURL = ""
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://store" {
+		t.Fatalf("expected store-url fallback, got %q", got)
+	}
+
+	storeURL = ""
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://env" {
+		t.Fatalf("expected DATABASE_URL fallback, got %q", got)
+	}
+}
+
+func TestNormalizeDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		out  string
+	}{
+		{name: "plain", in: "postgresql://u:p@localhost:5432/db?sslmode=disable", out: "postgresql://u:p@localhost:5432/db?sslmode=disable"},
+		{name: "trim spaces and quotes", in: "  \"postgresql://u:p@localhost:5432/db?sslmode=disable\"  ", out: "postgresql://u:p@localhost:5432/db?sslmode=disable"},
+		{name: "strip trailing paren for sslmode", in: "postgresql://u:p@localhost:5432/db?sslmode=disable)", out: "postgresql://u:p@localhost:5432/db?sslmode=disable"},
+		{name: "do not strip paren without sslmode", in: "postgresql://u:p@localhost:5432/db)", out: "postgresql://u:p@localhost:5432/db)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeDatabaseURL(tc.in); got != tc.out {
+				t.Fatalf("normalizeDatabaseURL(%q)=%q, want %q", tc.in, got, tc.out)
+			}
+		})
+	}
+}
+
+func TestResolveFirewallDatabaseURLNormalizesInput(t *testing.T) {
+	oldFirewallDBURL := firewallDBURL
+	oldStoreURL := storeURL
+	oldEnv := os.Getenv("DATABASE_URL")
+	defer func() {
+		firewallDBURL = oldFirewallDBURL
+		storeURL = oldStoreURL
+		_ = os.Setenv("DATABASE_URL", oldEnv)
+	}()
+
+	firewallDBURL = "postgresql://firewall?sslmode=disable)"
+	storeURL = "postgresql://store?sslmode=disable)"
+	_ = os.Setenv("DATABASE_URL", "postgresql://env?sslmode=disable)")
+
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://firewall?sslmode=disable" {
+		t.Fatalf("expected normalized firewall-db-url, got %q", got)
+	}
+
+	firewallDBURL = ""
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://store?sslmode=disable" {
+		t.Fatalf("expected normalized store-url, got %q", got)
+	}
+
+	storeURL = ""
+	if got := resolveFirewallDatabaseURL(); got != "postgresql://env?sslmode=disable" {
+		t.Fatalf("expected normalized env url, got %q", got)
+	}
+}
+
 func TestRequestDashboardUpdateQueuesAtMostOneSignal(t *testing.T) {
 	oldRunningTUI := runningTUI
 	oldUpdateDashboard := updateDashboard

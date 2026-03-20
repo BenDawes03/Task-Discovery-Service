@@ -6,7 +6,7 @@ param(
     [switch]$StartServer,
     [switch]$UDP,
     [switch]$TCP,
-    [string]$Server = "localhost:5000"
+    [string]$Server = "127.0.0.1:5000"
 )
 
 function Get-RepoRoot {
@@ -28,7 +28,7 @@ function Get-RepoRoot {
 function Test-TDSJsonEndpoint {
     param(
         [string]$Protocol,
-        [string]$ServerHost = "localhost",
+        [string]$ServerHost = "127.0.0.1",
         [int]$Port = 5000
     )
 
@@ -91,7 +91,7 @@ $selfName = Split-Path -Leaf $PSCommandPath
 
 $serverParts = $Server.Split(':')
 if ($serverParts.Length -ne 2) {
-    Write-Host "[ERROR] -Server must be in host:port format, e.g. localhost:5000" -ForegroundColor Red
+    Write-Host "[ERROR] -Server must be in host:port format, e.g. 127.0.0.1:5000" -ForegroundColor Red
     exit 1
 }
 

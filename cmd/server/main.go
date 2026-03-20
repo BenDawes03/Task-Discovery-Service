@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"golang.org/x/term"
@@ -50,6 +52,8 @@ var (
 
 	// Firewall configuration
 	firewallRulesPath    string
+	firewallSource       string
+	firewallDBURL        string
 	firewallEnabledFlag  bool
 	firewallDisabledFlag bool
 
@@ -396,12 +400,15 @@ func askTerminalOptions() (string, bool, bool) {
 	tlsClientCAFlagSet := flagProvided("--tls-client-ca")
 	cacheMaxSizeFlagSet := flagProvided("--cache-max-size")
 	cacheAdmitAfterMissesFlagSet := flagProvided("--cache-admit-after-misses")
+	firewallSourceFlagSet := flagProvided("--firewall-source")
+	firewallRulesPathFlagSet := flagProvided("--firewall-rules")
+	firewallDBURLFlagSet := flagProvided("--firewall-db-url")
 
 	// Check if firewall was set via flags
-	firewallFlagSet := false
+	firewallModeFlagSet := false
 	for _, a := range os.Args[1:] {
 		if a == "--firewall" || a == "--no-firewall" || a == "--firewall-rules" || strings.HasPrefix(a, "--firewall-rules=") {
-			firewallFlagSet = true
+			firewallModeFlagSet = true
 			break
 		}
 	}
@@ -584,7 +591,7 @@ func askTerminalOptions() (string, bool, bool) {
 		if dbChoice == "y" || dbChoice == "yes" {
 			fmt.Fprint(os.Stderr, "Enter database URL (e.g., postgresql://user:password@localhost:5432/trs?sslmode=disable): ")
 			dbURL, _ := reader.ReadString('\n')
-			storeURL = strings.TrimSpace(dbURL)
+			storeURL = normalizeDatabaseURL(dbURL)
 			if storeURL != "" {
 				fmt.Fprintln(os.Stderr, "Database persistence enabled")
 
@@ -614,8 +621,8 @@ func askTerminalOptions() (string, bool, bool) {
 		}
 	}
 
-	// Firewall prompt (skip if flags already set)
-	if !firewallFlagSet {
+	// Firewall prompt (skip if firewall mode was already set by flags)
+	if !firewallModeFlagSet {
 		fmt.Fprint(os.Stderr, "Enable firewall-aware routing? [y/N]: ")
 		fwChoice, _ := reader.ReadString('\n')
 		fwChoice = strings.TrimSpace(strings.ToLower(fwChoice))
@@ -623,21 +630,49 @@ func askTerminalOptions() (string, bool, bool) {
 			firewallEnabledFlag = true
 			firewallDisabledFlag = false
 
-			fmt.Fprint(os.Stderr, "Firewall rules directory (optional; default '.'): ")
-			dirInput, _ := reader.ReadString('\n')
-			rulesDir := strings.TrimSpace(dirInput)
-			if rulesDir == "" {
-				rulesDir = "."
+			if !firewallSourceFlagSet {
+				fmt.Fprint(os.Stderr, "Firewall rules source: 1) file (default) 2) database. Enter 1 or 2 [1]: ")
+				sourceChoice, _ := reader.ReadString('\n')
+				sourceChoice = strings.TrimSpace(strings.ToLower(sourceChoice))
+				switch sourceChoice {
+				case "", "1", "file", "f":
+					firewallSource = "file"
+				case "2", "database", "db", "d":
+					firewallSource = "database"
+				default:
+					fmt.Fprintln(os.Stderr, "Unrecognized input; defaulting firewall rules source to file")
+					firewallSource = "file"
+				}
 			}
 
-			// Try to select a rules file from the directory.
-			// We default to the common generator output name first.
-			candidateNames := []string{"firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
-			for _, name := range candidateNames {
-				candidate := filepath.Join(rulesDir, name)
-				if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-					firewallRulesPath = candidate
-					break
+			source := strings.ToLower(strings.TrimSpace(firewallSource))
+			if source == "" {
+				source = "file"
+			}
+
+			if source == "database" {
+				if !firewallDBURLFlagSet && firewallDBURL == "" && storeURL == "" {
+					fmt.Fprint(os.Stderr, "Firewall database URL (optional; defaults to DATABASE_URL/store-url if set): ")
+					dbInput, _ := reader.ReadString('\n')
+					firewallDBURL = normalizeDatabaseURL(dbInput)
+				}
+			} else if !firewallRulesPathFlagSet {
+				fmt.Fprint(os.Stderr, "Firewall rules directory (optional; default '.'): ")
+				dirInput, _ := reader.ReadString('\n')
+				rulesDir := strings.TrimSpace(dirInput)
+				if rulesDir == "" {
+					rulesDir = "."
+				}
+
+				// Try to select a rules file from the directory.
+				// We default to the common generator output name first.
+				candidateNames := []string{"firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
+				for _, name := range candidateNames {
+					candidate := filepath.Join(rulesDir, name)
+					if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+						firewallRulesPath = candidate
+						break
+					}
 				}
 			}
 		}
@@ -700,6 +735,55 @@ func determineEffectiveFirewallEnabled() bool {
 	}
 }
 
+func normalizeDatabaseURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.Trim(trimmed, "\"'")
+	trimmed = strings.TrimSpace(trimmed)
+
+	// Common copy/paste artifact from prompts/examples: sslmode ends with an extra ')'.
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, ")") && strings.Contains(lower, "sslmode=") {
+		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, ")"))
+	}
+
+	return trimmed
+}
+
+func resolveFirewallDatabaseURL() string {
+	if firewallDBURL != "" {
+		return normalizeDatabaseURL(firewallDBURL)
+	}
+	if storeURL != "" {
+		return normalizeDatabaseURL(storeURL)
+	}
+	return normalizeDatabaseURL(os.Getenv("DATABASE_URL"))
+}
+
+func loadFirewallFromDatabase(dbURL string) (*firewall.Firewall, error) {
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open firewall database: %w", err)
+	}
+
+	provider, err := firewall.NewDatabaseRulesProvider(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	defer provider.Close()
+
+	if err := provider.CreateTablesIfNotExist(); err != nil {
+		return nil, err
+	}
+
+	fw, err := firewall.LoadFromProvider(provider)
+	if err != nil {
+		return nil, err
+	}
+
+	return fw, nil
+}
+
 func configureTUIIO(runTUI bool) func() {
 	if !runTUI {
 		return func() {}
@@ -745,6 +829,34 @@ func configureFirewall(runTUI bool, firewallEnabled bool) *firewall.Firewall {
 			}
 		}
 		return fw
+	}
+
+	source := strings.ToLower(strings.TrimSpace(firewallSource))
+	if source == "" {
+		source = "file"
+	}
+
+	if source == "database" {
+		dbURL := resolveFirewallDatabaseURL()
+		if dbURL == "" {
+			fatalError("firewall enabled with database source, but no database URL was provided (set --firewall-db-url, --store-url, or DATABASE_URL)")
+		}
+
+		var err error
+		fw, err = loadFirewallFromDatabase(dbURL)
+		if err != nil {
+			fatalError(fmt.Sprintf("failed to load firewall rules from database: %v", err))
+		}
+
+		logEvent(fmt.Sprintf("Firewall enabled: loaded %d firewall rules from database", fw.RuleCount()))
+		if !runTUI {
+			fmt.Fprintf(os.Stderr, "firewall enabled: loaded %d firewall rules from database\n", fw.RuleCount())
+		}
+		return fw
+	}
+
+	if source != "file" {
+		fatalError(fmt.Sprintf("invalid firewall source %q (expected file or database)", firewallSource))
 	}
 
 	if firewallRulesPath != "" {
@@ -1071,6 +1183,8 @@ func main() {
 	flag.Int64Var(&maxConcurrentUDP, "max-udp-handlers", 1000, "Maximum concurrent UDP request handlers (0 = use default)")
 	flag.Int64Var(&maxConcurrentTCP, "max-tcp-connections", 5000, "Maximum concurrent TCP connections (0 = use default)")
 	flag.StringVar(&firewallRulesPath, "firewall-rules", "", "Path to firewall rules file (optional)")
+	flag.StringVar(&firewallSource, "firewall-source", "file", "Firewall rules source when firewall is enabled: file or database")
+	flag.StringVar(&firewallDBURL, "firewall-db-url", "", "Database URL for firewall rules when --firewall-source=database (defaults to --store-url or DATABASE_URL)")
 
 	// Transport mode flags
 	tcpMode := flag.Bool("tcp", false, "Use TCP transport")
@@ -1096,6 +1210,8 @@ func main() {
 	flag.BoolVar(&noUI, "no-ui", false, "Run in headless mode without TUI")
 	flag.BoolVar(&noUI, "no-tui", false, "Alias for --no-ui")
 	flag.Parse()
+	storeURL = normalizeDatabaseURL(storeURL)
+	firewallDBURL = normalizeDatabaseURL(firewallDBURL)
 
 	processTransportModeFlags(*tcpMode, *udpMode, *tlsMode)
 	defer setupLogging()()

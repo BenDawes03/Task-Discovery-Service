@@ -525,6 +525,78 @@ func TestStoreBackedCleanupReturnsCacheRemovalsWhenStoreCleanupFails(t *testing.
 	}
 }
 
+func TestStoreBackedWarmCachePreservesPendingRegistrations(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.registerErrByTask["volatile"] = errors.New("db down")
+	sr := NewStoreBackedRegistry(storeStub, 0)
+
+	sr.RegisterWithCapacity("volatile", "10.0.0.91:8080", 2)
+
+	if _, ok := sr.pendingStoreSync.Load("volatile:10.0.0.91:8080"); !ok {
+		t.Fatal("expected failed registration to be tracked as pending store sync")
+	}
+
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected WarmCacheFromDB error: %v", err)
+	}
+
+	services := sr.ListServices()
+	entries, ok := services["volatile"]
+	if !ok {
+		t.Fatalf("expected volatile task to survive warm-up despite empty DB snapshot, got %+v", services)
+	}
+	if len(entries) != 1 || entries[0].Address != "10.0.0.91:8080" {
+		t.Fatalf("unexpected preserved entries: %+v", entries)
+	}
+
+	addr, err := sr.GetService("volatile")
+	if err != nil {
+		t.Fatalf("expected preserved task to remain queryable after warm-up, got %v", err)
+	}
+	if addr != "10.0.0.91:8080" {
+		t.Fatalf("expected preserved address after warm-up, got %q", addr)
+	}
+
+	if storeStub.listCalls != 1 {
+		t.Fatalf("expected one DB list call during warm-up, got %d", storeStub.listCalls)
+	}
+	if len(storeStub.registerCalls) < 2 {
+		t.Fatalf("expected warm-up to retry failed registration, got %d register attempts", len(storeStub.registerCalls))
+	}
+	if _, ok := sr.pendingStoreSync.Load("volatile:10.0.0.91:8080"); !ok {
+		t.Fatal("expected registration to remain pending while store retries still fail")
+	}
+}
+
+func TestStoreBackedWarmCacheClearsPendingRegistrationAfterRetrySucceeds(t *testing.T) {
+	storeStub := newFakeStore()
+	storeStub.registerErrByTask["recover"] = errors.New("temporary failure")
+	sr := NewStoreBackedRegistry(storeStub, 0)
+
+	sr.RegisterWithCapacity("recover", "10.0.0.92:8080", 3)
+	delete(storeStub.registerErrByTask, "recover")
+	storeStub.listServices = map[string][]store.ServiceEntry{
+		"recover": {{Address: "10.0.0.92:8080", Capacity: 3, LastHeartbeat: time.Now()}},
+	}
+
+	if err := sr.WarmCacheFromDB(context.Background()); err != nil {
+		t.Fatalf("unexpected WarmCacheFromDB error: %v", err)
+	}
+
+	if _, ok := sr.pendingStoreSync.Load("recover:10.0.0.92:8080"); ok {
+		t.Fatal("expected pending registration marker to clear after successful retry")
+	}
+
+	services := sr.ListServices()
+	entries := services["recover"]
+	if len(entries) != 1 || entries[0].Address != "10.0.0.92:8080" {
+		t.Fatalf("expected recovered entry to be loaded from DB, got %+v", services)
+	}
+	if len(storeStub.registerCalls) < 2 {
+		t.Fatalf("expected retry write to be attempted before cache swap, got %d register calls", len(storeStub.registerCalls))
+	}
+}
+
 func TestStoreBackedWarmCachePreservesRoundRobinCursor(t *testing.T) {
 	storeStub := newFakeStore()
 	storeStub.listServices = map[string][]store.ServiceEntry{

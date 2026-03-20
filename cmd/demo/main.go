@@ -41,7 +41,7 @@ type Response struct {
 }
 
 var (
-	serverAddr = "localhost:5000"
+	serverAddr = "127.0.0.1:5000"
 	protocol   = "tcp" // "tcp" or "udp" - must match server mode
 	stepByStep = false
 	stats      = &Stats{}
@@ -229,7 +229,7 @@ func registerServices() {
 	fmt.Printf("%sRegistering %d services with TDS...%s\n\n", colorWhite, len(services), colorReset)
 
 	for i, svc := range services {
-		address := fmt.Sprintf("localhost:%d", svc.port)
+		address := fmt.Sprintf("127.0.0.1:%d", svc.port)
 		if stepByStep {
 			waitForRequest("REGISTER", svc.task, address)
 		}

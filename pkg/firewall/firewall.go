@@ -77,6 +77,18 @@ func LoadFromFile(filePath string) (*Firewall, error) {
 	return fw, nil
 }
 
+// LoadFromProvider loads firewall rules from a RulesProvider.
+func LoadFromProvider(provider RulesProvider) (*Firewall, error) {
+	rules, err := provider.GetRules()
+	if err != nil {
+		return nil, err
+	}
+
+	fw := NewFirewall()
+	fw.rules = append(fw.rules, rules...)
+	return fw, nil
+}
+
 // parseRule parses a source and destination string into a FirewallRule.
 // Each string can be either an IP address or CIDR notation.
 func parseRule(sourceStr, destStr string) (FirewallRule, error) {

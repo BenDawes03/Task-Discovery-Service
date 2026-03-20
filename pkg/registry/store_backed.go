@@ -26,12 +26,66 @@ type StoreBackedRegistry struct {
 	cacheMissCounts sync.Map      // map[string]*atomic.Int64 tracking consecutive misses per task
 	fallbackCursor  sync.Map      // map[string]*atomic.Int64 weighted cursor for non-admitted misses
 	admitAfterMiss  atomic.Int64  // Number of misses before admitting a task into cache
+	pendingStoreSync sync.Map      // map[string]struct{} keyed by "task:address" for entries not yet persisted
 }
 
 func (sr *StoreBackedRegistry) currentMemCache() *MemoryRegistry {
 	sr.cacheMutex.RLock()
 	defer sr.cacheMutex.RUnlock()
 	return sr.memCache
+}
+
+func pendingStoreKey(task, addr string) string {
+	return task + ":" + addr
+}
+
+func (sr *StoreBackedRegistry) markPendingStoreSync(task, addr string) {
+	sr.pendingStoreSync.Store(pendingStoreKey(task, addr), struct{}{})
+}
+
+func (sr *StoreBackedRegistry) clearPendingStoreSync(task, addr string) {
+	sr.pendingStoreSync.Delete(pendingStoreKey(task, addr))
+}
+
+func (sr *StoreBackedRegistry) hasPendingStoreSync(task, addr string) bool {
+	_, ok := sr.pendingStoreSync.Load(pendingStoreKey(task, addr))
+	return ok
+}
+
+func (sr *StoreBackedRegistry) syncPendingRegistrations(ctx context.Context) {
+	services := sr.currentMemCache().ListServices()
+	for task, entries := range services {
+		for _, entry := range entries {
+			if !sr.hasPendingStoreSync(task, entry.Address) {
+				continue
+			}
+
+			storeEntry := &store.ServiceEntry{
+				Address:       entry.Address,
+				LastHeartbeat: entry.LastHeartbeat,
+				QueryCount:    entry.QueryCount,
+				Capacity:      entry.Capacity,
+			}
+			if err := sr.store.Register(ctx, task, storeEntry); err != nil {
+				fmt.Fprintf(os.Stderr, "[STORE] Failed to sync pending registration for %s/%s: %v\n", task, entry.Address, err)
+				continue
+			}
+
+			sr.clearPendingStoreSync(task, entry.Address)
+		}
+	}
+}
+
+func (sr *StoreBackedRegistry) preservePendingEntries(from, to *MemoryRegistry) {
+	services := from.ListServices()
+	for task, entries := range services {
+		for _, entry := range entries {
+			if !sr.hasPendingStoreSync(task, entry.Address) {
+				continue
+			}
+			sr.populateCacheEntry(to, task, entry.Address, entry.QueryCount, entry.LastHeartbeat, entry.Capacity)
+		}
+	}
 }
 
 // NewStoreBackedRegistry creates a new Registry backed by a Store with in-memory LFU caching.
@@ -75,6 +129,10 @@ func (sr *StoreBackedRegistry) syncQueryCountsToDB(ctx context.Context) error {
 				}
 				if err := sr.store.Register(ctx, task, storeEntry); err != nil {
 					fmt.Fprintf(os.Stderr, "[STORE] Failed to sync query count for %s/%s: %v\n", task, entry.Address, err)
+					continue
+				}
+				if sr.hasPendingStoreSync(task, entry.Address) {
+					sr.clearPendingStoreSync(task, entry.Address)
 				}
 			}
 		}
@@ -91,8 +149,10 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "[STORE] Warning: failed to sync query counts: %v\n", err)
 	}
 
-	newCache := NewMemoryRegistry()
 	oldCache := sr.currentMemCache()
+	sr.syncPendingRegistrations(ctx)
+
+	newCache := NewMemoryRegistry()
 	oldCache.mutex.RLock()
 	fw := oldCache.firewall
 	oldCache.mutex.RUnlock()
@@ -134,6 +194,7 @@ func (sr *StoreBackedRegistry) WarmCacheFromDB(ctx context.Context) error {
 	// Preserve weighted round-robin cursors for tasks that exist in the new cache.
 	// Without this, every warm cycle resets selection to the first slot and can skew
 	// short query bursts even when no external traffic is present.
+	sr.preservePendingEntries(oldCache, newCache)
 	sr.copyRoundRobinState(oldCache, newCache)
 
 	sr.cacheMutex.Lock()
@@ -243,9 +304,13 @@ func (sr *StoreBackedRegistry) RegisterWithCapacity(task, addr string, capacity 
 	defer cancel()
 
 	if err := sr.store.Register(ctx, task, entry); err != nil {
+		sr.markPendingStoreSync(task, addr)
 		// Log to stderr so we can see failures
 		fmt.Fprintf(os.Stderr, "[STORE] Register failed: %v\n", err)
+		return
 	}
+
+	sr.clearPendingStoreSync(task, addr)
 }
 
 // GetService retrieves a service from the cache first (fast path).
