@@ -11,8 +11,10 @@ This interactive demonstration walks through:
 3. **Service Registration** - Registers multiple services with different tasks
 4. **Service Discovery** - Queries TDS to find services by task name
 5. **Round-Robin Load Balancing** - Shows how TDS distributes load evenly
-6. **Concurrent Performance** - Demonstrates handling many simultaneous queries
-7. **Summary Statistics** - Final metrics and success rates
+6. **Weighted Capacity Balancing** - Registers 3 services with capacities 1:2:3 and checks observed query proportions
+7. **Concurrent Performance** - Demonstrates handling many simultaneous queries
+8. **Firewall Mode Check** - Demonstrates allowed vs blocked outcomes when firewall mode is enabled
+9. **Summary Statistics** - Final metrics and success rates
 
 ## Features
 
@@ -93,6 +95,8 @@ Registers 5 services:
 - 1× task_db (port 8004)
 - 1× task_cache (port 8005)
 
+The demo now also starts a background refresh loop that re-registers these services every ~8 seconds so entries stay fresh during longer presentations.
+
 ### Step 5: Basic Queries
 Demonstrates querying for different task types, including a non-existent one
 
@@ -102,7 +106,10 @@ Makes 9 requests for "task_web" showing how TDS cycles through the 3 registered 
 ### Step 7: Concurrent Load
 Runs 20 concurrent clients making 100 total queries to show performance
 
-### Step 8: Summary
+### Step 8: Firewall Mode Demonstration
+Registers an allowed localhost candidate and a non-local candidate, then reports response statuses. If firewall mode is enabled with rules, blocked candidates are expected to return `FORBIDDEN`.
+
+### Step 9: Summary
 Final statistics and success metrics
 
 ## Customization

@@ -32,6 +32,7 @@ type Message struct {
 	Command string `json:"cmd"`
 	Task    string `json:"task"`
 	Address string `json:"address,omitempty"`
+	Capacity int    `json:"capacity,omitempty"`
 }
 
 type Response struct {
@@ -43,9 +44,18 @@ type Response struct {
 var (
 	serverAddr = "127.0.0.1:5000"
 	protocol   = "tcp" // "tcp" or "udp" - must match server mode
-	stepByStep = false
+	stepByStep = true
 	stats      = &Stats{}
+	demoServices []DemoService
+	demoRunID   = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
 )
+
+type DemoService struct {
+	name     string
+	task     string
+	address  string
+	capacity int
+}
 
 type Stats struct {
 	mu                sync.Mutex
@@ -75,6 +85,8 @@ func main() {
 	// Step 3: Register services
 	clearScreen()
 	registerServices()
+	stopRefresh := startRegistrationRefresher(demoServices, 8*time.Second)
+	defer stopRefresh()
 	pause()
 
 	// Step 4: Demonstrate queries
@@ -89,10 +101,20 @@ func main() {
 
 	// Step 6: Show concurrent queries
 	clearScreen()
+	demonstrateWeightedCapacity()
+	pause()
+
+	// Step 7: Show concurrent queries
+	clearScreen()
 	demonstrateConcurrentQueries()
 	pause()
 
-	// Step 7: Final summary
+	// Step 8: Demonstrate firewall mode behavior
+	clearScreen()
+	demonstrateFirewallMode()
+	pause()
+
+	// Step 9: Final summary
 	clearScreen()
 	showSummary()
 }
@@ -141,6 +163,8 @@ func printBanner() {
 	fmt.Println("  ✓ How services register with TDS")
 	fmt.Println("  ✓ How clients query for services")
 	fmt.Println("  ✓ Round-robin load balancing")
+	fmt.Println("  ✓ Weighted capacity routing")
+	fmt.Println("  ✓ Firewall routing/blocking behavior")
 	fmt.Println("  ✓ Concurrent query handling")
 	fmt.Printf("%s\n", colorReset)
 
@@ -214,24 +238,20 @@ func checkServer() {
 func registerServices() {
 	fmt.Printf("%s%sStep 2: Registering Services%s\n\n", colorBold, colorCyan, colorReset)
 
-	services := []struct {
-		name string
-		task string
-		port int
-	}{
-		{"Web Service Alpha", "task_web", 8001},
-		{"Web Service Beta", "task_web", 8002},
-		{"Web Service Gamma", "task_web", 8003},
-		{"Database Service", "task_db", 8004},
-		{"Cache Service", "task_cache", 8005},
+	services := []DemoService{
+		{name: "Web Service Alpha", task: "task_web", address: "127.0.0.1:8001", capacity: 1},
+		{name: "Web Service Beta", task: "task_web", address: "127.0.0.1:8002", capacity: 1},
+		{name: "Web Service Gamma", task: "task_web", address: "127.0.0.1:8003", capacity: 1},
+		{name: "Database Service", task: "task_db", address: "127.0.0.1:8004", capacity: 1},
+		{name: "Cache Service", task: "task_cache", address: "127.0.0.1:8005", capacity: 1},
 	}
+	demoServices = services
 
 	fmt.Printf("%sRegistering %d services with TDS...%s\n\n", colorWhite, len(services), colorReset)
 
 	for i, svc := range services {
-		address := fmt.Sprintf("127.0.0.1:%d", svc.port)
 		if stepByStep {
-			waitForRequest("REGISTER", svc.task, address)
+			waitForRequest("REGISTER", svc.task, svc.address)
 		}
 
 		fmt.Printf("%s[%d/%d]%s Registering %s%s%s on task '%s%s%s'...",
@@ -239,7 +259,7 @@ func registerServices() {
 			colorGreen, svc.name, colorWhite,
 			colorYellow, svc.task, colorWhite)
 
-		success := sendRegister(svc.task, address)
+		success := sendRegisterWithCapacity(svc.task, svc.address, svc.capacity)
 
 		time.Sleep(300 * time.Millisecond) // Visual pacing
 
@@ -257,6 +277,7 @@ func registerServices() {
 	}
 
 	fmt.Printf("\n%s✓ Registration complete!%s\n", colorGreen, colorReset)
+	fmt.Printf("%sBackground refresh enabled:%s services re-register every 8s to keep demo data fresh.\n", colorYellow, colorReset)
 	fmt.Printf("  %sSuccessful: %d%s\n", colorGreen, stats.registrations, colorReset)
 	if stats.errors > 0 {
 		fmt.Printf("  %sFailed: %d%s\n", colorRed, stats.errors, colorReset)
@@ -360,7 +381,7 @@ func demonstrateRoundRobin() {
 }
 
 func demonstrateConcurrentQueries() {
-	fmt.Printf("%s%sStep 5: Concurrent Query Performance%s\n\n", colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%sStep 6: Concurrent Query Performance%s\n\n", colorBold, colorCyan, colorReset)
 
 	numThreads := 20
 	queriesPerThread := 5
@@ -442,6 +463,196 @@ func demonstrateConcurrentQueries() {
 	fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
 }
 
+func demonstrateWeightedCapacity() {
+	fmt.Printf("%s%sStep 5: Weighted Capacity Load Balancing%s\n\n", colorBold, colorCyan, colorReset)
+
+	weightedTask := "task_weighted_" + demoRunID
+	weighted := []DemoService{
+		{name: "Weighted Small", task: weightedTask, address: "127.0.0.1:8101", capacity: 1},
+		{name: "Weighted Medium", task: weightedTask, address: "127.0.0.1:8102", capacity: 2},
+		{name: "Weighted Large", task: weightedTask, address: "127.0.0.1:8103", capacity: 3},
+	}
+
+	fmt.Printf("%sRegistering 3 weighted services with capacities 1:2:3...%s\n", colorWhite, colorReset)
+	for _, svc := range weighted {
+		if stepByStep {
+			waitForRequest("REGISTER", svc.task, svc.address)
+		}
+		fmt.Printf("  %s%-16s%s -> %s (cap=%d)\n", colorGreen, svc.name, colorReset, svc.address, svc.capacity)
+		if !sendRegisterWithCapacity(svc.task, svc.address, svc.capacity) {
+			fmt.Printf("%sFailed to register weighted service; skipping weighted demo.%s\n", colorRed, colorReset)
+			fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+			return
+		}
+		stats.mu.Lock()
+		stats.registrations++
+		stats.mu.Unlock()
+	}
+
+	const total = 120
+	counts := make(map[string]int)
+	if stepByStep {
+		fmt.Printf("\n%sPress ENTER to run %d weighted queries automatically...%s", colorGreen, total, colorReset)
+		pause()
+	}
+
+	fmt.Printf("\n%sRunning %d weighted queries (automatic)...%s\n", colorWhite, total, colorReset)
+	for i := 0; i < total; i++ {
+		addr, ok := sendQuery(weightedTask)
+		stats.mu.Lock()
+		stats.queries++
+		if ok {
+			stats.successfulQueries++
+		}
+		stats.mu.Unlock()
+		if ok {
+			counts[addr]++
+			if (i+1)%20 == 0 {
+				fmt.Printf("  %sProgress:%s %3d/%d queries complete\n", colorCyan, colorReset, i+1, total)
+			}
+		} else if (i+1)%20 == 0 {
+			fmt.Printf("  %sProgress:%s %3d/%d queries complete (with errors)\n", colorCyan, colorReset, i+1, total)
+		}
+	}
+
+	totalCap := 0
+	for _, svc := range weighted {
+		totalCap += svc.capacity
+	}
+
+	fmt.Printf("\n%sObserved distribution across %d queries:%s\n", colorBold, total, colorReset)
+	for _, svc := range weighted {
+		actual := counts[svc.address]
+		expectedPct := float64(svc.capacity) / float64(totalCap) * 100
+		expectedCount := float64(total) * float64(svc.capacity) / float64(totalCap)
+		actualPct := float64(actual) / float64(total) * 100
+		fmt.Printf("  %s%-16s%s %s%-16s%s expected ~%4.1f%% (~%.0f), observed %4.1f%% (%d/%d)\n",
+			colorWhite, svc.name, colorReset,
+			colorCyan, svc.address, colorReset,
+			expectedPct, expectedCount, actualPct, actual, total)
+		bar := strings.Repeat("█", actual/2)
+		fmt.Printf("    %s%s%s\n", colorGreen, bar, colorReset)
+	}
+
+	fmt.Printf("\n%s✓ Proportions should be close to 1:2:3 over enough queries.%s\n", colorGreen, colorReset)
+	fmt.Printf("%sPress ENTER to continue...%s", colorGreen, colorReset)
+}
+
+func demonstrateFirewallMode() {
+	fmt.Printf("%s%sStep 7: Firewall Mode Demonstration%s\n\n", colorBold, colorCyan, colorReset)
+
+	routingTask := "task_firewall_route_" + demoRunID
+	blockedOnlyTask := "task_firewall_block_only_" + demoRunID
+
+	allowedAddr := "127.0.0.1:8201"
+	routableAltAddr := "127.0.0.1:8202"
+	blockedAddr := "10.123.123.123:8203"
+
+	if stepByStep {
+		waitForRequest("REGISTER", routingTask, allowedAddr)
+	}
+	_ = sendRegister(routingTask, allowedAddr)
+	if stepByStep {
+		waitForRequest("REGISTER", routingTask, blockedAddr)
+	}
+	_ = sendRegister(routingTask, blockedAddr)
+	if stepByStep {
+		waitForRequest("REGISTER", routingTask, routableAltAddr)
+	}
+	_ = sendRegister(routingTask, routableAltAddr)
+	if stepByStep {
+		waitForRequest("REGISTER", blockedOnlyTask, blockedAddr)
+	}
+	_ = sendRegister(blockedOnlyTask, blockedAddr)
+	stats.mu.Lock()
+	stats.registrations += 4
+	stats.mu.Unlock()
+
+	fmt.Printf("%sRegistered firewall demo services:%s\n", colorWhite, colorReset)
+	fmt.Printf("  route task:       %s\n", routingTask)
+	fmt.Printf("  local candidates: %s, %s\n", allowedAddr, routableAltAddr)
+	fmt.Printf("  non-local cand.:  %s\n", blockedAddr)
+	fmt.Printf("  blocked-only:     %s\n\n", blockedOnlyTask)
+
+	fmt.Printf("%sFirewall preflight%s\n", colorBold, colorReset)
+	fmt.Printf("  The demo first checks whether this server session is actually filtering results.\n")
+	if stepByStep {
+		waitForRequest("QUERY", blockedOnlyTask, "")
+	}
+	preflightResp, preflightErr := sendQueryDetailed(blockedOnlyTask)
+	stats.mu.Lock()
+	stats.queries++
+	if preflightErr == nil && preflightResp != nil && preflightResp.Status == "OK" {
+		stats.successfulQueries++
+	}
+	stats.mu.Unlock()
+
+	if preflightErr != nil {
+		fmt.Printf("  %sPreflight error:%s %v\n", colorRed, colorReset, preflightErr)
+		fmt.Printf("\n%sResult:%s could not verify firewall behavior.\n", colorYellow, colorReset)
+		fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+		return
+	}
+	if preflightResp == nil {
+		fmt.Printf("  %sPreflight error:%s no response from server\n", colorRed, colorReset)
+		fmt.Printf("\n%sResult:%s could not verify firewall behavior.\n", colorYellow, colorReset)
+		fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+		return
+	}
+
+	fmt.Printf("  blocked-only query returned status=%s", preflightResp.Status)
+	if preflightResp.Address != "" {
+		fmt.Printf(" addr=%s", preflightResp.Address)
+	}
+	fmt.Printf("\n")
+
+	if preflightResp.Status != "FORBIDDEN" {
+		fmt.Printf("\n%sResult:%s firewall filtering is not active for this demo run.\n", colorYellow, colorReset)
+		fmt.Printf("  This means one of the following is true:\n")
+		fmt.Printf("  - server was started without --firewall\n")
+		fmt.Printf("  - server is running in permissive firewall mode\n")
+		fmt.Printf("  - current rules do not block %s for requestor 127.0.0.1\n", blockedAddr)
+		fmt.Printf("\n  Because filtering is not active, showing 12 route queries would just demonstrate normal weighted routing, not firewall behavior.\n")
+		fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+		return
+	}
+
+	fmt.Printf("\n%sRouting demonstration%s (6 queries to %s)\n", colorBold, colorReset, routingTask)
+	routedCounts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		if stepByStep {
+			waitForRequest("QUERY", routingTask, "")
+		}
+		resp, err := sendQueryDetailed(routingTask)
+		stats.mu.Lock()
+		stats.queries++
+		if err == nil && resp != nil && resp.Status == "OK" {
+			stats.successfulQueries++
+		}
+		stats.mu.Unlock()
+
+		if err != nil {
+			fmt.Printf("  %s[Q%02d]%s error: %v\n", colorCyan, i+1, colorReset, err)
+			continue
+		}
+		if resp == nil {
+			fmt.Printf("  %s[Q%02d]%s no response\n", colorCyan, i+1, colorReset)
+			continue
+		}
+
+		routedCounts[resp.Address]++
+		fmt.Printf("  %s[Q%02d]%s status=%-9s addr=%s\n", colorCyan, i+1, colorReset, resp.Status, resp.Address)
+	}
+
+	fmt.Printf("\n%sFirewall summary%s\n", colorBold, colorReset)
+	fmt.Printf("  route task -> %s : %d\n", allowedAddr, routedCounts[allowedAddr])
+	fmt.Printf("  route task -> %s : %d\n", routableAltAddr, routedCounts[routableAltAddr])
+	fmt.Printf("  route task -> %s : %d\n", blockedAddr, routedCounts[blockedAddr])
+	fmt.Printf("\n%sResult:%s PASS - preflight proved filtering is active, and the route task shows what addresses remain reachable.\n", colorGreen, colorReset)
+
+	fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+}
+
 func showSummary() {
 	fmt.Printf("%s%sDemonstration Complete!%s\n\n", colorBold, colorCyan, colorReset)
 
@@ -480,10 +691,15 @@ func showSummary() {
 }
 
 func sendRegister(task, address string) bool {
+	return sendRegisterWithCapacity(task, address, 1)
+}
+
+func sendRegisterWithCapacity(task, address string, capacity int) bool {
 	msg := Message{
 		Command: "REGISTER",
 		Task:    task,
 		Address: address,
+		Capacity: capacity,
 	}
 
 	resp, err := sendMessage(msg)
@@ -505,12 +721,7 @@ func sendRegister(task, address string) bool {
 }
 
 func sendQuery(task string) (string, bool) {
-	msg := Message{
-		Command: "QUERY",
-		Task:    task,
-	}
-
-	resp, err := sendMessage(msg)
+	resp, err := sendQueryDetailed(task)
 	if err != nil {
 		return "", false
 	}
@@ -520,6 +731,41 @@ func sendQuery(task string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func sendQueryDetailed(task string) (*Response, error) {
+	msg := Message{
+		Command: "QUERY",
+		Task:    task,
+	}
+
+	return sendMessage(msg)
+}
+
+func startRegistrationRefresher(services []DemoService, interval time.Duration) func() {
+	if len(services) == 0 {
+		return func() {}
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, svc := range services {
+					_ = sendRegisterWithCapacity(svc.task, svc.address, svc.capacity)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+	}
 }
 
 func sendMessage(msg Message) (*Response, error) {
