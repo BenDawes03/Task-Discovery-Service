@@ -62,6 +62,7 @@ type Stats struct {
 	registrations     int
 	queries           int
 	successfulQueries int
+	expectedMisses    int
 	errors            int
 }
 
@@ -151,13 +152,13 @@ func printBanner() {
 	fmt.Printf("%s%s", colorCyan, colorBold)
 	fmt.Println("╔════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                                                                ║")
-	fmt.Println("║         Task Discovery Service (TDS) - Live Demo              ║")
+	fmt.Println("║     Task Discovery Service (TDS) - Centralised Demo           ║")
 	fmt.Println("║                                                                ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════════╝")
 	fmt.Printf("%s\n", colorReset)
 
 	fmt.Printf("%s", colorWhite)
-	fmt.Println("\nWelcome to the TDS demonstration!")
+	fmt.Println("\nWelcome to the TDS centralised demo!")
 	fmt.Println("\nThis demo will show you:")
 	fmt.Printf("%s", colorYellow)
 	fmt.Println("  ✓ How services register with TDS")
@@ -313,6 +314,11 @@ func demonstrateQueries() {
 			stats.mu.Unlock()
 		} else {
 			fmt.Printf(" %s✗%s Not found\n", colorRed, colorReset)
+			if task == "task_nonexistent" {
+				stats.mu.Lock()
+				stats.expectedMisses++
+				stats.mu.Unlock()
+			}
 		}
 
 		stats.mu.Lock()
@@ -669,13 +675,17 @@ func showSummary() {
 	fmt.Printf("  Services registered:     %s%d%s\n", colorGreen, stats.registrations, colorReset)
 	fmt.Printf("  Queries performed:       %s%d%s\n", colorCyan, stats.queries, colorReset)
 	fmt.Printf("  Successful queries:      %s%d%s\n", colorGreen, stats.successfulQueries, colorReset)
+	if stats.expectedMisses > 0 {
+		fmt.Printf("  Expected misses:         %s%d%s\n", colorYellow, stats.expectedMisses, colorReset)
+	}
 	if stats.errors > 0 {
 		fmt.Printf("  Errors encountered:      %s%d%s\n", colorRed, stats.errors, colorReset)
 	}
 
-	if stats.queries > 0 {
-		successRate := float64(stats.successfulQueries) / float64(stats.queries) * 100
-		fmt.Printf("\n%sSuccess Rate: %s%.1f%%%s\n", colorBold, colorGreen, successRate, colorReset)
+	effectiveQueries := stats.queries - stats.expectedMisses
+	if effectiveQueries > 0 {
+		successRate := float64(stats.successfulQueries) / float64(effectiveQueries) * 100
+		fmt.Printf("\n%sSuccess Rate%s (excluding expected misses): %s%.1f%%%s\n", colorBold, colorReset, colorGreen, successRate, colorReset)
 	}
 
 	fmt.Printf("\n%sKey Features Demonstrated:%s\n", colorBold, colorReset)
@@ -686,7 +696,7 @@ func showSummary() {
 	fmt.Printf("  %s✓%s High-performance operations\n", colorGreen, colorWhite)
 
 	fmt.Printf("\n%s", colorCyan)
-	fmt.Println("Thank you for watching this TDS demonstration!")
+	fmt.Println("Thank you for watching this TDS centralised demo!")
 	fmt.Printf("%s\n", colorReset)
 }
 

@@ -188,7 +188,7 @@ For operation and deployment, the project includes a terminal dashboard built wi
 
 The codebase is organised to separate executable entry points, reusable packages, deployment assets, and system-level test environments. This allowed me to develop centralised and P2P features in parallel while keeping the service-facing interface stable.
 
-At the top level, \texttt{cmd/} contains runnable programs. The most important binaries are \texttt{cmd/server} for centralised operation and \texttt{cmd/client\_proxy} for the local proxy process used by services in both architectures. Additional command folders such as \texttt{cmd/demo}, \texttt{cmd/client\_demo}, \texttt{cmd/test\_client}, and \texttt{cmd/test\_json\_client} were used for integration validation and protocol probing during development.
+At the top level, \texttt{cmd/} contains runnable programs. The most important binaries are \texttt{cmd/server} for centralised operation and \texttt{cmd/client\_proxy} for the local proxy process used by services in both architectures. Additional command folders such as \texttt{cmd/centralised\_demo}, \texttt{cmd/client\_demo}, \texttt{cmd/test\_client}, and \texttt{cmd/test\_json\_client} were used for integration validation and protocol probing during development.
 
 Core implementation logic is located in \texttt{pkg/}, with package boundaries aligned to architectural concerns:
 \begin{itemize}

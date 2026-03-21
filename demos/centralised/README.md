@@ -1,10 +1,10 @@
-# TDS Live Demonstration Program
+# TDS Centralised Demo Program
 
-A polished, presentation-ready demonstration of the Task Discovery Service (TDS) that visually shows how the system works with step-by-step explanations and real-time interactions.
+A polished, presentation-ready centralised demo of the Task Discovery Service (TDS) that visually shows how the system works with step-by-step explanations and real-time interactions.
 
 ## What This Demo Shows
 
-This interactive demonstration walks through:
+This interactive centralised demo walks through:
 
 1. **System Architecture** - Visual overview of how TDS works
 2. **Server Connection** - Validates the TDS server is running
@@ -48,7 +48,7 @@ This interactive demonstration walks through:
 2. **Protocol must match** between server and demo
    - The demo defaults to **TCP** mode
    - Make sure your server uses the same protocol
-   - To change demo protocol: edit `protocol ="tcp"` in [cmd/demo/main.go](../../cmd/demo/main.go)
+   - To change demo protocol: edit `protocol ="tcp"` in [cmd/centralised_demo/main.go](../../cmd/centralised_demo/main.go)
 
 ## Running the Demo
 
@@ -56,14 +56,14 @@ This interactive demonstration walks through:
 
 ```bash
 # From repository root
-go run ./cmd/demo
+go run ./cmd/centralised_demo
 ```
 
 ### Building the Demo
 
 ```bash
 # Build standalone executable
-go build -o bin/demo.exe ./cmd/demo
+go build -o bin/demo.exe ./cmd/centralised_demo
 
 # Run it
 ./bin/demo.exe
@@ -130,7 +130,7 @@ Edit `main.go` to customize:
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 
-Welcome to the TDS demonstration!
+Welcome to the TDS centralised demo!
 
 This demo will show you:
   ✓ How services register with TDS
@@ -173,7 +173,7 @@ Press ENTER to begin...
 **Most likely cause**: Protocol mismatch!
 
 **Solution**:
-1. Check demo protocol setting in [cmd/demo/main.go](../../cmd/demo/main.go):
+1. Check demo protocol setting in [cmd/centralised_demo/main.go](../../cmd/centralised_demo/main.go):
    ```go
    var (
        serverAddr = "localhost:5000"

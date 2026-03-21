@@ -108,7 +108,7 @@ go run ./cmd/test_client QUERY my-api
 
 ### Centralized — firewall demo startup
 
-Use this command when running the interactive demo in `cmd/demo` so the firewall step has matching rules:
+Use this command when running the interactive demo in `cmd/centralised_demo` so the firewall step has matching rules:
 
 ```bash
 go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules

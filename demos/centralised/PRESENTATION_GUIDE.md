@@ -1,11 +1,11 @@
-# TDS Presentation Guide
+# TDS Centralised Demo Presentation Guide
 
 Quick reference for delivering a live demonstration of the Task Discovery Service.
 
 ## Pre-Presentation Checklist
 
 ### 5 Minutes Before
-- [ ] Build demo executable: `go build -o bin/demo.exe ./cmd/demo`
+- [ ] Build demo executable: `go build -o bin/demo.exe ./cmd/centralised_demo`
 - [ ] Build server executable: `go build -o bin/server.exe ./cmd/server`
 - [ ] Test run both to verify they work
 - [ ] **Verify protocol**: Demo uses TCP - confirm server will use TCP mode too
@@ -60,7 +60,7 @@ cd cmd\server
 
 **Action in Terminal 2:**
 ```powershell
-cd cmd\demo
+cd cmd\centralised_demo
 .\..\bin\demo.exe
 ```
 

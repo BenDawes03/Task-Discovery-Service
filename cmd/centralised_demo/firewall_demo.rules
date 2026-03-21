@@ -1,6 +1,6 @@
-# Firewall rules for cmd/demo firewall demonstration.
+# Firewall rules for the centralised demo firewall step.
 # Rule format: source_ip_or_cidr destination_ip_or_cidr
 #
 # This allows a local requestor (127.0.0.1) to receive only local services.
-# It intentionally excludes 10.123.123.123 used by the demo as a blocked candidate.
+# It intentionally excludes 10.123.123.123 used by the centralised demo as a blocked candidate.
 127.0.0.1 127.0.0.1

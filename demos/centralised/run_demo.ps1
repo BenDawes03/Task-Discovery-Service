@@ -1,4 +1,4 @@
-# Quick launcher for TDS demonstration
+# Quick launcher for TDS centralised demo
 # Checks if server is running and starts the demo
 
 param(
@@ -86,7 +86,7 @@ function Test-TDSJsonEndpoint {
 
 $repoRoot = Get-RepoRoot -StartDir $PSScriptRoot
 $serverPath = Join-Path $repoRoot "cmd\server"
-$demoPath = Join-Path $repoRoot "cmd\demo"
+$demoPath = Join-Path $repoRoot "cmd\centralised_demo"
 $selfName = Split-Path -Leaf $PSCommandPath
 
 $serverParts = $Server.Split(':')
@@ -118,7 +118,7 @@ if ($UDP) {
 }
 
 Write-Host "=====================================" -ForegroundColor Cyan
-Write-Host "  TDS Demonstration Launcher" -ForegroundColor Cyan
+Write-Host "  TDS Centralised Demo Launcher" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host "  Protocol: $($protocol.ToUpper())" -ForegroundColor White
 Write-Host "  Server:   $Server" -ForegroundColor White

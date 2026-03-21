@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the TDS demonstration tools c
 
 ## 📦 What's Included
 
-### 1. **Interactive Demo Program** (`cmd/demo/main.go`)
+### 1. **Interactive Demo Program** (`cmd/centralised_demo/main.go`)
 A polished Go application that demonstrates TDS functionality with:
 - Visual architecture diagrams (ASCII art)
 - Step-by-step walkthrough with pauses
@@ -59,7 +59,7 @@ go run main.go
 
 **Terminal 2 - Run Demo:**
 ```powershell
-cd cmd\demo
+cd cmd\centralised_demo
 go run .
 ```
 
@@ -76,7 +76,7 @@ go run .
 ```powershell
 # Build both programs
 go build -o bin\server.exe .\cmd\server
-go build -o bin\demo.exe .\cmd\demo
+go build -o bin\demo.exe .\cmd\centralised_demo
 
 # Run them
 .\bin\server.exe  # Terminal 1
@@ -215,7 +215,7 @@ Concurrent Load Test:
 2. **Offer to show code** - If time permits, show registry implementation
 3. **Provide materials** - Share repository link or documentation
 
-See [cmd/demo/PRESENTATION_GUIDE.md](cmd/demo/PRESENTATION_GUIDE.md) for a complete script with exact talking points and timing.
+See [cmd/centralised_demo/PRESENTATION_GUIDE.md](cmd/centralised_demo/PRESENTATION_GUIDE.md) for a complete script with exact talking points and timing.
 
 See [demos/centralised/PRESENTATION_GUIDE.md](PRESENTATION_GUIDE.md) for the moved copy of that guide.
 
@@ -223,7 +223,7 @@ See [demos/centralised/PRESENTATION_GUIDE.md](PRESENTATION_GUIDE.md) for the mov
 
 ## 🔧 Customization
 
-The demo is easily customizable by editing `cmd/demo/main.go`:
+The demo is easily customizable by editing `cmd/centralised_demo/main.go`:
 
 ### Change Server Address
 ```go
@@ -395,7 +395,7 @@ The repository already had PowerShell test scripts. Here's how they compare:
 
 After running the demo:
 
-1. **Explore the code** - Open `cmd/demo/main.go` to see how it works
+1. **Explore the code** - Open `cmd/centralised_demo/main.go` to see how it works
 2. **Customize it** - Modify for your specific use case
 3. **Try test scripts** - For more advanced testing scenarios
 4. **Read the docs** - Check out other README files in the repository
@@ -430,7 +430,7 @@ A: Show it! Switch to the server terminal during/after the demo. Show filtering,
 If you encounter issues with the demo:
 
 1. Check the troubleshooting section above
-2. Review the README files in `cmd/demo/`
+2. Review the README files in `cmd/centralised_demo/`
 3. Look at the server logs for errors
 4. Check GitHub issues (if applicable)
 
