@@ -2,6 +2,7 @@ package registry
 
 import (
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,12 +126,7 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	if registry.firewall != nil && requestorIP != nil {
 		allowedEntries = make([]ServiceEntry, 0, len(entryCopy))
 		for _, entry := range entryCopy {
-			addr := entry.Address
-			hostPart, _, err := net.SplitHostPort(addr)
-			if err != nil {
-				hostPart = addr
-			}
-			destIP := net.ParseIP(hostPart)
+			destIP := destinationIPFromAddress(entry.Address)
 			if destIP != nil && registry.firewall.IsAllowed(requestorIP, destIP) {
 				allowedEntries = append(allowedEntries, entry)
 			}
@@ -165,6 +161,33 @@ func (registry *MemoryRegistry) GetServiceForRequestor(task string, requestorIP 
 	registry.totalQueries.Add(1)
 
 	return selectedAddr, nil
+}
+
+func destinationIPFromAddress(address string) net.IP {
+	addr := strings.TrimSpace(address)
+	if addr == "" {
+		return nil
+	}
+
+	if strings.Contains(addr, "://") {
+		u, err := url.Parse(addr)
+		if err == nil {
+			if host := strings.TrimSpace(u.Hostname()); host != "" {
+				if ip := net.ParseIP(host); ip != nil {
+					return ip
+				}
+			}
+		}
+	}
+
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		host = strings.Trim(host, "[]")
+		if ip := net.ParseIP(host); ip != nil {
+			return ip
+		}
+	}
+
+	return net.ParseIP(addr)
 }
 
 func totalServiceWeight(entries []ServiceEntry) int {

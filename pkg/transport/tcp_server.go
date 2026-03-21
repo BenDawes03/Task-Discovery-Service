@@ -10,12 +10,27 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/semaphore"
 	"tds/pkg/registry"
 )
+
+func isExpectedTLSProbeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Common when plain TCP probes hit a TLS-only listener.
+	return strings.Contains(err.Error(), "first record does not look like a TLS handshake")
+}
+
+func transportEvent(onEvent func(string), format string, args ...interface{}) {
+	if onEvent != nil {
+		onEvent(fmt.Sprintf(format, args...))
+	}
+}
 
 // StartTCPServer starts a JSON-based TCP server that understands the same JSON
 // messages as the UDP server. Each connection is handled concurrently and may
@@ -66,7 +81,7 @@ func StartTCPServerWithContext(ctx context.Context, reg registry.Registry, port 
 				return nil
 			}
 			// transient accept error: log and continue
-			fmt.Printf("tcp accept error: %v\n", err)
+			transportEvent(onEvent, "tcp accept error: %v", err)
 			continue
 		}
 		connMu.Lock()
@@ -116,7 +131,7 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 		if err := json.Unmarshal(line, &msg); err != nil {
 			errResp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
 			if err := encoder.Encode(errResp); err != nil {
-				fmt.Printf("tcp encode error (invalid JSON response): %v\n", err)
+				transportEvent(onEvent, "tcp encode error (invalid JSON response): %v", err)
 				return
 			}
 			continue
@@ -124,13 +139,16 @@ func handleTCPConn(conn net.Conn, reg registry.Registry, onEvent func(string)) {
 
 		resp := HandleMessage(reg, msg, requestorIP, remote, onEvent)
 		if err := encoder.Encode(resp); err != nil {
-			fmt.Printf("tcp encode error: %v\n", err)
+			transportEvent(onEvent, "tcp encode error: %v", err)
 			return
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("tcp scan error: %v\n", err)
+		if isExpectedTLSProbeError(err) {
+			return
+		}
+		transportEvent(onEvent, "tcp scan error: %v", err)
 	}
 }
 
@@ -214,7 +232,10 @@ func StartTCPServerTLSWithContext(ctx context.Context, reg registry.Registry, po
 				handlers.Wait()
 				return nil
 			}
-			fmt.Printf("tls accept error: %v\n", err)
+			if isExpectedTLSProbeError(err) {
+				continue
+			}
+			transportEvent(onEvent, "tls accept error: %v", err)
 			continue
 		}
 		connMu.Lock()

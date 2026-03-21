@@ -239,7 +239,7 @@ func QueryTCP(serverAddr, task string) (string, error) {
 // RegisterTLS performs a TCP register with TLS and mutual authentication.
 // Requires client certificate, key, and CA cert to verify server.
 func RegisterTLS(serverAddr, task, address, certFile, keyFile, caFile string) error {
-	config, err := loadTLSConfig(certFile, keyFile, caFile)
+	config, err := loadTLSConfig(certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ func RegisterTLS(serverAddr, task, address, certFile, keyFile, caFile string) er
 
 // QueryTLS performs a query over TLS with mutual authentication.
 func QueryTLS(serverAddr, task, certFile, keyFile, caFile string) (string, error) {
-	config, err := loadTLSConfig(certFile, keyFile, caFile)
+	config, err := loadTLSConfig(certFile, keyFile, caFile, serverAddr)
 	if err != nil {
 		return "", err
 	}
@@ -331,8 +331,29 @@ func QueryTLS(serverAddr, task, certFile, keyFile, caFile string) (string, error
 	return resp.Address, nil
 }
 
+func tlsServerName(serverAddr string) string {
+	override := strings.TrimSpace(os.Getenv("TDS_TLS_SERVER_NAME"))
+	if override != "" {
+		return override
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(serverAddr))
+	if err != nil {
+		return ""
+	}
+	host = strings.Trim(host, "[]")
+	lowerHost := strings.ToLower(host)
+
+	// Kubernetes service DNS for TDS currently fronts a cert issued for localhost.
+	if lowerHost == "tds-server" || strings.HasPrefix(lowerHost, "tds-server.") {
+		return "localhost"
+	}
+
+	return ""
+}
+
 // loadTLSConfig creates a TLS configuration with client certificate and CA verification.
-func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+func loadTLSConfig(certFile, keyFile, caFile, serverAddr string) (*tls.Config, error) {
 	// Load client certificate
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -349,7 +370,7 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to parse CA certificate")
 	}
 
-	return &tls.Config{
+	config := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      caCertPool,
 		MinVersion:   tls.VersionTLS12,
@@ -359,5 +380,11 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		},
-	}, nil
+	}
+
+	if serverName := tlsServerName(serverAddr); serverName != "" {
+		config.ServerName = serverName
+	}
+
+	return config, nil
 }

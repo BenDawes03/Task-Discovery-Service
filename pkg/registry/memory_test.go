@@ -194,6 +194,39 @@ func TestGetServiceForRequestorFiltersByFirewall(t *testing.T) {
 	}
 }
 
+func TestGetServiceForRequestorFiltersByFirewallWithURLAddress(t *testing.T) {
+	r := NewMemoryRegistry()
+	task := "firewall-url-task"
+
+	r.Register(task, "http://10.0.0.1:9000")
+
+	tmpDir := t.TempDir()
+	rulesPath := filepath.Join(tmpDir, "firewall.rules")
+	rules := "192.168.1.10 10.0.0.1\n"
+	if err := os.WriteFile(rulesPath, []byte(rules), 0644); err != nil {
+		t.Fatalf("failed to write firewall rules: %v", err)
+	}
+
+	fw, err := firewall.LoadFromFile(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load firewall rules: %v", err)
+	}
+	r.SetFirewall(fw)
+
+	requestor := net.ParseIP("192.168.1.10")
+	if requestor == nil {
+		t.Fatal("failed to parse requestor IP")
+	}
+
+	got, err := r.GetServiceForRequestor(task, requestor)
+	if err != nil {
+		t.Fatalf("expected allowed service, got error: %v", err)
+	}
+	if got != "http://10.0.0.1:9000" {
+		t.Fatalf("expected allowed URL address, got %q", got)
+	}
+}
+
 func TestGetServiceForRequestorKeepsWeightedRotationWithinAllowedSubset(t *testing.T) {
 	r := NewMemoryRegistry()
 	task := "firewall-weighted-task"

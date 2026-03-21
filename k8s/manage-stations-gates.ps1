@@ -116,7 +116,7 @@ spec:
         - "-station-id"
         - "$N"
         - "-proxy"
-        - "$proxyName:5100"
+        - "${proxyName}:5100"
         - "-proxy-proto"
         - "tcp"
         ports:
@@ -264,7 +264,7 @@ spec:
         - "-station-id"
         - "$ForStationID"
         - "-proxy"
-        - "$proxyName:5100"
+        - "${proxyName}:5100"
         - "-proxy-proto"
         - "tcp"
         ports:

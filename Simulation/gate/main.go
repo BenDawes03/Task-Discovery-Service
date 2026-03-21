@@ -202,6 +202,27 @@ func main() {
 	var paCache cachedAddr
 	var cacheMu sync.Mutex
 
+	isRetryableResolveErr := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		msg := strings.ToLower(strings.TrimSpace(err.Error()))
+		switch {
+		case strings.Contains(msg, "service not found"):
+			return true
+		case strings.Contains(msg, "eof"):
+			return true
+		case strings.Contains(msg, "timeout"):
+			return true
+		case strings.Contains(msg, "connection refused"):
+			return true
+		case strings.Contains(msg, "connection reset"):
+			return true
+		default:
+			return false
+		}
+	}
+
 	var pctrPub *rsa.PublicKey
 	keyPath := strings.TrimSpace(pctrPublicKeyPath)
 	if keyPath == "" {
@@ -244,21 +265,39 @@ func main() {
 	}
 
 	resolveBase := func(task string, fallback string, cache *cachedAddr) (string, error) {
-		cacheMu.Lock()
-		defer cacheMu.Unlock()
-		addr, err := proxyClient.Query(task)
-		if err == nil {
-			cache.value = addr
-			cache.at = time.Now()
-			return simproxy.EnsureHTTPBase(addr), nil
+		const maxAttempts = 6
+		const retryDelay = 400 * time.Millisecond
+
+		var lastErr error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			addr, err := proxyClient.Query(task)
+			if err == nil {
+				cacheMu.Lock()
+				cache.value = addr
+				cache.at = time.Now()
+				cacheMu.Unlock()
+				return simproxy.EnsureHTTPBase(addr), nil
+			}
+
+			lastErr = err
+			if !isRetryableResolveErr(err) || attempt == maxAttempts {
+				break
+			}
+			time.Sleep(retryDelay)
 		}
-		if cache.value != "" && time.Since(cache.at) < 2*time.Minute {
-			return simproxy.EnsureHTTPBase(cache.value), nil
+
+		cacheMu.Lock()
+		cachedValue := cache.value
+		cachedAt := cache.at
+		cacheMu.Unlock()
+
+		if cachedValue != "" && time.Since(cachedAt) < 2*time.Minute {
+			return simproxy.EnsureHTTPBase(cachedValue), nil
 		}
 		if strings.TrimSpace(fallback) != "" {
 			return simproxy.EnsureHTTPBase(fallback), nil
 		}
-		return "", err
+		return "", lastErr
 	}
 
 	handleTap := func(tapLine string) (bool, string) {

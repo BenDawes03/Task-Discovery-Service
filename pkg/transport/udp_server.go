@@ -63,7 +63,7 @@ func StartUDPServerWithContext(ctx context.Context, reg registry.Registry, port 
 				return nil
 			}
 			// transient read error: log and continue
-			fmt.Printf("udp read error: %v\n", err)
+			transportEvent(onEvent, "udp read error: %v", err)
 			continue
 		}
 
@@ -90,11 +90,11 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 		resp := CentralizedResponse{Status: "ERR", Error: "invalid JSON: " + err.Error()}
 		respData, err := json.Marshal(resp)
 		if err != nil {
-			fmt.Printf("udp marshal error: %v\n", err)
+			transportEvent(onEvent, "udp marshal error: %v", err)
 			return
 		}
 		if _, err := conn.WriteToUDP(respData, remote); err != nil {
-			fmt.Printf("udp write error (invalid JSON response): %v\n", err)
+			transportEvent(onEvent, "udp write error (invalid JSON response): %v", err)
 		}
 		return
 	}
@@ -102,10 +102,10 @@ func handleUDPRequest(conn *net.UDPConn, reg registry.Registry, data []byte, rem
 	resp := HandleMessage(reg, msg, remote.IP, remote, onEvent)
 	respData, err := json.Marshal(resp)
 	if err != nil {
-		fmt.Printf("udp marshal error: %v\n", err)
+		transportEvent(onEvent, "udp marshal error: %v", err)
 		return
 	}
 	if _, err := conn.WriteToUDP(respData, remote); err != nil {
-		fmt.Printf("udp write error: %v\n", err)
+		transportEvent(onEvent, "udp write error: %v", err)
 	}
 }

@@ -26,7 +26,6 @@ spec:
         - "--tls-client-ca"
         - "/run/tds-tls/ca.crt"
         - "--no-ui"
-        - "--no-freshness"
         - "--firewall-rules"
         - "/etc/tds/firewall/rules.txt"
         ports:
