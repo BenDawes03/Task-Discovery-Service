@@ -27,6 +27,11 @@ import (
 
 const defaultStoreDatabaseURL = "postgresql://trs:password@localhost:5432/trs?sslmode=disable"
 
+const (
+	defaultMaxConcurrentUDP int64 = 1000
+	defaultMaxConcurrentTCP int64 = 5000
+)
+
 // Config
 var (
 	// Server configuration
@@ -356,26 +361,6 @@ func askTerminalOptions() (string, bool, bool) {
 	transportMode := "udp"
 	runTUI := true // Default to TUI if interactive
 	skipPrompts := false
-	argHas := func(names ...string) bool {
-		for _, a := range os.Args[1:] {
-			for _, n := range names {
-				if a == n || strings.HasPrefix(a, n+"=") {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	flagProvided := func(names ...string) bool {
-		for _, a := range os.Args[1:] {
-			for _, n := range names {
-				if a == n || strings.HasPrefix(a, n+"=") {
-					return true
-				}
-			}
-		}
-		return false
-	}
 
 	// Check if UI mode was forced via flags
 	if forceUI {
@@ -388,23 +373,23 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	// Check if transport mode was set via flags
-	transportFlagSet := argHas("-tcp", "--tcp") || argHas("-udp", "--udp") || argHas("-tls", "--tls")
+	transportFlagSet := hasAnyArg("-tcp", "--tcp") || hasAnyArg("-udp", "--udp") || hasAnyArg("-tls", "--tls")
 
 	// Check if specific config values were set via flags
-	portFlagSet := flagProvided("--port")
-	heartbeatTimeoutFlagSet := flagProvided("--heartbeat-timeout")
-	cleanupIntervalFlagSet := flagProvided("--cleanup-interval")
-	maxUDPHandlersFlagSet := flagProvided("--max-udp-handlers")
-	maxTCPConnectionsFlagSet := flagProvided("--max-tcp-connections")
-	logDirFlagSet := flagProvided("--log-dir")
-	tlsCertFlagSet := flagProvided("--tls-cert")
-	tlsKeyFlagSet := flagProvided("--tls-key")
-	tlsClientCAFlagSet := flagProvided("--tls-client-ca")
-	cacheMaxSizeFlagSet := flagProvided("--cache-max-size")
-	cacheAdmitAfterMissesFlagSet := flagProvided("--cache-admit-after-misses")
-	firewallSourceFlagSet := flagProvided("--firewall-source")
-	firewallRulesPathFlagSet := flagProvided("--firewall-rules")
-	firewallDBURLFlagSet := flagProvided("--firewall-db-url")
+	portFlagSet := hasAnyArg("--port")
+	heartbeatTimeoutFlagSet := hasAnyArg("--heartbeat-timeout")
+	cleanupIntervalFlagSet := hasAnyArg("--cleanup-interval")
+	maxUDPHandlersFlagSet := hasAnyArg("--max-udp-handlers")
+	maxTCPConnectionsFlagSet := hasAnyArg("--max-tcp-connections")
+	logDirFlagSet := hasAnyArg("--log-dir")
+	tlsCertFlagSet := hasAnyArg("--tls-cert")
+	tlsKeyFlagSet := hasAnyArg("--tls-key")
+	tlsClientCAFlagSet := hasAnyArg("--tls-client-ca")
+	cacheMaxSizeFlagSet := hasAnyArg("--cache-max-size")
+	cacheAdmitAfterMissesFlagSet := hasAnyArg("--cache-admit-after-misses")
+	firewallSourceFlagSet := hasAnyArg("--firewall-source")
+	firewallRulesPathFlagSet := hasAnyArg("--firewall-rules")
+	firewallDBURLFlagSet := hasAnyArg("--firewall-db-url")
 
 	// Check if firewall was set via flags
 	firewallModeFlagSet := false
@@ -422,11 +407,11 @@ func askTerminalOptions() (string, bool, bool) {
 			runTUI = false
 		}
 		// Use explicit transport flag value in headless mode.
-		if argHas("-tls", "--tls") || useTLS {
+		if hasAnyArg("-tls", "--tls") || useTLS {
 			transportMode = "tls"
-		} else if argHas("-tcp", "--tcp") {
+		} else if hasAnyArg("-tcp", "--tcp") {
 			transportMode = "tcp"
-		} else if argHas("-udp", "--udp") {
+		} else if hasAnyArg("-udp", "--udp") {
 			transportMode = "udp"
 		}
 		return transportMode, runTUI, forceUI
@@ -509,7 +494,7 @@ func askTerminalOptions() (string, bool, bool) {
 
 	// Concurrency limit prompts are transport-specific.
 	if transportMode == "udp" && !maxUDPHandlersFlagSet {
-		defaultUDP := int64(1000)
+		defaultUDP := defaultMaxConcurrentUDP
 		if maxConcurrentUDP > 0 {
 			defaultUDP = maxConcurrentUDP
 		}
@@ -527,7 +512,7 @@ func askTerminalOptions() (string, bool, bool) {
 	}
 
 	if (transportMode == "tcp" || transportMode == "tls") && !maxTCPConnectionsFlagSet {
-		defaultTCP := int64(5000)
+		defaultTCP := defaultMaxConcurrentTCP
 		if maxConcurrentTCP > 0 {
 			defaultTCP = maxConcurrentTCP
 		}
@@ -723,6 +708,17 @@ func processTransportModeFlags(tcpMode, udpMode, tlsMode bool) {
 	if udpMode {
 		useTLS = false
 	}
+}
+
+func hasAnyArg(names ...string) bool {
+	for _, a := range os.Args[1:] {
+		for _, n := range names {
+			if a == n || strings.HasPrefix(a, n+"=") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func setupLogging() func() {
@@ -986,7 +982,7 @@ func startTransportServer(transportMode string, runTUI bool) {
 	case "udp":
 		udpLimit := maxConcurrentUDP
 		if udpLimit <= 0 {
-			udpLimit = 1000
+			udpLimit = defaultMaxConcurrentUDP
 		}
 		logEvent(fmt.Sprintf("Concurrency limit: %d UDP handlers", udpLimit))
 		if !runTUI {
@@ -995,7 +991,7 @@ func startTransportServer(transportMode string, runTUI bool) {
 	case "tcp":
 		tcpLimit := maxConcurrentTCP
 		if tcpLimit <= 0 {
-			tcpLimit = 5000
+			tcpLimit = defaultMaxConcurrentTCP
 		}
 		logEvent(fmt.Sprintf("Concurrency limit: %d TCP connections", tcpLimit))
 		if !runTUI {
@@ -1004,7 +1000,7 @@ func startTransportServer(transportMode string, runTUI bool) {
 	case "tls":
 		tcpLimit := maxConcurrentTCP
 		if tcpLimit <= 0 {
-			tcpLimit = 5000
+			tcpLimit = defaultMaxConcurrentTCP
 		}
 		logEvent(fmt.Sprintf("Concurrency limit: %d TLS connections", tcpLimit))
 		if !runTUI {
@@ -1036,7 +1032,7 @@ func startTransportServer(transportMode string, runTUI bool) {
 
 	logEvent("Server started successfully")
 	if !runTUI {
-		fmt.Fprintln(os.Stderr, "Server correctly started")
+		fmt.Fprintln(os.Stderr, "server started successfully")
 	}
 	logEvent(fmt.Sprintf("Broadcasting server info (heartbeat timeout: %v)", heartbeatTimeout))
 	go transport.BroadcastServerInfo(listenPort, heartbeatTimeout, serverStartTime)
@@ -1190,7 +1186,7 @@ func runTUILoop() {
 	setupUILayout()
 }
 
-func main() {
+func parseServerFlags() (bool, bool, bool) {
 	// Parse command-line flags
 	flag.BoolVar(&firewallEnabledFlag, "firewall", false, "Enable firewall-aware routing (if no rules file is provided, operates in permissive mode)")
 	flag.BoolVar(&firewallDisabledFlag, "no-firewall", false, "Disable firewall-aware routing (ignores --firewall-rules)")
@@ -1231,23 +1227,37 @@ func main() {
 	storeURL = normalizeDatabaseURL(storeURL)
 	firewallDBURL = normalizeDatabaseURL(firewallDBURL)
 
-	processTransportModeFlags(*tcpMode, *udpMode, *tlsMode)
+	return *tcpMode, *udpMode, *tlsMode
+}
+
+func initializeServer(runtimeTUI bool) {
+	firewallEnabled := determineEffectiveFirewallEnabled()
+	fw := configureFirewall(runtimeTUI, firewallEnabled)
+
+	reg = initializeRegistry(runtimeTUI, fw)
+}
+
+func runServer(runtimeTransportMode string, runtimeTUI bool) {
+	startTransportServer(runtimeTransportMode, runtimeTUI)
+
+	if !runtimeTUI {
+		runHeadlessLoop()
+		return
+	}
+
+	runTUILoop()
+}
+
+func main() {
+	tcpMode, udpMode, tlsMode := parseServerFlags()
+
+	processTransportModeFlags(tcpMode, udpMode, tlsMode)
 	defer setupLogging()()
 
 	// Gather terminal options before starting any server output.
 	transportMode, runTUI, _ := askTerminalOptions()
 	defer configureTUIIO(runTUI)()
 
-	firewallEnabled := determineEffectiveFirewallEnabled()
-	fw := configureFirewall(runTUI, firewallEnabled)
-
-	reg = initializeRegistry(runTUI, fw)
-	startTransportServer(transportMode, runTUI)
-
-	if !runTUI {
-		runHeadlessLoop()
-		return
-	}
-
-	runTUILoop()
+	initializeServer(runTUI)
+	runServer(transportMode, runTUI)
 }
