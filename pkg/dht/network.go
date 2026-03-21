@@ -238,10 +238,16 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 			return nil
 		}
 
+		source := msg.Sender
+		if strings.TrimSpace(source) == "" {
+			source = "unknown"
+		}
+
 		// If ring size <= k, all nodes are in k-closest by definition
 		ringSize := dn.dht.GetRingSize()
 		if ringSize <= ReplicationFactor {
 			dn.dht.StoreTask(sp.Task, sp.Address)
+			netLogger.Printf("accepted STORE from %s: %s -> %s", source, sp.Task, sp.Address)
 			netLogger.Printf("stored %s -> %s (ring size %d <= k=%d)", sp.Task, sp.Address, ringSize, ReplicationFactor)
 			return &Message{
 				Type:   MsgOK,
@@ -252,6 +258,7 @@ func (dn *DHTNetwork) handleMessage(msg *Message) *Message {
 		// Check if we're in the k-closest nodes for this task
 		if dn.dht.AmIInKClosest(sp.Task, ReplicationFactor) {
 			dn.dht.StoreTask(sp.Task, sp.Address)
+			netLogger.Printf("accepted STORE from %s: %s -> %s", source, sp.Task, sp.Address)
 			netLogger.Printf("stored %s -> %s (in k-closest)", sp.Task, sp.Address)
 			return &Message{
 				Type:   MsgOK,

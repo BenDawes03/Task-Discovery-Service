@@ -451,6 +451,12 @@ func simplifyLogLine(line string) string {
 		return "Stored locally: " + shortenStoreMessage(msg)
 	case strings.HasPrefix(msg, "stored on "):
 		return "Stored on peer: " + shortenStoreMessage(msg)
+	case strings.HasPrefix(msg, "accepted STORE from "):
+		return "Store received: " + strings.TrimPrefix(msg, "accepted STORE from ")
+	case strings.HasPrefix(msg, "stored ") && strings.Contains(msg, "(in k-closest)"):
+		return "Stored (receiver): " + shortenStoreMessage(msg)
+	case strings.HasPrefix(msg, "stored ") && strings.Contains(msg, "(ring size "):
+		return "Stored (receiver): " + shortenStoreMessage(msg)
 	case strings.HasPrefix(msg, "store complete: "):
 		return "Replication done: " + strings.TrimPrefix(msg, "store complete: ")
 	case strings.HasPrefix(msg, "found locally: "):
