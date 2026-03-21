@@ -365,17 +365,17 @@ func TestAskTerminalOptionsFirewallDatabaseSourcePrompt(t *testing.T) {
 	isTerminalFn = func(fd int) bool { return true }
 	promptReaderFn = func() *bufio.Reader {
 		input := strings.Join([]string{
-			"",                       // transport default udp
-			"",                       // port default
-			"",                       // heartbeat default
-			"",                       // cleanup default
-			"",                       // max udp handlers default
-			"",                       // log dir default
-			"n",                      // db persistence disabled
-			"y",                      // firewall enabled
-			"2",                      // firewall source database
+			"",                      // transport default udp
+			"",                      // port default
+			"",                      // heartbeat default
+			"",                      // cleanup default
+			"",                      // max udp handlers default
+			"",                      // log dir default
+			"n",                     // db persistence disabled
+			"y",                     // firewall enabled
+			"2",                     // firewall source database
 			"postgresql://fw-rules", // firewall db url
-			"n",                      // no tui
+			"n",                     // no tui
 		}, "\n") + "\n"
 		return bufio.NewReader(strings.NewReader(input))
 	}
@@ -396,6 +396,98 @@ func TestAskTerminalOptionsFirewallDatabaseSourcePrompt(t *testing.T) {
 	}
 	if firewallRulesPath != "" {
 		t.Fatalf("expected no firewall file path when source is database, got %q", firewallRulesPath)
+	}
+}
+
+func TestAskTerminalOptionsDatabasePromptUsesDefaultURL(t *testing.T) {
+	oldForceUI := forceUI
+	oldNoUI := noUI
+	oldUseTLS := useTLS
+	oldArgs := os.Args
+	oldIsTerminalFn := isTerminalFn
+	oldPromptReaderFn := promptReaderFn
+	oldListenPort := listenPort
+	oldHeartbeatTimeout := heartbeatTimeout
+	oldCleanupInterval := cleanupInterval
+	oldLogDir := logDir
+	oldStoreURL := storeURL
+	oldCacheMaxSize := cacheMaxSize
+	oldCacheAdmitAfterMisses := cacheAdmitAfterMisses
+	oldFirewallEnabledFlag := firewallEnabledFlag
+	oldFirewallDisabledFlag := firewallDisabledFlag
+	oldFirewallRulesPath := firewallRulesPath
+	oldFirewallSource := firewallSource
+	oldFirewallDBURL := firewallDBURL
+	defer func() {
+		forceUI = oldForceUI
+		noUI = oldNoUI
+		useTLS = oldUseTLS
+		os.Args = oldArgs
+		isTerminalFn = oldIsTerminalFn
+		promptReaderFn = oldPromptReaderFn
+		listenPort = oldListenPort
+		heartbeatTimeout = oldHeartbeatTimeout
+		cleanupInterval = oldCleanupInterval
+		logDir = oldLogDir
+		storeURL = oldStoreURL
+		cacheMaxSize = oldCacheMaxSize
+		cacheAdmitAfterMisses = oldCacheAdmitAfterMisses
+		firewallEnabledFlag = oldFirewallEnabledFlag
+		firewallDisabledFlag = oldFirewallDisabledFlag
+		firewallRulesPath = oldFirewallRulesPath
+		firewallSource = oldFirewallSource
+		firewallDBURL = oldFirewallDBURL
+	}()
+
+	forceUI = false
+	noUI = false
+	useTLS = false
+	os.Args = []string{"server.test"}
+	listenPort = 5000
+	heartbeatTimeout = 60 * time.Second
+	cleanupInterval = 10 * time.Second
+	logDir = "logs"
+	storeURL = ""
+	cacheMaxSize = 100
+	cacheAdmitAfterMisses = 1
+	firewallEnabledFlag = false
+	firewallDisabledFlag = false
+	firewallRulesPath = ""
+	firewallSource = "file"
+	firewallDBURL = ""
+
+	isTerminalFn = func(fd int) bool { return true }
+	promptReaderFn = func() *bufio.Reader {
+		input := strings.Join([]string{
+			"",  // transport default udp
+			"",  // port default
+			"",  // heartbeat default
+			"",  // cleanup default
+			"",  // max udp handlers default
+			"",  // log dir default
+			"y", // db persistence enabled
+			"",  // accept default db url
+			"",  // cache max size default
+			"",  // cache admission default
+			"n", // firewall disabled
+			"n", // no tui
+		}, "\n") + "\n"
+		return bufio.NewReader(strings.NewReader(input))
+	}
+
+	_, runTUI, _ := askTerminalOptions()
+
+	if runTUI {
+		t.Fatalf("expected runTUI=false from interactive choice")
+	}
+	if storeURL != defaultStoreDatabaseURL {
+		t.Fatalf("expected default db url %q, got %q", defaultStoreDatabaseURL, storeURL)
+	}
+	if cacheMaxSize != 100 {
+		t.Fatalf("expected default cache max size retained, got %d", cacheMaxSize)
+	}
+	if cacheAdmitAfterMisses != 1 {
+		t.Fatalf("expected default cache admission retained, got %d", cacheAdmitAfterMisses)
 	}
 }
 

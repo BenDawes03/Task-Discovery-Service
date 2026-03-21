@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
 	"github.com/gdamore/tcell/v2"
+	_ "github.com/lib/pq"
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
@@ -24,6 +24,8 @@ import (
 	"tds/pkg/store/postgres"
 	"tds/pkg/transport"
 )
+
+const defaultStoreDatabaseURL = "postgresql://trs:password@localhost:5432/trs?sslmode=disable"
 
 // Config
 var (
@@ -589,8 +591,12 @@ func askTerminalOptions() (string, bool, bool) {
 		dbChoice, _ := reader.ReadString('\n')
 		dbChoice = strings.TrimSpace(strings.ToLower(dbChoice))
 		if dbChoice == "y" || dbChoice == "yes" {
-			fmt.Fprint(os.Stderr, "Enter database URL (e.g., postgresql://user:password@localhost:5432/trs?sslmode=disable): ")
+			fmt.Fprintf(os.Stderr, "Enter database URL [%s]: ", defaultStoreDatabaseURL)
 			dbURL, _ := reader.ReadString('\n')
+			dbURL = strings.TrimSpace(dbURL)
+			if dbURL == "" {
+				dbURL = defaultStoreDatabaseURL
+			}
 			storeURL = normalizeDatabaseURL(dbURL)
 			if storeURL != "" {
 				fmt.Fprintln(os.Stderr, "Database persistence enabled")
@@ -657,21 +663,33 @@ func askTerminalOptions() (string, bool, bool) {
 					firewallDBURL = normalizeDatabaseURL(dbInput)
 				}
 			} else if !firewallRulesPathFlagSet {
-				fmt.Fprint(os.Stderr, "Firewall rules directory (optional; default '.'): ")
-				dirInput, _ := reader.ReadString('\n')
-				rulesDir := strings.TrimSpace(dirInput)
-				if rulesDir == "" {
-					rulesDir = "."
+				fmt.Fprint(os.Stderr, "Firewall rules path or directory (optional; default '.'): ")
+				pathInput, _ := reader.ReadString('\n')
+				pathInput = strings.TrimSpace(pathInput)
+
+				if pathInput == "" {
+					pathInput = "."
 				}
 
-				// Try to select a rules file from the directory.
-				// We default to the common generator output name first.
-				candidateNames := []string{"firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
-				for _, name := range candidateNames {
-					candidate := filepath.Join(rulesDir, name)
-					if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-						firewallRulesPath = candidate
-						break
+				if st, err := os.Stat(pathInput); err == nil && !st.IsDir() {
+					// User provided a direct file path.
+					firewallRulesPath = pathInput
+				} else {
+					// Treat input as a directory and try common filenames.
+					candidateNames := []string{"firewall_demo.rules", "firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
+					for _, name := range candidateNames {
+						candidate := filepath.Join(pathInput, name)
+						if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+							firewallRulesPath = candidate
+							break
+						}
+					}
+
+					// If no candidate was found and user provided a non-empty path,
+					// keep it so startup fails fast instead of silently falling back
+					// to permissive mode.
+					if firewallRulesPath == "" && strings.TrimSpace(pathInput) != "" {
+						firewallRulesPath = pathInput
 					}
 				}
 			}
@@ -1197,7 +1215,7 @@ func main() {
 	flag.StringVar(&tlsClientCAFile, "tls-client-ca", "certs/ca.crt", "CA certificate to verify client certificates")
 
 	// Database configuration flags
-	flag.StringVar(&storeURL, "store-url", "", "Database URL for persistent storage (e.g., postgresql://user:password@localhost:5432/dbname)")
+	flag.StringVar(&storeURL, "store-url", "", fmt.Sprintf("Database URL for persistent storage (interactive default: %s)", defaultStoreDatabaseURL))
 	flag.IntVar(&cacheMaxSize, "cache-max-size", 100, "Maximum number of tasks to keep in cache (0 = unlimited)")
 	flag.IntVar(&cacheAdmitAfterMisses, "cache-admit-after-misses", 1, "Admit a task into cache after this many misses (min 1)")
 

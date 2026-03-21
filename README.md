@@ -106,6 +106,16 @@ go run ./cmd/test_client QUERY my-api
 # → 10.0.0.5:8080
 ```
 
+### Centralized — firewall demo startup
+
+Use this command when running the interactive demo in `cmd/demo` so the firewall step has matching rules:
+
+```bash
+go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules
+```
+
+Rules file location: `demos/centralised/firewall_demo.rules`
+
 ### Centralized — with PostgreSQL
 
 ```bash

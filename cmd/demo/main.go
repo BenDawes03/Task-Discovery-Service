@@ -29,9 +29,9 @@ const (
 
 // Message types matching the TDS protocol
 type Message struct {
-	Command string `json:"cmd"`
-	Task    string `json:"task"`
-	Address string `json:"address,omitempty"`
+	Command  string `json:"cmd"`
+	Task     string `json:"task"`
+	Address  string `json:"address,omitempty"`
 	Capacity int    `json:"capacity,omitempty"`
 }
 
@@ -42,12 +42,12 @@ type Response struct {
 }
 
 var (
-	serverAddr = "127.0.0.1:5000"
-	protocol   = "tcp" // "tcp" or "udp" - must match server mode
-	stepByStep = true
-	stats      = &Stats{}
+	serverAddr   = "127.0.0.1:5000"
+	protocol     = "tcp" // "tcp" or "udp" - must match server mode
+	stepByStep   = true
+	stats        = &Stats{}
 	demoServices []DemoService
-	demoRunID   = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+	demoRunID    = fmt.Sprintf("%d", time.Now().UnixNano()%100000)
 )
 
 type DemoService struct {
@@ -221,11 +221,11 @@ func checkServer() {
 	if err != nil {
 		fmt.Printf("%s✗ Server not reachable via %s!%s\n\n", colorRed, strings.ToUpper(protocol), colorReset)
 		fmt.Printf("%sPlease start the TDS server first:%s\n", colorYellow, colorReset)
-		fmt.Println("  cd cmd/server")
-		fmt.Println("  go run main.go")
+		fmt.Println("  go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
+		fmt.Println("  (rules file: demos/centralised/firewall_demo.rules)")
 		fmt.Println("\nOr build and run:")
 		fmt.Println("  go build -o server.exe ./cmd/server")
-		fmt.Println("  .\\server.exe")
+		fmt.Println("  .\\server.exe --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
 		fmt.Printf("\n%sNote: Make sure server uses the same protocol (%s) as this demo%s\n", colorYellow, strings.ToUpper(protocol), colorReset)
 		os.Exit(1)
 	}
@@ -696,9 +696,9 @@ func sendRegister(task, address string) bool {
 
 func sendRegisterWithCapacity(task, address string, capacity int) bool {
 	msg := Message{
-		Command: "REGISTER",
-		Task:    task,
-		Address: address,
+		Command:  "REGISTER",
+		Task:     task,
+		Address:  address,
 		Capacity: capacity,
 	}
 
