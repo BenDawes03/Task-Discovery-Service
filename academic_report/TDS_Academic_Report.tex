@@ -41,17 +41,17 @@ A Dual-Architecture Service Registry for Distributed Systems}}
 
 \section{Introduction and Motivation}
 
-In large distributed systems, one weak point can slow down the whole platform: static service routing. In the system I worked on at Cubic Transportation Systems, the main problem was not input handling but fixed, hard-coded output endpoints. The component could accept requests from a changing number of devices, but every routing change required redevelopment and full regression testing. This made scaling slow and expensive. As demand grew, the original resolvers had to be replaced with load balancers because the fixed design no longer fit. This project started from that bottleneck and asks how service discovery can be made more dynamic and easier to scale.
+In large distributed systems, static service routing can become a serious scaling bottleneck. In the system I worked on at Cubic Transportation Systems, the issue was not how requests were received but how they were forwarded: output endpoints were fixed in code. The component could accept requests from a changing number of devices, yet every routing change required redevelopment and full regression testing. That made scaling slow and expensive. As demand grew, the original resolvers were replaced with load balancers because the fixed design no longer matched operational needs. This project grew from that bottleneck and examined how service discovery could be made more dynamic and easier to scale.
 
 \subsection{Problem Statement}
 
 The problem had two main parts:
 \begin{enumerate}
-    \item The component was not dynamic even though it performed the same function for any given request from the devices below it.
-    \item The server was overloaded mainly because it accepted data from the requesting device and passed it on to the resolver. The component did not process or inspect the data itself.
+    \item The component remained static even though it performed the same routing role for each request from the devices below it.
+    \item The server became overloaded because it mainly accepted data from the requesting device and forwarded it to the resolver. The component did not process or inspect the payload itself.
 \end{enumerate}
 
-I aimed to address these issues by designing an architecture that could scale with the system while remaining independent of the content of the data being sent. The focus was on efficient discovery and routing rather than payload handling.
+I addressed these issues by designing an architecture that could scale with the system while remaining independent of the content of the data being sent. The focus was efficient discovery and routing rather than payload handling.
 
 \subsection{Research Objectives}
 
@@ -67,9 +67,9 @@ This project addresses the service discovery problem by developing the Task Disc
 
 \subsection{Contribution}
 
-The main contribution of this final-year project is the design and implementation of TDS, a service-discovery system that supports both centralised and peer-to-peer operation behind a single client-facing interface. Services use the same registration and lookup workflow in either mode, allowing the system to be deployed with a central registry or across a DHT-based peer network without changing the basic client interaction model.
+The main contribution of this final-year project is the design and implementation of TDS, a service-discovery system that presents a single client-facing interface while supporting both centralised and peer-to-peer backends. Services use the same registration and lookup workflow in either mode, allowing the system to be deployed with either a central registry or a DHT-based peer network without changing the client interaction model.
 
-This project also adds a practical set of supporting features around that core design. These include multiple transport options, optional TLS and mutual TLS for the centralised path, firewall-aware query filtering, live monitoring through a terminal dashboard, and a transit-system simulation based on a highly simplified version of the TfL Oyster, payment card, and physical ticket system. Together, these parts make the project a complete implementation of a flexible service-discovery architecture for the problem that motivated the work.
+The project also adds a practical set of supporting features around that core design. These include multiple transport options, optional TLS and mutual TLS for the centralised path, firewall-aware query filtering, live monitoring through a terminal dashboard, and a transit-system simulation based on a highly simplified version of the TfL Oyster, payment card, and physical ticket system. Together, these elements make the project a complete implementation of a flexible service-discovery architecture for the problem that motivated the work.
 
 \section{Project Background and Context}
 
@@ -139,7 +139,7 @@ We now move beyond the scope of a single machine registering and querying servic
     \label{fig:ServerArchitecture}
 \end{figure}
 \subsubsection{Load Balancing}
-The server load balances services using round-robin across all services under a task. This spreads traffic evenly. On top of this, a weighted round-robin option uses each registered service's capacity as its weight.
+The server load balances services using round-robin across all services under a task \cite{loadbalancing}. This spreads traffic evenly. On top of this, a weighted round-robin option uses each registered service's capacity as its weight.
 This helps prevent services on less powerful machines from receiving the same volume of traffic as stronger ones. During each heartbeat, a service advertises its current capacity so the load balancer can take it into account.
 \subsubsection{Hybrid Storage: Cache and Persistence}
 The centralised server uses a hybrid storage strategy that balances performance with durability. At the core is an in-memory cache that holds a subset of frequently queried tasks. On a cache miss, or at regular intervals, the server refreshes the cache by querying a persistent PostgreSQL backend. This gives low-latency responses for hot tasks while keeping durable state for recovery and continued operation.
@@ -166,10 +166,10 @@ In contrast to the centralised mode, all functionality in this architecture runs
 This ID is capped at 256 bits, forming a ring network.
 
 \subsubsection{Distributed Hash Table (DHT)}
-The DHT stores task:address mappings in this architecture. When a service registers a task with its client proxy, the proxy hashes the service name. It then searches its peer list to find the node ID closest to that hash. Once that node is found, the client proxy sends it a STORE request with the service details.
-The node that receives this message compares the task hash with its peer list to check that it is the best candidate. If so, it stores the task in memory, similar to the cache in centralised mode.
+The DHT stores task:address mappings in this architecture. When a service registers a task with its client proxy, the proxy hashes the task name to produce a 256-bit key on the same ring used for node IDs. Each node also has a position on that ring, derived by hashing its own address. The proxy then finds the first node whose ID is greater than or equal to the task hash. If the hash falls beyond the largest node ID on the ring, the search wraps around to the smallest node ID. That node is treated as the node ``closest'' to the task hash and therefore responsible for the key. Once it has identified that node, the client proxy sends it a STORE request with the service details.
+The node that receives this message performs the same calculation against its own peer list to confirm that it is the best candidate. If so, it stores the task in memory, similar to the cache in centralised mode.
 
-A query follows the same path: the client proxy hashes the task being queried and sends a request to the node with the closest ID. If that node has the service stored, it returns an address; otherwise it returns NOTFOUND.
+A query follows the same path: the client proxy hashes the requested task, finds the same node whose ID is greater than or equal to the task hash, and sends the lookup there. If that node has the service stored, it returns an address; otherwise it returns NOTFOUND.
 \subsubsection{Eventual Consistency and Node Discovery}
 The Distributed Hash Table is eventually consistent by nature. Nodes receive an initial peer list from their bootstrap node. As more nodes join the network, they discover one another through store and query messages. If a node does not already know the requester, it adds that node to its peer list.
 To support this, a periodic rediscovery process also runs. Nodes query their original bootstrap node for peers that joined after them. This adds extra work to bootstrap nodes, but it can be managed by choosing more powerful devices for that role.
@@ -178,7 +178,7 @@ To support this, a periodic rediscovery process also runs. Nodes query their ori
 The following section details the implementation of the project. It includes the structure of the codebase, database schema and key algorithms. Following this it highlights key challenges and optimisations that were made during the development of the project.
 \subsection{Tools and Technologies}
 
-TDS was implemented primarily in Go (Go 1.24). The main server, client proxy, registry logic, transport handlers, and DHT components are all built from the same Go codebase.
+TDS was implemented primarily in Go (Go 1.24) \cite{golang}. The main server, client proxy, registry logic, transport handlers, and DHT components are all built from the same Go codebase.
 
 The system uses both in-memory data structures and PostgreSQL, allowing fast lookup for active services while retaining persistent storage where needed. Communication is built around UDP and TCP, with optional TLS and mutual TLS for the centralised mode, and JSON is used for service messages.
 
@@ -228,7 +228,7 @@ This schema is accompanied by indexes on \texttt{task}, \texttt{last\_heartbeat}
 Two implementation decisions are important for system behaviour:
 \begin{itemize}
     \item \textbf{Idempotent registration via upsert.} Register operations use \texttt{INSERT ... ON CONFLICT (task, address) DO UPDATE} so heartbeats and capacity updates refresh existing rows without duplicate records.
-    \item \textbf{Soft cleanup.} Expired services are marked \texttt{is\_active = FALSE} rather than deleted. This preserves historical rows for observability and audit-style analysis while keeping active-query paths efficient.
+    \item \textbf{Soft cleanup.} Expired services are marked \texttt{is\_active = FALSE} rather than deleted. This preserves historical rows for observability and audit-style analysis while keeping active-query paths efficient. If a service comes back later, its existing row is simply reactivated instead of creating a new one, so the database does not grow much from repeated churn.
 \end{itemize}
 
 The \texttt{query\_count} and \texttt{capacity} columns support weighted load balancing and usage analytics. In practice, this allows the server to combine performance-oriented in-memory selection with periodic or direct persistence of usage counters, maintaining both runtime speed and durable operational state.
@@ -259,16 +259,20 @@ With both optimisations in place, the cache became measurably faster than the da
 \subsubsection{Peer-to-Peer Challenges}
 During testing, a routing inconsistency became visible as the network grew.
 The DHT initially assigned each task to one responsible node using \texttt{FindClosestNode}, which performs a binary search on a sorted ring of hashed node IDs.
+
 The problem came from the way nodes build their peer lists through gossip: a node only learns about a peer when it is contacted directly.
 In larger networks, less active nodes were contacted less often, so their peer lists became outdated.
 As a result, two nodes with different peer views could disagree on which node was closest to a given task hash.
+
 A service could register on node A, which believed it was responsible, while a query arriving at node B could calculate a different ``closest'' node and either forward the query to the wrong place or return an empty result even though the data existed in the network.
 This inconsistency appeared during multi-node integration tests: queries that should have succeeded would sometimes return nothing, and the failure rate increased with network size.
 
 To address this, single-node responsibility was replaced with \textit{k-nearest-neighbour replication}.
 The \newline\texttt{FindKClosestNodes} function computes the $k$ nodes with the smallest ring distance to a task hash, and registrations are written to all $k$ of them.
+
 Lookups first check local storage, then check whether the querying node is among the $k$ nearest nodes. If it is not, it forwards the query to each of the $k$ responsible nodes in turn and returns the first non-empty response (\texttt{forwardLookup}).
 Because the data is replicated across $k$ nodes, a query only fails if all $k$ copies are absent or unreachable at the same time.
+
 This made the system tolerant of the routing-table divergence that caused the original inconsistency. Even if one node's peer list is stale and it targets the wrong primary, one of the remaining $k-1$ replicas should still respond correctly.
 The trade-off is $k$-fold write amplification, but for service discovery this is acceptable because registrations are much less frequent than queries, and heartbeats keep the replicated entries fresh.
 The network therefore gains robustness against node failure and stale peer knowledge at the cost of higher write overhead. At large enough scales, the centralised approach remains more predictable, which is why TDS keeps both modes available.
@@ -341,21 +345,6 @@ CoreOS. (2020).
 \textit{etcd: A distributed, reliable key-value store}.
 https://etcd.io/
 
-\bibitem{zookeeper}
-Hunt, P., Konar, M., Junqueira, F. P., \& Reed, B. (2010).
-\textit{ZooKeeper: Wait-free coordination for internet-scale systems}.
-USENIX Annual Technical Conference, 10(8), 9.
-
-\bibitem{consistenthashing}
-Karger, D., Lehman, E., Leighton, T., Panigrahy, R., Levine, M., \& Lewin, D. (1997).
-\textit{Consistent hashing and random trees: Distributed caching protocols for relieving hot spots on the World Wide Web}.
-ACM Symposium on Theory of Computing, 654-663.
-
-\bibitem{microservices}
-Newman, S. (2015).
-\textit{Building Microservices: Designing Fine-Grained Systems}.
-O'Reilly Media.
-
 \bibitem{golang}
 Donovan, A. A., \& Kernighan, B. W. (2015).
 \textit{The Go Programming Language}.
@@ -365,11 +354,6 @@ Addison-Wesley Professional.
 Cardellini, V., Colajanni, M., \& Yu, P. S. (1999).
 \textit{Dynamic load balancing on web-server systems}.
 IEEE Internet Computing, 3(3), 28-39.
-
-\bibitem{dht}
-Ratnasamy, S., Francis, P., Handley, M., Karp, R., \& Shenker, S. (2001).
-\textit{A scalable content-addressable network}.
-ACM SIGCOMM Computer Communication Review, 31(4), 161-172.
 
 \bibitem{kademlia}
 Maymounkov, P., \& Mazieres, D. (2002).
