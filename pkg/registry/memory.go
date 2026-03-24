@@ -11,12 +11,12 @@ import (
 )
 
 type MemoryRegistry struct {
-	mutex            sync.RWMutex
-	services         map[string][]ServiceEntry
-	roundRobinIndex  sync.Map // map[string]*atomic.Int64 for lock-free weighted round-robin cursor
-	queryCounters    sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
-	totalQueries     atomic.Int64
-	firewall         *firewall.Firewall
+	mutex           sync.RWMutex
+	services        map[string][]ServiceEntry
+	roundRobinIndex sync.Map // map[string]*atomic.Int64 for lock-free weighted round-robin cursor
+	queryCounters   sync.Map // map[string]*atomic.Int64 keyed by "task:address" for lock-free query counting
+	totalQueries    atomic.Int64
+	firewall        *firewall.Firewall
 }
 
 func NewMemoryRegistry() *MemoryRegistry {

@@ -14,8 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/semaphore"
 	"tds/pkg/registry"
+
+	"golang.org/x/sync/semaphore"
 )
 
 func isExpectedTLSProbeError(err error) bool {

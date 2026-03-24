@@ -929,6 +929,11 @@ func initializeRegistry(runTUI bool, fw *firewall.Firewall) registry.Registry {
 			storeReg.SetFirewall(fw)
 		}
 
+		// Purge stale DB entries before warming so the cache doesn't start with
+		// services that stopped heartbeating before this server run.
+		logEvent("Purging stale entries from database before cache warm")
+		storeReg.Cleanup(heartbeatTimeout)
+
 		// Warm the in-memory cache from the database on startup
 		logEvent("Warming cache from database")
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
