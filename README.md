@@ -17,12 +17,12 @@ An end-to-end transit simulation (`Simulation/`) uses TDS as its service registr
 cmd/
   server/               Centralized TDS server (TUI, UDP/TCP/TLS, optional Postgres)
   client_proxy/         Gateway: relays client requests to server or DHT network
-  ticketdistributor/    Simulation component
   cache_demo/           Interactive demo: in-memory cache vs DB-backed latency
+  centralised_demo/     Interactive centralized-mode demo
   client_demo/          Simple client smoke-test binary
   test_client/          CLI for manual REGISTER/QUERY/HEARTBEAT
   test_json_client/     JSON-protocol variant of test_client
-  demo/                 Small stand-alone demo binary
+  tls_demo/             TLS smoke-test/demo binary
 
 pkg/
   registry/             Registry interface + MemoryRegistry + StoreBackedRegistry
@@ -111,10 +111,10 @@ go run ./cmd/test_client QUERY my-api
 Use this command when running the interactive demo in `cmd/centralised_demo` so the firewall step has matching rules:
 
 ```bash
-go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules
+go run ./cmd/server --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules
 ```
 
-Rules file location: `demos/centralised/firewall_demo.rules`
+Rules file location: `cmd/centralised_demo/firewall_demo.rules`
 
 ### Centralized — with PostgreSQL
 
@@ -211,7 +211,7 @@ Enable with `--firewall --firewall-rules <file>`. Format:
 192.168.1.0/24       10.0.0.0/24
 ```
 
-A query from `requestorIP` only returns addresses that satisfy at least one rule. See [firewall_rules.example](firewall_rules.example).
+A query from `requestorIP` only returns addresses that satisfy at least one rule. For the centralized demo, see `cmd/centralised_demo/firewall_demo.rules`.
 
 ---
 

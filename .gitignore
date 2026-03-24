@@ -1,8 +1,20 @@
 # Build artifacts
 bin/
 *.exe
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+
 # Logs
 logs/
 **/logs/
 *.log
 *.log.*
+
+# Generated test outputs
+test_scripts/results/
+.github/

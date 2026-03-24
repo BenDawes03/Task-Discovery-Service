@@ -222,11 +222,11 @@ func checkServer() {
 	if err != nil {
 		fmt.Printf("%s✗ Server not reachable via %s!%s\n\n", colorRed, strings.ToUpper(protocol), colorReset)
 		fmt.Printf("%sPlease start the TDS server first:%s\n", colorYellow, colorReset)
-		fmt.Println("  go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
-		fmt.Println("  (rules file: demos/centralised/firewall_demo.rules)")
+		fmt.Println("  go run ./cmd/server --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules")
+		fmt.Println("  (rules file: cmd/centralised_demo/firewall_demo.rules)")
 		fmt.Println("\nOr build and run:")
 		fmt.Println("  go build -o server.exe ./cmd/server")
-		fmt.Println("  .\\server.exe --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
+		fmt.Println("  .\\server.exe --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules")
 		fmt.Printf("\n%sNote: Make sure server uses the same protocol (%s) as this demo%s\n", colorYellow, strings.ToUpper(protocol), colorReset)
 		os.Exit(1)
 	}
@@ -553,37 +553,60 @@ func demonstrateFirewallMode() {
 	allowedAddr := "127.0.0.1:8201"
 	routableAltAddr := "127.0.0.1:8202"
 	blockedAddr := "10.123.123.123:8203"
+	registrationDelay := 350 * time.Millisecond
+	queryDelay := 900 * time.Millisecond
 
-	if stepByStep {
-		waitForRequest("REGISTER", routingTask, allowedAddr)
-	}
-	_ = sendRegister(routingTask, allowedAddr)
-	if stepByStep {
-		waitForRequest("REGISTER", routingTask, blockedAddr)
-	}
-	_ = sendRegister(routingTask, blockedAddr)
-	if stepByStep {
-		waitForRequest("REGISTER", routingTask, routableAltAddr)
-	}
-	_ = sendRegister(routingTask, routableAltAddr)
-	if stepByStep {
-		waitForRequest("REGISTER", blockedOnlyTask, blockedAddr)
-	}
-	_ = sendRegister(blockedOnlyTask, blockedAddr)
-	stats.mu.Lock()
-	stats.registrations += 4
-	stats.mu.Unlock()
+	fmt.Printf("%sStage 1: Register firewall demo services%s\n", colorBold, colorReset)
+	fmt.Printf("  This setup mixes loopback and blocked addresses so the effect of firewall filtering is visible.\n\n")
 
-	fmt.Printf("%sRegistered firewall demo services:%s\n", colorWhite, colorReset)
-	fmt.Printf("  route task:       %s\n", routingTask)
-	fmt.Printf("  local candidates: %s, %s\n", allowedAddr, routableAltAddr)
-	fmt.Printf("  non-local cand.:  %s\n", blockedAddr)
-	fmt.Printf("  blocked-only:     %s\n\n", blockedOnlyTask)
+	registrations := []struct {
+		label   string
+		task    string
+		address string
+		note    string
+	}{
+		{label: "route/local", task: routingTask, address: allowedAddr, note: "eligible loopback candidate"},
+		{label: "route/blocked", task: routingTask, address: blockedAddr, note: "candidate that should be filtered out"},
+		{label: "route/local", task: routingTask, address: routableAltAddr, note: "second loopback candidate for routing"},
+		{label: "blocked-only", task: blockedOnlyTask, address: blockedAddr, note: "used to prove the firewall returns FORBIDDEN"},
+	}
 
-	fmt.Printf("%sFirewall preflight%s\n", colorBold, colorReset)
-	fmt.Printf("  The demo first checks whether this server session is actually filtering results.\n")
+	for i, reg := range registrations {
+		fmt.Printf("  %s[%d/%d]%s %-13s task=%s\n", colorCyan, i+1, len(registrations), colorReset, reg.label, reg.task)
+		fmt.Printf("      address: %s\n", reg.address)
+		fmt.Printf("      reason:  %s\n", reg.note)
+		if stepByStep {
+			waitForRequest("REGISTER", reg.task, reg.address)
+		} else {
+			firewallDemoPause(250 * time.Millisecond)
+		}
+
+		if sendRegister(reg.task, reg.address) {
+			stats.mu.Lock()
+			stats.registrations++
+			stats.mu.Unlock()
+			fmt.Printf("      result:  %sregistered%s\n\n", colorGreen, colorReset)
+		} else {
+			stats.mu.Lock()
+			stats.errors++
+			stats.mu.Unlock()
+			fmt.Printf("      result:  %sregistration failed%s\n\n", colorRed, colorReset)
+		}
+
+		firewallDemoPause(registrationDelay)
+	}
+
+	fmt.Printf("%sExpected behavior%s\n", colorBold, colorReset)
+	fmt.Printf("  1. Querying %s should return FORBIDDEN because its only candidate is %s.\n", blockedOnlyTask, blockedAddr)
+	fmt.Printf("  2. Querying %s should only return %s or %s.\n", routingTask, allowedAddr, routableAltAddr)
+	fmt.Printf("  3. %s should never be selected while firewall filtering is active.\n\n", blockedAddr)
+
+	fmt.Printf("%sStage 2: Firewall preflight%s\n", colorBold, colorReset)
+	fmt.Printf("  First query the blocked-only task to confirm this server session is actually filtering results.\n\n")
 	if stepByStep {
 		waitForRequest("QUERY", blockedOnlyTask, "")
+	} else {
+		firewallDemoPause(500 * time.Millisecond)
 	}
 	preflightResp, preflightErr := sendQueryDetailed(blockedOnlyTask)
 	stats.mu.Lock()
@@ -606,7 +629,8 @@ func demonstrateFirewallMode() {
 		return
 	}
 
-	fmt.Printf("  blocked-only query returned status=%s", preflightResp.Status)
+	fmt.Printf("  request : QUERY %s\n", blockedOnlyTask)
+	fmt.Printf("  response: status=%s", preflightResp.Status)
 	if preflightResp.Address != "" {
 		fmt.Printf(" addr=%s", preflightResp.Address)
 	}
@@ -622,12 +646,19 @@ func demonstrateFirewallMode() {
 		fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
 		return
 	}
+	fmt.Printf("  meaning : the server rejected the blocked-only task, so filtering is active.\n")
 
-	fmt.Printf("\n%sRouting demonstration%s (6 queries to %s)\n", colorBold, colorReset, routingTask)
+	fmt.Printf("\n%sStage 3: Observe routed queries%s\n", colorBold, colorReset)
+	fmt.Printf("  Now query %s six times with a short pause between requests.\n", routingTask)
+	fmt.Printf("  Watch for the blocked address staying at zero while loopback addresses continue to resolve.\n\n")
 	routedCounts := map[string]int{}
 	for i := 0; i < 6; i++ {
+		fmt.Printf("  %sQuery %02d%s\n", colorCyan, i+1, colorReset)
+		fmt.Printf("    request : QUERY %s\n", routingTask)
 		if stepByStep {
 			waitForRequest("QUERY", routingTask, "")
+		} else {
+			firewallDemoPause(500 * time.Millisecond)
 		}
 		resp, err := sendQueryDetailed(routingTask)
 		stats.mu.Lock()
@@ -638,25 +669,55 @@ func demonstrateFirewallMode() {
 		stats.mu.Unlock()
 
 		if err != nil {
-			fmt.Printf("  %s[Q%02d]%s error: %v\n", colorCyan, i+1, colorReset, err)
+			fmt.Printf("    response: %serror%s %v\n\n", colorRed, colorReset, err)
+			firewallDemoPause(queryDelay)
 			continue
 		}
 		if resp == nil {
-			fmt.Printf("  %s[Q%02d]%s no response\n", colorCyan, i+1, colorReset)
+			fmt.Printf("    response: %sno response%s\n\n", colorRed, colorReset)
+			firewallDemoPause(queryDelay)
 			continue
 		}
 
 		routedCounts[resp.Address]++
-		fmt.Printf("  %s[Q%02d]%s status=%-9s addr=%s\n", colorCyan, i+1, colorReset, resp.Status, resp.Address)
+		fmt.Printf("    response: status=%-9s addr=%s\n", resp.Status, resp.Address)
+		fmt.Printf("    meaning : %s\n\n", firewallResponseMeaning(resp.Address, allowedAddr, routableAltAddr, blockedAddr))
+		firewallDemoPause(queryDelay)
 	}
 
-	fmt.Printf("\n%sFirewall summary%s\n", colorBold, colorReset)
+	fmt.Printf("%sStage 4: Firewall summary%s\n", colorBold, colorReset)
 	fmt.Printf("  route task -> %s : %d\n", allowedAddr, routedCounts[allowedAddr])
 	fmt.Printf("  route task -> %s : %d\n", routableAltAddr, routedCounts[routableAltAddr])
 	fmt.Printf("  route task -> %s : %d\n", blockedAddr, routedCounts[blockedAddr])
-	fmt.Printf("\n%sResult:%s PASS - preflight proved filtering is active, and the route task shows what addresses remain reachable.\n", colorGreen, colorReset)
+	if routedCounts[blockedAddr] == 0 {
+		fmt.Printf("\n%sResult:%s PASS - preflight proved filtering is active, and all routed responses stayed on allowed loopback addresses.\n", colorGreen, colorReset)
+	} else {
+		fmt.Printf("\n%sResult:%s blocked address appeared in routed responses, so firewall behavior should be reviewed.\n", colorYellow, colorReset)
+	}
 
 	fmt.Printf("\n%sPress ENTER to continue...%s", colorGreen, colorReset)
+}
+
+func firewallDemoPause(delay time.Duration) {
+	if stepByStep || delay <= 0 {
+		return
+	}
+	time.Sleep(delay)
+}
+
+func firewallResponseMeaning(address, allowedAddr, routableAltAddr, blockedAddr string) string {
+	switch address {
+	case allowedAddr:
+		return "firewall allowed the primary loopback candidate"
+	case routableAltAddr:
+		return "firewall allowed the alternate loopback candidate"
+	case blockedAddr:
+		return "unexpected blocked candidate escaped filtering"
+	case "":
+		return "no address returned"
+	default:
+		return "server returned an address outside the scripted demo set"
+	}
 }
 
 func showSummary() {
