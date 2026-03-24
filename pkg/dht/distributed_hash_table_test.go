@@ -172,6 +172,54 @@ func TestStoreTaskAvoidsDuplicatesAndLookupReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestStoreTaskDuplicateRefreshesHeartbeat(t *testing.T) {
+	d := mustNewDHTForTest(t, "127.0.0.1:0")
+
+	oldTimeout := ServiceHeartbeatTimeout
+	ServiceHeartbeatTimeout = 40 * time.Millisecond
+	defer func() { ServiceHeartbeatTimeout = oldTimeout }()
+
+	d.StoreTask("task-hb", "10.0.0.1:9000")
+	time.Sleep(25 * time.Millisecond)
+	// Duplicate REGISTER should refresh heartbeat instead of adding a duplicate entry.
+	d.StoreTask("task-hb", "10.0.0.1:9000")
+	time.Sleep(25 * time.Millisecond)
+
+	removed := d.CleanupExpiredRegistrations(ServiceHeartbeatTimeout)
+	if removed != 0 {
+		t.Fatalf("expected no removal after heartbeat refresh, got removed=%d", removed)
+	}
+
+	got := d.LookupTask("task-hb")
+	if len(got) != 1 || got[0] != "10.0.0.1:9000" {
+		t.Fatalf("expected refreshed registration to remain, got %v", got)
+	}
+}
+
+func TestCleanupExpiredRegistrationsRemovesStaleEntries(t *testing.T) {
+	d := mustNewDHTForTest(t, "127.0.0.1:0")
+
+	oldTimeout := ServiceHeartbeatTimeout
+	ServiceHeartbeatTimeout = 20 * time.Millisecond
+	defer func() { ServiceHeartbeatTimeout = oldTimeout }()
+
+	d.StoreTask("task-expire", "10.0.0.1:9000")
+	time.Sleep(30 * time.Millisecond)
+
+	if got := d.LookupTask("task-expire"); got != nil {
+		t.Fatalf("expected expired entry to be hidden from lookup, got %v", got)
+	}
+
+	removed := d.CleanupExpiredRegistrations(ServiceHeartbeatTimeout)
+	if removed != 1 {
+		t.Fatalf("expected one stale registration removed, got %d", removed)
+	}
+
+	if snap := d.GetStorageSnapshot(); len(snap) != 0 {
+		t.Fatalf("expected empty storage snapshot after cleanup, got %v", snap)
+	}
+}
+
 func TestLookupTaskForwardsWhenNotResponsible(t *testing.T) {
 	oldK := ReplicationFactor
 	ReplicationFactor = 1

@@ -42,11 +42,12 @@ func TestAskModeOptionsP2PFlags(t *testing.T) {
 		"-p2p-port", "6005",
 		"-bootstrap", "127.0.0.1:6000, 127.0.0.1:6002",
 		"-k-closest", "7",
+		"-p2p-heartbeat-timeout", "90s",
 		"-simple-ui",
 		"-background",
 	})
 
-	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout := askModeOptions()
 	if mode != "p2p" {
 		t.Fatalf("expected p2p mode, got %q", mode)
 	}
@@ -68,12 +69,15 @@ func TestAskModeOptionsP2PFlags(t *testing.T) {
 	if !simplifiedUI {
 		t.Fatalf("expected simplifiedUI=true")
 	}
+	if p2pHeartbeatTimeout != 90*time.Second {
+		t.Fatalf("expected p2pHeartbeatTimeout=90s, got %s", p2pHeartbeatTimeout)
+	}
 }
 
 func TestAskModeOptionsCentralizedTCPFlagNonInteractive(t *testing.T) {
 	withFreshFlags(t, []string{"client_proxy.test", "-tcp"})
 
-	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout := askModeOptions()
 	if mode != "centralized" {
 		t.Fatalf("expected centralized mode, got %q", mode)
 	}
@@ -95,6 +99,9 @@ func TestAskModeOptionsCentralizedTCPFlagNonInteractive(t *testing.T) {
 	if simplifiedUI {
 		t.Fatalf("expected simplifiedUI=false")
 	}
+	if p2pHeartbeatTimeout != dht.ServiceHeartbeatTimeout {
+		t.Fatalf("expected default p2p heartbeat timeout %s, got %s", dht.ServiceHeartbeatTimeout, p2pHeartbeatTimeout)
+	}
 }
 
 func TestAskModeOptionsInvalidKClosestFallsBack(t *testing.T) {
@@ -103,7 +110,7 @@ func TestAskModeOptionsInvalidKClosestFallsBack(t *testing.T) {
 
 	withFreshFlags(t, []string{"client_proxy.test", "-k-closest", "0"})
 
-	_, _, _, _, _, kClosest, _ := askModeOptions()
+	_, _, _, _, _, kClosest, _, _ := askModeOptions()
 	if kClosest != dht.ReplicationFactor {
 		t.Fatalf("expected fallback to default replication factor %d, got %d", dht.ReplicationFactor, kClosest)
 	}
@@ -194,6 +201,7 @@ func TestSimplifyLogLineAdditionalBranches(t *testing.T) {
 		{"not found on any k-closest node: task-a", "Query miss: task-a"},
 		{"queuing closer node 127.0.0.1:6001", "Retrying with closer peer"},
 		{"removed unreachable peer 127.0.0.1:6002", "Peer dropped: 127.0.0.1:6002"},
+		{"cleanup removed 3 entries (expired=2, stale-task=1, heartbeat-timeout=1m0s)", "Cleanup: 3 entries (expired=2, stale-task=1, heartbeat-timeout=1m0s)"},
 	}
 
 	for _, tc := range cases {
@@ -370,7 +378,7 @@ func TestAskModeOptionsInteractiveP2PPrompts(t *testing.T) {
 	}
 
 	withFreshFlags(t, []string{"client_proxy.test"})
-	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout := askModeOptions()
 
 	if mode != "p2p" {
 		t.Fatalf("expected p2p mode, got %q", mode)
@@ -393,6 +401,9 @@ func TestAskModeOptionsInteractiveP2PPrompts(t *testing.T) {
 	if simplifiedUI {
 		t.Fatalf("expected simplifiedUI=false from explicit n choice")
 	}
+	if p2pHeartbeatTimeout != dht.ServiceHeartbeatTimeout {
+		t.Fatalf("expected default p2p heartbeat timeout %s, got %s", dht.ServiceHeartbeatTimeout, p2pHeartbeatTimeout)
+	}
 }
 
 func TestAskModeOptionsInteractiveCentralizedTransportPrompt(t *testing.T) {
@@ -409,7 +420,7 @@ func TestAskModeOptionsInteractiveCentralizedTransportPrompt(t *testing.T) {
 	}
 
 	withFreshFlags(t, []string{"client_proxy.test"})
-	mode, transport, _, _, _, _, _ := askModeOptions()
+	mode, transport, _, _, _, _, _, _ := askModeOptions()
 	if mode != "centralized" {
 		t.Fatalf("expected centralized mode, got %q", mode)
 	}

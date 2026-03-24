@@ -434,10 +434,13 @@ func (dn *DHTNetwork) maintenanceLoop() {
 				go dn.pingPeer(peer.Address)
 			}
 
+			// cleanup expired registrations (no heartbeat/REGISTER refresh)
+			expired := dn.dht.CleanupExpiredRegistrations(ServiceHeartbeatTimeout)
 			// cleanup stale data
 			removed := dn.dht.CleanupStaleData()
-			if removed > 0 {
-				netLogger.Printf("cleaned up %d stale task entries", removed)
+			totalRemoved := expired + removed
+			if totalRemoved > 0 {
+				netLogger.Printf("cleanup removed %d entries (expired=%d, stale-task=%d, heartbeat-timeout=%s)", totalRemoved, expired, removed, ServiceHeartbeatTimeout)
 			}
 		}
 	}

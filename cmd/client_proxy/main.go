@@ -32,13 +32,14 @@ var (
 )
 
 // askModeOptions collects interactive options from the terminal.
-// Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
-func askModeOptions() (string, string, string, []string, bool, int, bool) {
+// Returns: mode ("centralized"|"p2p"), transport ("udp"|"tcp"), p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout
+func askModeOptions() (string, string, string, []string, bool, int, bool, time.Duration) {
 	mode := "centralized"
 	transport := "udp"
 	p2pPort := ":6000"
 	kClosest := dht.ReplicationFactor
 	simplifiedUI := false
+	p2pHeartbeatTimeout := dht.ServiceHeartbeatTimeout
 	var bootstrapNodes []string
 	background := false
 
@@ -47,6 +48,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
 	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
 	kClosestFlag := flag.Int("k-closest", dht.ReplicationFactor, "Number of k-closest nodes used by DHT replication/query in p2p mode")
+	p2pHeartbeatTimeoutFlag := flag.Duration("p2p-heartbeat-timeout", dht.ServiceHeartbeatTimeout, "Timeout for P2P service heartbeats before cleanup")
 	simpleUIFlag := flag.Bool("simple-ui", false, "Use a simplified P2P dashboard focused on DHT activity")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
 	backgroundFlag := flag.Bool("background", false, "Run in background (no interactive stdin); exit on SIGINT/SIGTERM or proxy error")
@@ -57,6 +59,11 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 		kClosest = *kClosestFlag
 	} else {
 		fmt.Fprintf(os.Stderr, "Invalid -k-closest=%d; using default %d\n", *kClosestFlag, dht.ReplicationFactor)
+	}
+	if *p2pHeartbeatTimeoutFlag > 0 {
+		p2pHeartbeatTimeout = *p2pHeartbeatTimeoutFlag
+	} else {
+		fmt.Fprintf(os.Stderr, "Invalid -p2p-heartbeat-timeout=%s; using default %s\n", *p2pHeartbeatTimeoutFlag, dht.ServiceHeartbeatTimeout)
 	}
 
 	// Check if flags were provided (non-interactive)
@@ -69,7 +76,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 				bootstrapNodes[i] = strings.TrimSpace(bootstrapNodes[i])
 			}
 		}
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout
 	}
 
 	if *tcpFlag {
@@ -81,12 +88,12 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 		if !background {
 			fmt.Fprintln(os.Stderr, "No interactive terminal detected; defaulting to centralized mode with UDP")
 		}
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout
 	}
 
 	// In background mode, skip interactive prompts (use defaults unless flags are provided).
 	if background {
-		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
+		return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout
 	}
 
 	// Interactive prompts
@@ -142,7 +149,7 @@ func askModeOptions() (string, string, string, []string, bool, int, bool) {
 		}
 	}
 
-	return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI
+	return mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout
 }
 
 func askBootstrapNodes(reader *bufio.Reader) []string {
@@ -204,7 +211,7 @@ func normalizePortInput(input string) string {
 
 func main() {
 	// Gather mode and transport options
-	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI := askModeOptions()
+	mode, transport, p2pPort, bootstrapNodes, background, kClosest, simplifiedUI, p2pHeartbeatTimeout := askModeOptions()
 
 	if background {
 		// Quiet background operation: no logs, no prints, no interactive prompts.
@@ -278,6 +285,8 @@ func main() {
 
 	if mode == "p2p" {
 		// P2P mode: use DHT
+		dht.ServiceHeartbeatTimeout = p2pHeartbeatTimeout
+
 		useDashboard := !background && stdinIsTerminalFn() && stdoutIsTerminalFn()
 		var dashboard *p2pDashboard
 		if !background && !useDashboard {
@@ -287,6 +296,7 @@ func main() {
 		dht.ReplicationFactor = kClosest
 		if !background && !useDashboard {
 			fmt.Printf("DHT k-closest replication factor: %d\n", dht.ReplicationFactor)
+			fmt.Printf("P2P heartbeat timeout: %s\n", dht.ServiceHeartbeatTimeout)
 		}
 
 		if !background && !useDashboard && len(bootstrapNodes) > 0 {

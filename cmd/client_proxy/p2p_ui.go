@@ -469,6 +469,8 @@ func simplifyLogLine(line string) string {
 		return "Retrying with closer peer"
 	case strings.HasPrefix(msg, "removed unreachable peer "):
 		return "Peer dropped: " + strings.TrimPrefix(msg, "removed unreachable peer ")
+	case strings.HasPrefix(msg, "cleanup removed "):
+		return "Cleanup: " + strings.TrimPrefix(msg, "cleanup removed ")
 	case strings.HasPrefix(msg, "proxy listening on "):
 		return "Proxy online: " + strings.TrimPrefix(msg, "proxy listening on ")
 	case strings.HasPrefix(msg, "proxy stopped"):

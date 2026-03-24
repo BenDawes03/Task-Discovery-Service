@@ -38,6 +38,16 @@ type Node struct {
 	LastSeen time.Time // Last time this node was seen (for liveness tracking)
 }
 
+// ServiceHeartbeatTimeout controls how long a task registration remains valid
+// without receiving another REGISTER for the same task/address pair.
+var ServiceHeartbeatTimeout = 60 * time.Second
+
+// ServiceRegistration stores a registered service endpoint and its last heartbeat time.
+type ServiceRegistration struct {
+	Address       string
+	LastHeartbeat time.Time
+}
+
 // DHT implements a distributed hash table using consistent hashing.
 // It maintains a sorted ring of node IDs and stores task-to-address mappings
 // for tasks that hash to positions near this node's ID.
@@ -46,7 +56,7 @@ type DHT struct {
 	self       *Node               // This node's identity
 	peers      map[NodeID]*Node    // Known peers in the DHT
 	ring       []NodeID            // Sorted ring of all node IDs (including self)
-	storage    map[string][]string // task -> addresses (data stored on this node)
+	storage    map[string][]ServiceRegistration // task -> service registrations stored on this node
 	listenAddr string              // Address this node listens on
 	network    *DHTNetwork         // Network layer reference (set after creation)
 }
@@ -71,7 +81,7 @@ func NewDHT(listenAddr string) (*DHT, error) {
 		self:       self,
 		peers:      make(map[NodeID]*Node),
 		ring:       []NodeID{nodeID},
-		storage:    make(map[string][]string),
+		storage:    make(map[string][]ServiceRegistration),
 		listenAddr: listenAddr,
 		network:    nil, // Set by DHTNetwork after creation
 	}
@@ -242,14 +252,20 @@ func (dht *DHT) StoreTask(taskName, address string) {
 	dht.mutex.Lock()
 	defer dht.mutex.Unlock()
 
-	addrs := dht.storage[taskName]
-	// avoid duplicates
-	for _, a := range addrs {
-		if a == address {
+	entries := dht.storage[taskName]
+	now := time.Now()
+	// Duplicate registration is treated as heartbeat refresh.
+	for i, entry := range entries {
+		if entry.Address == address {
+			entries[i].LastHeartbeat = now
+			dht.storage[taskName] = entries
 			return
 		}
 	}
-	dht.storage[taskName] = append(addrs, address)
+	dht.storage[taskName] = append(entries, ServiceRegistration{
+		Address:       address,
+		LastHeartbeat: now,
+	})
 }
 
 // LookupTask retrieves addresses for a task from the DHT
@@ -258,7 +274,7 @@ func (dht *DHT) LookupTask(taskName string) []string {
 	dht.mutex.RLock()
 
 	// Try local storage first
-	addrs := dht.storage[taskName]
+	addrs := activeAddresses(dht.storage[taskName], time.Now(), ServiceHeartbeatTimeout)
 	if len(addrs) > 0 {
 		result := make([]string, len(addrs))
 		copy(result, addrs)
@@ -438,6 +454,37 @@ func (dht *DHT) CleanupStaleData() int {
 	return removed
 }
 
+// CleanupExpiredRegistrations removes service registrations that have not
+// received a heartbeat (REGISTER refresh) within timeout.
+func (dht *DHT) CleanupExpiredRegistrations(timeout time.Duration) int {
+	dht.mutex.Lock()
+	defer dht.mutex.Unlock()
+
+	if timeout <= 0 {
+		return 0
+	}
+
+	now := time.Now()
+	removed := 0
+	for task, entries := range dht.storage {
+		kept := make([]ServiceRegistration, 0, len(entries))
+		for _, entry := range entries {
+			if now.Sub(entry.LastHeartbeat) < timeout {
+				kept = append(kept, entry)
+			} else {
+				removed++
+			}
+		}
+		if len(kept) == 0 {
+			delete(dht.storage, task)
+		} else {
+			dht.storage[task] = kept
+		}
+	}
+
+	return removed
+}
+
 // amIInKClosestLocked checks if this node is in k-closest without taking lock (must hold lock)
 func (dht *DHT) amIInKClosestLocked(taskName string, k int) bool {
 	taskID := HashTask(taskName)
@@ -491,13 +538,34 @@ func (dht *DHT) GetStorageSnapshot() map[string][]string {
 	defer dht.mutex.RUnlock()
 
 	snapshot := make(map[string][]string, len(dht.storage))
-	for task, addrs := range dht.storage {
+	now := time.Now()
+	for task, entries := range dht.storage {
+		addrs := activeAddresses(entries, now, ServiceHeartbeatTimeout)
+		if len(addrs) == 0 {
+			continue
+		}
 		copied := make([]string, len(addrs))
 		copy(copied, addrs)
 		snapshot[task] = copied
 	}
 
 	return snapshot
+}
+
+func activeAddresses(entries []ServiceRegistration, now time.Time, timeout time.Duration) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	addrs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if timeout > 0 && now.Sub(entry.LastHeartbeat) >= timeout {
+			continue
+		}
+		addrs = append(addrs, entry.Address)
+	}
+
+	return addrs
 }
 
 // NodeIDFromUint64 creates a NodeID from a uint64 (for testing)

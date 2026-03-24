@@ -49,19 +49,19 @@ Write-Host ""
 
 # Start three nodes in separate visible terminals
 Write-Host "Starting Node A on :6000 (client proxy on :5100)..." -ForegroundColor Yellow
-$nodeACommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node A (DHT :6000, Proxy :5100)'; `$env:TDS_PROXY_LISTEN=':5100'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6000 -k-closest $KClosest"
+$nodeACommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node A (DHT :6000, Proxy :5100)'; `$env:TDS_PROXY_LISTEN=':5100'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6000 -k-closest $KClosest -p2p-heartbeat-timeout 10m"
 $nodeA = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeACommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node B on :6001 (client proxy on :5101)..." -ForegroundColor Yellow
-$nodeBCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node B (DHT :6001, Proxy :5101)'; `$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6001 -bootstrap 127.0.0.1:6000  -k-closest $KClosest"
+$nodeBCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node B (DHT :6001, Proxy :5101)'; `$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6001 -bootstrap 127.0.0.1:6000  -k-closest $KClosest -p2p-heartbeat-timeout 10m"
 $nodeB = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeBCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node C on :6002 (client proxy on :5102)..." -ForegroundColor Yellow
-$nodeCCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node C (DHT :6002, Proxy :5102)'; `$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest"
+$nodeCCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node C (DHT :6002, Proxy :5102)'; `$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest -p2p-heartbeat-timeout 10m"
 $nodeC = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeCCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 5
