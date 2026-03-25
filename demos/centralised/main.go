@@ -86,7 +86,7 @@ func main() {
 	// Step 3: Register services
 	clearScreen()
 	registerServices()
-	stopRefresh := startRegistrationRefresher(demoServices, 8*time.Second)
+	stopRefresh := startRegistrationRefresher(&demoServices, 8*time.Second)
 	defer stopRefresh()
 	pause()
 
@@ -222,11 +222,11 @@ func checkServer() {
 	if err != nil {
 		fmt.Printf("%s✗ Server not reachable via %s!%s\n\n", colorRed, strings.ToUpper(protocol), colorReset)
 		fmt.Printf("%sPlease start the TDS server first:%s\n", colorYellow, colorReset)
-		fmt.Println("  go run ./cmd/server --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules")
-		fmt.Println("  (rules file: cmd/centralised_demo/firewall_demo.rules)")
+		fmt.Println("  go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
+		fmt.Println("  (rules file: demos/centralised/firewall_demo.rules)")
 		fmt.Println("\nOr build and run:")
 		fmt.Println("  go build -o server.exe ./cmd/server")
-		fmt.Println("  .\\server.exe --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules")
+		fmt.Println("  .\\server.exe --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules")
 		fmt.Printf("\n%sNote: Make sure server uses the same protocol (%s) as this demo%s\n", colorYellow, strings.ToUpper(protocol), colorReset)
 		os.Exit(1)
 	}
@@ -586,6 +586,13 @@ func demonstrateFirewallMode() {
 			stats.registrations++
 			stats.mu.Unlock()
 			fmt.Printf("      result:  %sregistered%s\n\n", colorGreen, colorReset)
+			// Track firewall demo services so they stay registered during demo walkthrough
+			demoServices = append(demoServices, DemoService{
+				name:     reg.label,
+				task:     reg.task,
+				address:  reg.address,
+				capacity: 1,
+			})
 		} else {
 			stats.mu.Lock()
 			stats.errors++
@@ -813,8 +820,8 @@ func sendQueryDetailed(task string) (*Response, error) {
 	return sendMessage(msg)
 }
 
-func startRegistrationRefresher(services []DemoService, interval time.Duration) func() {
-	if len(services) == 0 {
+func startRegistrationRefresher(services *[]DemoService, interval time.Duration) func() {
+	if services == nil || len(*services) == 0 {
 		return func() {}
 	}
 
@@ -825,7 +832,7 @@ func startRegistrationRefresher(services []DemoService, interval time.Duration) 
 		for {
 			select {
 			case <-ticker.C:
-				for _, svc := range services {
+				for _, svc := range *services {
 					_ = sendRegisterWithCapacity(svc.task, svc.address, svc.capacity)
 				}
 			case <-stop:

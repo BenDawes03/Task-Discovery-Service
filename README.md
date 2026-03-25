@@ -17,12 +17,8 @@ An end-to-end transit simulation (`Simulation/`) uses TDS as its service registr
 cmd/
   server/               Centralized TDS server (TUI, UDP/TCP/TLS, optional Postgres)
   client_proxy/         Gateway: relays client requests to server or DHT network
-  cache_demo/           Interactive demo: in-memory cache vs DB-backed latency
-  centralised_demo/     Interactive centralized-mode demo
-  client_demo/          Simple client smoke-test binary
-  test_client/          CLI for manual REGISTER/QUERY/HEARTBEAT
-  test_json_client/     JSON-protocol variant of test_client
-  tls_demo/             TLS smoke-test/demo binary
+  test_client/          (moved to test_scripts/test_client/)
+  test_json_client/     (moved to test_scripts/test_json_client/)
 
 pkg/
   registry/             Registry interface + MemoryRegistry + StoreBackedRegistry
@@ -36,7 +32,10 @@ pkg/
 Simulation/             End-to-end transit simulation (Gate, Station, CS, PCTRBO, PA)
 k8s/                    Kubernetes manifests + build/deploy scripts
 demos/
-  centralised/          Demo scripts for centralized mode
+  centralised/          Demo scripts + centralized-mode binaries
+    tls_demo/           TLS smoke-test/demo binary
+    cache_demo/         Interactive demo: in-memory cache vs DB-backed latency
+  client/               Simple client smoke-test binary
   p2p/                  Demo scripts for P2P mode
   cache/                Cache performance demo
 test_scripts/           Go integration tests + PowerShell test harnesses
@@ -101,20 +100,20 @@ go run ./cmd/server --tcp --port 5000
 go run ./cmd/client_proxy
 
 # Terminal 3
-go run ./cmd/test_client REGISTER my-api 10.0.0.5:8080
-go run ./cmd/test_client QUERY my-api
+go run ./test_scripts/test_client REGISTER my-api 10.0.0.5:8080
+go run ./test_scripts/test_client QUERY my-api
 # → 10.0.0.5:8080
 ```
 
 ### Centralized — firewall demo startup
 
-Use this command when running the interactive demo in `cmd/centralised_demo` so the firewall step has matching rules:
+Use this command when running the interactive demo in `demos/centralised` so the firewall step has matching rules:
 
 ```bash
-go run ./cmd/server --tcp --firewall --firewall-rules cmd/centralised_demo/firewall_demo.rules
+go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall_demo.rules
 ```
 
-Rules file location: `cmd/centralised_demo/firewall_demo.rules`
+Rules file location: `demos/centralised/firewall_demo.rules`
 
 ### Centralized — with PostgreSQL
 
@@ -140,8 +139,8 @@ TDS_PROXY_LISTEN=:5101 go run ./cmd/client_proxy -p2p -p2p-port :6001 -bootstrap
 TDS_PROXY_LISTEN=:5102 go run ./cmd/client_proxy -p2p -p2p-port :6002 -bootstrap localhost:6000
 
 # Register on node 1, query from node 3 — DHT routes automatically
-go run ./cmd/test_client -server localhost:5100 REGISTER web-api 10.0.0.5:8080
-go run ./cmd/test_client -server localhost:5102 QUERY web-api
+go run ./test_scripts/test_client -server localhost:5100 REGISTER web-api 10.0.0.5:8080
+go run ./test_scripts/test_client -server localhost:5102 QUERY web-api
 # → 10.0.0.5:8080
 ```
 
@@ -211,7 +210,7 @@ Enable with `--firewall --firewall-rules <file>`. Format:
 192.168.1.0/24       10.0.0.0/24
 ```
 
-A query from `requestorIP` only returns addresses that satisfy at least one rule. For the centralized demo, see `cmd/centralised_demo/firewall_demo.rules`.
+A query from `requestorIP` only returns addresses that satisfy at least one rule. For the centralized demo, see `demos/centralised/firewall_demo.rules`.
 
 ---
 
@@ -227,7 +226,7 @@ err  = c.Heartbeat("api-service", "10.0.0.5:8080")
 
 ---
 
-## Cache Demo (`cmd/cache_demo`)
+## Cache Demo (`demos/centralised/cache_demo`)
 
 Demonstrates in-memory cache hits vs Postgres fallback latency. Requires the server running with `--store-url` and `--cache-max-size`.
 
@@ -306,7 +305,7 @@ go build ./...
 
 go build -o bin/server.exe       ./cmd/server
 go build -o bin/client_proxy.exe ./cmd/client_proxy
-go build -o bin/test_client.exe  ./cmd/test_client
+go build -o bin/test_client.exe  ./test_scripts/test_client
 ```
 
 ---

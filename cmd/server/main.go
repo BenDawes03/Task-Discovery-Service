@@ -652,28 +652,33 @@ func askTerminalOptions() (string, bool, bool) {
 				pathInput, _ := reader.ReadString('\n')
 				pathInput = strings.TrimSpace(pathInput)
 
-				if pathInput == "" {
-					pathInput = "."
+				// Remember whether the user actually typed something before we
+				// substitute the "." default for directory scanning purposes.
+				userTypedPath := pathInput != ""
+
+				searchDir := pathInput
+				if searchDir == "" {
+					searchDir = "."
 				}
 
-				if st, err := os.Stat(pathInput); err == nil && !st.IsDir() {
+				if st, err := os.Stat(searchDir); err == nil && !st.IsDir() {
 					// User provided a direct file path.
-					firewallRulesPath = pathInput
+					firewallRulesPath = searchDir
 				} else {
 					// Treat input as a directory and try common filenames.
 					candidateNames := []string{"firewall_demo.rules", "firewall_rules.txt", "firewall_rules.example", "test_firewall_rules.txt", "firewall_rules_test.txt"}
 					for _, name := range candidateNames {
-						candidate := filepath.Join(pathInput, name)
+						candidate := filepath.Join(searchDir, name)
 						if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 							firewallRulesPath = candidate
 							break
 						}
 					}
 
-					// If no candidate was found and user provided a non-empty path,
-					// keep it so startup fails fast instead of silently falling back
-					// to permissive mode.
-					if firewallRulesPath == "" && strings.TrimSpace(pathInput) != "" {
+					// If no candidate was found and the user explicitly typed a path
+					// (not just pressed Enter), keep it so startup fails fast instead
+					// of silently falling back to permissive mode.
+					if firewallRulesPath == "" && userTypedPath {
 						firewallRulesPath = pathInput
 					}
 				}

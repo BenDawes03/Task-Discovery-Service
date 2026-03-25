@@ -86,7 +86,7 @@ function Test-TDSJsonEndpoint {
 
 $repoRoot = Get-RepoRoot -StartDir $PSScriptRoot
 $serverPath = Join-Path $repoRoot "cmd\server"
-$demoPath = Join-Path $repoRoot "cmd\centralised_demo"
+$demoPath = $PSScriptRoot
 $selfName = Split-Path -Leaf $PSCommandPath
 
 $serverParts = $Server.Split(':')

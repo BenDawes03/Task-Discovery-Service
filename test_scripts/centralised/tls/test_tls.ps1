@@ -211,7 +211,7 @@ function Test-TLSRegistrationAndQuery {
     # Build client demo if not exists
     if (-not (Test-Path "bin\client_demo.exe")) {
         Write-Host "  Building client demo..." -ForegroundColor Gray
-        go build -o bin\client_demo.exe ./cmd/client_demo
+        go build -o bin\client_demo.exe ./demos/client
         if ($LASTEXITCODE -ne 0) {
             Write-TestResult "FAIL" "Failed to build client demo"
             return $false
@@ -296,7 +296,7 @@ function Test-ConcurrentTLSConnections {
     
     if (-not (Test-Path "bin\client_demo.exe")) {
         Write-Host "  Building client demo..." -ForegroundColor Gray
-        go build -o bin\client_demo.exe ./cmd/client_demo
+        go build -o bin\client_demo.exe ./demos/client
         if ($LASTEXITCODE -ne 0) {
             Write-TestResult "FAIL" "Failed to build client demo"
             return $false

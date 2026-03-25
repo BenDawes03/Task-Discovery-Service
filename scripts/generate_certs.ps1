@@ -165,7 +165,7 @@ Write-Host "To start the TLS server:" -ForegroundColor Yellow
 Write-Host "  go run ./cmd/server --tcp --tls" -ForegroundColor White
 Write-Host ""
 Write-Host "To test with client:" -ForegroundColor Yellow
-Write-Host "  go run ./cmd/client_demo -tls" -ForegroundColor White
+Write-Host "  go run ./demos/client -tls" -ForegroundColor White
 Write-Host ""
 Write-Host "Certificate validity: $ValidDays days from now" -ForegroundColor Cyan
 Write-Host ""

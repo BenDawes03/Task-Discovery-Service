@@ -117,35 +117,31 @@ func main() {
 	registeredAddress := "127.0.0.1:19001"
 
 	clearScreen()
-	runValidRegisterScene(*serverAddr, *serverName, ca, validClient, taskName, registeredAddress)
-	if *stepByStep {
-		pause()
-	}
+	runValidRegisterScene(*serverAddr, *serverName, ca, validClient, taskName, registeredAddress, *stepByStep)
 
 	clearScreen()
-	runValidQueryScene(*serverAddr, *serverName, ca, validQueryClient, taskName, registeredAddress)
-	if *stepByStep {
-		pause()
-	}
+	runValidQueryScene(*serverAddr, *serverName, ca, validQueryClient, taskName, registeredAddress, *stepByStep)
 
 	clearScreen()
-	runInvalidCertQueryScene(*serverAddr, *serverName, ca, invalidClient)
-	if *stepByStep {
-		pause()
-	}
+	runInvalidCertQueryScene(*serverAddr, *serverName, ca, invalidClient, *stepByStep)
 
 	clearScreen()
-	runNoCertQueryScene(*serverAddr, *serverName, ca)
-	if *stepByStep {
-		pause()
-	}
+	runNoCertQueryScene(*serverAddr, *serverName, ca, *stepByStep)
 
 	clearScreen()
 	printSummary(taskName)
 }
 
-func runValidRegisterScene(serverAddr, serverName string, trustedCA, validClient *certBundle, taskName, address string) {
+func runValidRegisterScene(serverAddr, serverName string, trustedCA, validClient *certBundle, taskName, address string, stepByStep bool) {
 	fmt.Printf("%s\n\n", head("Scene 1: Valid register client cert"))
+	fmt.Printf("  This test verifies that a client with a valid certificate signed\n")
+	fmt.Printf("  by the trusted CA can successfully register a service with the server.\n")
+	fmt.Println()
+	if stepByStep {
+		pause()
+	}
+	fmt.Println()
+
 	cfg, err := clientTLSConfig(trustedCA.certPEM, validClient, serverName)
 	if err != nil {
 		fmt.Printf("  %s could not build TLS config: %v\n", bad("FAIL"), err)
@@ -167,14 +163,28 @@ func runValidRegisterScene(serverAddr, serverName string, trustedCA, validClient
 	registerResp, err := sendMessage(conn, message{Command: "REGISTER", Task: taskName, Address: address, Capacity: 1})
 	if err != nil {
 		fmt.Printf("  %s REGISTER failed: %v\n", bad("FAIL"), err)
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 	fmt.Printf("  REGISTER -> status=%s task=%s addr=%s\n", registerResp.Status, taskName, address)
 	fmt.Printf("\n  %s register succeeded with client cert CN=%s\n", ok("Result:"), validClient.cert.Subject.CommonName)
+	if stepByStep {
+		pause()
+	}
 }
 
-func runValidQueryScene(serverAddr, serverName string, trustedCA, validQueryClient *certBundle, taskName, expectedAddress string) {
+func runValidQueryScene(serverAddr, serverName string, trustedCA, validQueryClient *certBundle, taskName, expectedAddress string, stepByStep bool) {
 	fmt.Printf("%s\n\n", head("Scene 2: Different valid query client cert"))
+	fmt.Printf("  This test verifies that a different client with a valid certificate\n")
+	fmt.Printf("  (signed by the same trusted CA) can query the service registered by the first client.\n")
+	fmt.Println()
+	if stepByStep {
+		pause()
+	}
+	fmt.Println()
+
 	cfg, err := clientTLSConfig(trustedCA.certPEM, validQueryClient, serverName)
 	if err != nil {
 		fmt.Printf("  %s could not build TLS config: %v\n", bad("FAIL"), err)
@@ -191,18 +201,35 @@ func runValidQueryScene(serverAddr, serverName string, trustedCA, validQueryClie
 	queryResp, err := sendMessage(conn, message{Command: "QUERY", Task: taskName})
 	if err != nil {
 		fmt.Printf("  %s QUERY failed: %v\n", bad("FAIL"), err)
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 	fmt.Printf("  QUERY -> status=%s address=%s\n", queryResp.Status, queryResp.Address)
 	if queryResp.Status == "OK" && queryResp.Address == expectedAddress {
 		fmt.Printf("\n  %s second valid cert can query the service registered by first client\n", ok("Result:"))
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 	fmt.Printf("\n  %s query returned unexpected result for task %s\n", bad("FAIL"), taskName)
+	if stepByStep {
+		pause()
+	}
 }
 
-func runInvalidCertQueryScene(serverAddr, serverName string, trustedCA, invalidClient *certBundle) {
+func runInvalidCertQueryScene(serverAddr, serverName string, trustedCA, invalidClient *certBundle, stepByStep bool) {
 	fmt.Printf("%s\n\n", head("Scene 3: Invalid cert query client"))
+	fmt.Printf("  This test verifies that a client with a certificate signed by a\n")
+	fmt.Printf("  rogue (untrusted) CA is rejected during the TLS handshake.\n")
+	fmt.Println()
+	if stepByStep {
+		pause()
+	}
+	fmt.Println()
+
 	cfg, err := forcedClientTLSConfig(trustedCA.certPEM, invalidClient, serverName)
 	if err != nil {
 		fmt.Printf("  %s could not build TLS config: %v\n", bad("FAIL"), err)
@@ -217,6 +244,9 @@ func runInvalidCertQueryScene(serverAddr, serverName string, trustedCA, invalidC
 		if conn != nil {
 			_ = conn.Close()
 		}
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 	defer conn.Close()
@@ -228,10 +258,16 @@ func runInvalidCertQueryScene(serverAddr, serverName string, trustedCA, invalidC
 		fmt.Printf("  %s connection rejected during first request as expected\n", ok("PASS"))
 		fmt.Printf("  Error: %v\n", ioErr)
 		fmt.Printf("\n  %s server refused query client cert not signed by trusted CA\n", ok("Result:"))
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 
 	fmt.Printf("  %s invalid certificate was unexpectedly accepted\n", bad("FAIL"))
+	if stepByStep {
+		pause()
+	}
 }
 
 func forcedClientTLSConfig(caPEM []byte, client *certBundle, serverName string) (*tls.Config, error) {
@@ -255,8 +291,16 @@ func forcedClientTLSConfig(caPEM []byte, client *certBundle, serverName string) 
 	}, nil
 }
 
-func runNoCertQueryScene(serverAddr, serverName string, trustedCA *certBundle) {
+func runNoCertQueryScene(serverAddr, serverName string, trustedCA *certBundle, stepByStep bool) {
 	fmt.Printf("%s\n\n", head("Scene 4: No-cert query client"))
+	fmt.Printf("  This test verifies that a client attempting to connect without\n")
+	fmt.Printf("  providing a client certificate is rejected by the server.\n")
+	fmt.Println()
+	if stepByStep {
+		pause()
+	}
+	fmt.Println()
+
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(trustedCA.certPEM) {
 		fmt.Printf("  %s unable to parse trusted CA PEM\n", bad("FAIL"))
@@ -280,6 +324,9 @@ func runNoCertQueryScene(serverAddr, serverName string, trustedCA *certBundle) {
 		if conn != nil {
 			_ = conn.Close()
 		}
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 	defer conn.Close()
@@ -289,10 +336,16 @@ func runNoCertQueryScene(serverAddr, serverName string, trustedCA *certBundle) {
 		fmt.Printf("  %s connection rejected during first request as expected\n", ok("PASS"))
 		fmt.Printf("  Error: %v\n", ioErr)
 		fmt.Printf("\n  %s server requires a client certificate\n", ok("Result:"))
+		if stepByStep {
+			pause()
+		}
 		return
 	}
 
 	fmt.Printf("  %s no-cert client was unexpectedly accepted\n", bad("FAIL"))
+	if stepByStep {
+		pause()
+	}
 }
 
 func clientTLSConfig(caPEM []byte, client *certBundle, serverName string) (*tls.Config, error) {

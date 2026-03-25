@@ -27,7 +27,7 @@ Write-Host ""
 
 # Build the client demo executable
 Write-Host "[BUILD] Building client executable..." -ForegroundColor Yellow
-go build -o bin\client_demo.exe ./cmd/client_demo
+go build -o bin\client_demo.exe ./demos/client
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Build failed!" -ForegroundColor Red
     exit 1
