@@ -25,6 +25,10 @@ var netLogger = log.New(os.Stdout, "[dht] ", log.LstdFlags)
 // Default is 3 and can be overridden at process startup.
 var ReplicationFactor = 3
 
+// EnableBootstrapPeerDiscovery controls whether nodes periodically poll bootstrap
+// peers for updated peer lists after the initial join.
+var EnableBootstrapPeerDiscovery = true
+
 // Message types for DHT communication
 const (
 	MsgPing           = "PING"
@@ -141,9 +145,11 @@ func (dn *DHTNetwork) Start() error {
 	if len(dn.bootstraps) > 0 {
 		dn.wg.Add(1)
 		go dn.joinNetwork()
-		// also start periodic peer discovery in case new nodes join after we bootstrap
-		dn.wg.Add(1)
-		go dn.peerDiscoveryLoop()
+		if EnableBootstrapPeerDiscovery {
+			// Also start periodic peer discovery in case new nodes join after we bootstrap.
+			dn.wg.Add(1)
+			go dn.peerDiscoveryLoop()
+		}
 	}
 
 	// periodic peer maintenance
@@ -574,7 +580,7 @@ func (dn *DHTNetwork) Store(task, address string) error {
 		return fmt.Errorf("failed to store on any node: no replicas succeeded")
 	}
 
-	netLogger.Printf("store complete: %d replicas for %s", successCount, task)
+	netLogger.Printf("store complete: %d pool members for %s", successCount, task)
 	return nil
 }
 

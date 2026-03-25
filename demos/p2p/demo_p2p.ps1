@@ -3,7 +3,8 @@
 # This script demonstrates the DHT-based P2P mode by starting multiple nodes
 
 param(
-    [int]$KClosest = 1
+    [int]$KClosest = 1,
+    [switch]$DisableBootstrapPeerDiscovery = $true
 )
 
 Write-Host "=== TDS P2P Mode Demo ===" -ForegroundColor Cyan
@@ -35,7 +36,13 @@ Set-Location $projectRoot
 
 Write-Host "Project root: $projectRoot" -ForegroundColor Gray
 Write-Host "Demo settings: simplistic UI on all nodes, k-nearest replication factor = $KClosest" -ForegroundColor Gray
+Write-Host "Bootstrap peer discovery polling disabled: $DisableBootstrapPeerDiscovery" -ForegroundColor Gray
 Write-Host ""
+
+$bootstrapDiscoveryFlag = ""
+if ($DisableBootstrapPeerDiscovery) {
+    $bootstrapDiscoveryFlag = " -disable-bootstrap-peer-discovery"
+}
 
 # Build the project first
 Write-Host "Building project..." -ForegroundColor Yellow
@@ -55,13 +62,13 @@ $nodeA = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Comm
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node B on :6001 (client proxy on :5101)..." -ForegroundColor Yellow
-$nodeBCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node B (DHT :6001, Proxy :5101)'; `$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6001 -bootstrap 127.0.0.1:6000  -k-closest $KClosest -p2p-heartbeat-timeout 10m"
+$nodeBCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node B (DHT :6001, Proxy :5101)'; `$env:TDS_PROXY_LISTEN=':5101'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6001 -bootstrap 127.0.0.1:6000 -k-closest $KClosest -p2p-heartbeat-timeout 10m$bootstrapDiscoveryFlag"
 $nodeB = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeBCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 2
 
 Write-Host "Starting Node C on :6002 (client proxy on :5102)..." -ForegroundColor Yellow
-$nodeCCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node C (DHT :6002, Proxy :5102)'; `$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest -p2p-heartbeat-timeout 10m"
+$nodeCCommand = "`$host.UI.RawUI.WindowTitle='TDS P2P - Node C (DHT :6002, Proxy :5102)'; `$env:TDS_PROXY_LISTEN=':5102'; & '.\\bin\\client_proxy.exe' -p2p -simple-ui -p2p-port :6002 -bootstrap 127.0.0.1:6000 -k-closest $KClosest -p2p-heartbeat-timeout 10m$bootstrapDiscoveryFlag"
 $nodeC = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command",$nodeCCommand -WorkingDirectory $projectRoot -PassThru -WindowStyle Normal
 
 Start-Sleep -Seconds 5
@@ -172,6 +179,92 @@ function Get-K1OwnerName {
     }
 
     return $bestNode.Name
+}
+
+function Find-TaskForOwner {
+    param(
+        [string]$Prefix,
+        [string]$TargetOwner,
+        [object[]]$Nodes,
+        [int]$MaxAttempts = 5000
+    )
+
+    for ($i = 1; $i -le $MaxAttempts; $i++) {
+        $candidate = "$Prefix-$i"
+        $owner = Get-K1OwnerName -TaskName $candidate -Nodes $Nodes
+        if ($owner -eq $TargetOwner) {
+            return [PSCustomObject]@{
+                Task = $candidate
+                Owner = $owner
+                Attempts = $i
+            }
+        }
+    }
+
+    return $null
+}
+
+$ringNodes = @(
+    @{ Name = "Node A"; Address = "127.0.0.1:6000"; Color = "Green" },
+    @{ Name = "Node B"; Address = "127.0.0.1:6001"; Color = "Yellow" },
+    @{ Name = "Node C"; Address = "127.0.0.1:6002"; Color = "Cyan" }
+)
+
+foreach ($n in $ringNodes) {
+    $n["Hash"] = Get-Sha256Hex -Value $n.Address
+}
+
+Write-Host "=== Node Discovery Proof ===" -ForegroundColor Cyan
+Write-Host "Last joiner (Node C) registers a task that hashes to Node B ownership." -ForegroundColor Gray
+Write-Host "This demonstrates Node C discovered Node B without relying on periodic bootstrap polling." -ForegroundColor Gray
+Write-Host ""
+
+$discoveryTask = Find-TaskForOwner -Prefix "discovery-proof" -TargetOwner "Node B" -Nodes $ringNodes
+if ($null -eq $discoveryTask) {
+    Write-Host "Could not find a task key that maps to Node B within search limit." -ForegroundColor Red
+}
+else {
+    $proofAddress = "10.99.0.2:9090"
+    Write-Host "Selected task '$($discoveryTask.Task)' (owner prediction: Node B)." -ForegroundColor Yellow
+    Write-Host "Press Enter to REGISTER from Node C (port 5102)..." -ForegroundColor Yellow
+    Read-Host | Out-Null
+
+    $proofRegister = Send-UdpJsonRequest -TargetHost "localhost" -Port 5102 -NoResponse -Payload @{
+        cmd = "REGISTER"
+        task = $discoveryTask.Task
+        address = $proofAddress
+    }
+
+    if ($proofRegister.status -eq "SENT") {
+        Write-Host "  REGISTER result: SENT from Node C" -ForegroundColor Green
+    }
+    else {
+        $errMsg = if ($null -ne $proofRegister.error -and $proofRegister.error -ne "") { $proofRegister.error } else { "Unknown error" }
+        Write-Host "  REGISTER result: FAILED - $errMsg" -ForegroundColor Red
+    }
+
+    Start-Sleep -Milliseconds 700
+    Write-Host "Press Enter to QUERY from Node B (port 5101)..." -ForegroundColor Yellow
+    Read-Host | Out-Null
+
+    $proofQuery = Send-UdpJsonRequest -TargetHost "localhost" -Port 5101 -Payload @{
+        cmd = "QUERY"
+        task = $discoveryTask.Task
+    }
+
+    if ($proofQuery.status -eq "OK" -and $proofQuery.address -eq $proofAddress) {
+        Write-Host "[PASS] Node B resolved value registered by Node C: $($proofQuery.address)" -ForegroundColor Green
+        Write-Host "       This indicates join-time node discovery worked without periodic bootstrap polling." -ForegroundColor Green
+    }
+    elseif ($proofQuery.status -eq "OK") {
+        Write-Host "[WARN] Query returned unexpected address '$($proofQuery.address)', expected '$proofAddress'" -ForegroundColor Yellow
+    }
+    else {
+        $errMsg = if ($null -ne $proofQuery.error -and $proofQuery.error -ne "") { $proofQuery.error } else { "Unknown error" }
+        Write-Host "[FAIL] Node discovery proof failed: $errMsg" -ForegroundColor Red
+    }
+
+    Write-Host ""
 }
 
 Write-Host "Press Enter to begin interactive register/query flow..." -ForegroundColor Yellow
@@ -396,16 +489,6 @@ Write-Host ""
 $propPrefix = "prop-task"
 $propCount = 120
 $propTasks = @()
-
-$ringNodes = @(
-    @{ Name = "Node A"; Address = "127.0.0.1:6000"; Color = "Green" },
-    @{ Name = "Node B"; Address = "127.0.0.1:6001"; Color = "Yellow" },
-    @{ Name = "Node C"; Address = "127.0.0.1:6002"; Color = "Cyan" }
-)
-
-foreach ($n in $ringNodes) {
-    $n["Hash"] = Get-Sha256Hex -Value $n.Address
-}
 
 Write-Host "Press Enter to register $propCount tasks via Node A (port 5100)..." -ForegroundColor Yellow
 Read-Host | Out-Null

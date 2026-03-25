@@ -63,7 +63,7 @@ func newP2PDashboard(registry *dht.DHTRegistry, proxyListen, dhtListen string, b
 	tasksTable := tview.NewTable().SetBorders(false).SetFixed(1, 0)
 	tasksTitle := " Stored tasks "
 	if simplified {
-		tasksTitle = " Task replicas "
+		tasksTitle = " Task pool "
 	}
 	tasksTable.SetBorder(true).SetTitle(tasksTitle)
 
@@ -328,10 +328,10 @@ func (d *p2pDashboard) renderTasks(taskNames []string, stored map[string][]strin
 	d.tasksTable.Clear()
 	d.tasksTable.SetCell(0, 0, headerCell("Task"))
 	if d.simplified {
-		d.tasksTable.SetCell(0, 1, headerCell("Replicas"))
+		d.tasksTable.SetCell(0, 1, headerCell("Pool size"))
 	} else {
 		d.tasksTable.SetCell(0, 1, headerCell("Addresses"))
-		d.tasksTable.SetCell(0, 2, headerCell("Replicas"))
+		d.tasksTable.SetCell(0, 2, headerCell("Pool size"))
 	}
 
 	if len(taskNames) == 0 {
@@ -458,7 +458,7 @@ func simplifyLogLine(line string) string {
 	case strings.HasPrefix(msg, "stored ") && strings.Contains(msg, "(ring size "):
 		return "Stored (receiver): " + shortenStoreMessage(msg)
 	case strings.HasPrefix(msg, "store complete: "):
-		return "Replication done: " + strings.TrimPrefix(msg, "store complete: ")
+		return "Pool update done: " + strings.TrimPrefix(msg, "store complete: ")
 	case strings.HasPrefix(msg, "found locally: "):
 		return "Query result(local): " + strings.TrimPrefix(msg, "found locally: ")
 	case strings.HasPrefix(msg, "found on "):

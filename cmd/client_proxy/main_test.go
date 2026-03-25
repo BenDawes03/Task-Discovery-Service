@@ -195,7 +195,7 @@ func TestSimplifyLogLineAdditionalBranches(t *testing.T) {
 		{"received 3 peers from 127.0.0.1:6000", "Peer list updated: received 3 peers from 127.0.0.1:6000"},
 		{"joined network, 4 peers known", "Network join complete: joined network, 4 peers known"},
 		{"stored on 127.0.0.1: task-a -> 10.0.0.1", "Stored on peer: task-a -> 10.0.0.1"},
-		{"store complete: task-a on 3 nodes", "Replication done: task-a on 3 nodes"},
+		{"store complete: task-a on 3 nodes", "Pool update done: task-a on 3 nodes"},
 		{"found locally: task-a -> 10.0.0.1", "Query result(local): task-a -> 10.0.0.1"},
 		{"found on 127.0.0.1:6000: task-a -> 10.0.0.1", "Query result(peer): 127.0.0.1:6000: task-a -> 10.0.0.1"},
 		{"not found on any k-closest node: task-a", "Query miss: task-a"},
@@ -287,7 +287,7 @@ func TestDashboardRenderSimplifiedSections(t *testing.T) {
 		"task-b": []string{"10.0.0.3"},
 	})
 	if got := d.tasksTable.GetCell(1, 1).Text; !strings.Contains(got, "1") && !strings.Contains(got, "2") {
-		t.Fatalf("expected simplified replicas column, got %q", got)
+		t.Fatalf("expected simplified pool-size column, got %q", got)
 	}
 
 	d.renderLogs()

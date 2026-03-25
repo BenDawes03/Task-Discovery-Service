@@ -22,9 +22,10 @@ import (
 )
 
 var (
-	stdinIsTerminalFn  = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	stdoutIsTerminalFn = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
-	modePromptReaderFn = func() *bufio.Reader { return bufio.NewReader(os.Stdin) }
+	stdinIsTerminalFn             = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	stdoutIsTerminalFn            = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	modePromptReaderFn            = func() *bufio.Reader { return bufio.NewReader(os.Stdin) }
+	disableBootstrapPeerDiscovery bool
 
 	runProxyFn    = client.RunProxy
 	runProxyTCPFn = client.RunProxyTCP
@@ -47,12 +48,14 @@ func askModeOptions() (string, string, string, []string, bool, int, bool, time.D
 	p2pFlag := flag.Bool("p2p", false, "Enable peer-to-peer mode using DHT")
 	p2pPortFlag := flag.String("p2p-port", "6000", "Listen address or port for P2P DHT communication (e.g. '6000')")
 	bootstrapFlag := flag.String("bootstrap", "", "Comma-separated list of bootstrap nodes in host:port form (e.g. '127.0.0.1:6000,127.0.0.1:6002')")
+	disableBootstrapPeerDiscoveryFlag := flag.Bool("disable-bootstrap-peer-discovery", false, "Disable periodic bootstrap peer-list polling in p2p mode")
 	kClosestFlag := flag.Int("k-closest", dht.ReplicationFactor, "Number of k-closest nodes used by DHT replication/query in p2p mode")
 	p2pHeartbeatTimeoutFlag := flag.Duration("p2p-heartbeat-timeout", dht.ServiceHeartbeatTimeout, "Timeout for P2P service heartbeats before cleanup")
 	simpleUIFlag := flag.Bool("simple-ui", false, "Use a simplified P2P dashboard focused on DHT activity")
 	tcpFlag := flag.Bool("tcp", false, "Use TCP transport (centralized mode)")
 	backgroundFlag := flag.Bool("background", false, "Run in background (no interactive stdin); exit on SIGINT/SIGTERM or proxy error")
 	flag.Parse()
+	disableBootstrapPeerDiscovery = *disableBootstrapPeerDiscoveryFlag
 	background = *backgroundFlag
 	simplifiedUI = *simpleUIFlag
 	if *kClosestFlag > 0 {
@@ -286,6 +289,7 @@ func main() {
 	if mode == "p2p" {
 		// P2P mode: use DHT
 		dht.ServiceHeartbeatTimeout = p2pHeartbeatTimeout
+		dht.EnableBootstrapPeerDiscovery = !disableBootstrapPeerDiscovery
 
 		useDashboard := !background && stdinIsTerminalFn() && stdoutIsTerminalFn()
 		var dashboard *p2pDashboard
@@ -297,6 +301,11 @@ func main() {
 		if !background && !useDashboard {
 			fmt.Printf("DHT k-closest replication factor: %d\n", dht.ReplicationFactor)
 			fmt.Printf("P2P heartbeat timeout: %s\n", dht.ServiceHeartbeatTimeout)
+			if dht.EnableBootstrapPeerDiscovery {
+				fmt.Println("Bootstrap peer discovery polling: enabled")
+			} else {
+				fmt.Println("Bootstrap peer discovery polling: disabled")
+			}
 		}
 
 		if !background && !useDashboard && len(bootstrapNodes) > 0 {
