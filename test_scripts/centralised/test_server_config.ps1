@@ -40,12 +40,12 @@ Write-Host "• Development (UDP, in-memory, no UI):" -ForegroundColor Cyan
 Write-Host "  go run ./cmd/server --udp --no-ui" -ForegroundColor Gray
 Write-Host ""
 Write-Host "• Testing (TCP, database, with UI):" -ForegroundColor Cyan
-Write-Host '  go run ./cmd/server --tcp --store-url "postgresql://trs:password@localhost:5432/trs?sslmode=disable" --ui' -ForegroundColor Gray
+Write-Host '  go run ./cmd/server --tcp --store-url "postgresql://tds:password@localhost:5432/tds?sslmode=disable" --ui' -ForegroundColor Gray
 Write-Host ""
 Write-Host "• Production (TLS, database, custom timeouts):" -ForegroundColor Cyan
 Write-Host '  go run ./cmd/server --tls \\' -ForegroundColor Gray
 Write-Host '    --port 5000 \\' -ForegroundColor Gray
-Write-Host '    --store-url "postgresql://trs:password@localhost:5432/trs?sslmode=require" \\' -ForegroundColor Gray
+Write-Host '    --store-url "postgresql://tds:password@localhost:5432/tds?sslmode=require" \\' -ForegroundColor Gray
 Write-Host '    --cache-max-size 500 \\' -ForegroundColor Gray
 Write-Host '    --heartbeat-timeout 90s \\' -ForegroundColor Gray
 Write-Host '    --no-ui' -ForegroundColor Gray

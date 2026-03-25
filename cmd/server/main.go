@@ -25,7 +25,7 @@ import (
 	"tds/pkg/transport"
 )
 
-const defaultStoreDatabaseURL = "postgresql://trs:password@localhost:5432/trs?sslmode=disable"
+const defaultStoreDatabaseURL = "postgresql://tds:password@localhost:5432/tds?sslmode=disable"
 
 const (
 	defaultMaxConcurrentUDP int64 = 1000
