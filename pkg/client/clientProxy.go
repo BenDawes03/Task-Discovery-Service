@@ -49,6 +49,38 @@ type proxyResult struct {
 // requestHandler processes a proxy request and returns a result
 type requestHandler func(req proxyRequest, source string) proxyResult
 
+// runTCPProxy is a generic TCP proxy loop that listens on listenAddr and delegates requests to a handler.
+// It respects ctx cancellation and exits when ctx is done.
+func runTCPProxy(ctx context.Context, listenAddr, logPrefix string, handler requestHandler) error {
+	ln, err := netutil.ListenTCP(listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen tcp: %w", err)
+	}
+	defer ln.Close()
+	logger.Printf("%s listening %s", logPrefix, listenAddr)
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				logger.Printf("shutting down %s", logPrefix)
+				return nil
+			default:
+				logger.Printf("tcp accept error: %v", err)
+				atomic.AddUint64(&errorCount, 1)
+				continue
+			}
+		}
+		go handleTCPProxyConnGeneric(conn, handler)
+	}
+}
+
 // runUDPProxy is a generic UDP proxy loop that listens on listenAddr and delegates to a handler.
 // It respects ctx cancellation and manages error/success counting.
 func runUDPProxy(ctx context.Context, listenAddr string, logPrefix string, handler requestHandler) error {
@@ -185,37 +217,14 @@ func RunProxyTCP(ctx context.Context, listenAddr string) error {
 		backendProto = "tcp"
 	}
 
-	ln, err := netutil.ListenTCP(listenAddr)
-	if err != nil {
-		return fmt.Errorf("listen tcp: %w", err)
+	handler := func(req proxyRequest, source string) proxyResult {
+		return handleCentralizedRequest(req, serverAddr, backendProto, source)
 	}
-	defer ln.Close()
-	logger.Printf("listening tcp %s, forwarding to %s via %s", listenAddr, serverAddr, strings.ToUpper(backendProto))
 
-	// close listener when context is done so Accept returns
-	go func() {
-		<-ctx.Done()
-		ln.Close()
-	}()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				logger.Println("shutting down tcp proxy")
-				return nil
-			default:
-				logger.Printf("tcp accept error: %v", err)
-				atomic.AddUint64(&errorCount, 1)
-				continue
-			}
-		}
-		go handleTCPProxyConn(conn, serverAddr, backendProto)
-	}
+	return runTCPProxy(ctx, listenAddr, "TCP proxy", handler)
 }
 
-func handleTCPProxyConn(conn net.Conn, serverAddr, backendProto string) {
+func handleTCPProxyConnGeneric(conn net.Conn, handler requestHandler) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
 	r := bufio.NewReader(conn)
@@ -237,7 +246,7 @@ func handleTCPProxyConn(conn net.Conn, serverAddr, backendProto string) {
 			continue
 		}
 
-		result := handleCentralizedRequest(req, serverAddr, backendProto, remote)
+		result := handler(req, remote)
 		if result.Status == StatusErr {
 			atomic.AddUint64(&errorCount, 1)
 		}
@@ -283,6 +292,15 @@ func RunProxyP2P(ctx context.Context, listenAddr string, dhtRegistry DHTRegistry
 	}
 
 	return runUDPProxy(ctx, listenAddr, "P2P proxy", handler)
+}
+
+// RunProxyP2PTCP starts a TCP proxy that uses DHT for distributed task registration.
+func RunProxyP2PTCP(ctx context.Context, listenAddr string, dhtRegistry DHTRegistry) error {
+	handler := func(req proxyRequest, source string) proxyResult {
+		return handleP2PRequest(req, dhtRegistry, source)
+	}
+
+	return runTCPProxy(ctx, listenAddr, "P2P TCP proxy", handler)
 }
 
 func parseProxyRequest(data string) (proxyRequest, error) {

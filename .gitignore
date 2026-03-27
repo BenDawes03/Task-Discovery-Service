@@ -18,3 +18,9 @@ logs/
 # Generated test outputs
 test_scripts/results/
 .github/
+
+# Coverage artifacts
+coverage
+coverage.out
+*.coverprofile
+cover.out

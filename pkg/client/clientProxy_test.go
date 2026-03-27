@@ -724,6 +724,109 @@ func TestRunProxyP2P(t *testing.T) {
 	}
 }
 
+// TestRunProxyP2PTCP tests the P2P proxy over TCP with DHT backend
+func TestRunProxyP2PTCP(t *testing.T) {
+	dht := newMockDHTRegistry()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Get free port
+	tempLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to get port: %v", err)
+	}
+	proxyAddr := tempLn.Addr().String()
+	tempLn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxyP2PTCP(ctx, proxyAddr, dht)
+	}()
+
+	// Wait for proxy to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Test REGISTER through P2P TCP proxy
+	t.Run("register through P2P TCP proxy", func(t *testing.T) {
+		conn, err := net.Dial("tcp", proxyAddr)
+		if err != nil {
+			t.Fatalf("dial proxy: %v", err)
+		}
+		defer conn.Close()
+
+		msg := transport.CentralizedMessage{
+			Command: "REGISTER",
+			Task:    "p2p-tcp-task",
+			Address: "192.168.1.1:8080",
+		}
+		data, _ := json.Marshal(msg)
+		fmt.Fprintf(conn, "%s\n", string(data))
+
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			t.Fatalf("failed to read response")
+		}
+
+		var resp transport.CentralizedResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+
+		if resp.Status != "OK" {
+			t.Errorf("expected OK, got %s", resp.Status)
+		}
+
+		addr, _ := dht.Query("p2p-tcp-task")
+		if addr != "192.168.1.1:8080" {
+			t.Errorf("DHT should contain registered address, got %s", addr)
+		}
+	})
+
+	// Test QUERY through P2P TCP proxy
+	t.Run("query through P2P TCP proxy", func(t *testing.T) {
+		dht.Register("query-tcp-task", "10.0.0.2:9001")
+
+		conn, err := net.Dial("tcp", proxyAddr)
+		if err != nil {
+			t.Fatalf("dial proxy: %v", err)
+		}
+		defer conn.Close()
+
+		msg := transport.CentralizedMessage{
+			Command: "QUERY",
+			Task:    "query-tcp-task",
+		}
+		data, _ := json.Marshal(msg)
+		fmt.Fprintf(conn, "%s\n", string(data))
+
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			t.Fatalf("failed to read response")
+		}
+
+		var resp transport.CentralizedResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+
+		if resp.Status != "OK" {
+			t.Errorf("expected OK, got %s", resp.Status)
+		}
+		if resp.Address != "10.0.0.2:9001" {
+			t.Errorf("expected address 10.0.0.2:9001, got %s", resp.Address)
+		}
+	})
+
+	// Shutdown
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("P2P TCP proxy did not shutdown in time")
+	}
+}
+
 // TestStats tests the stats counters
 func TestStats(t *testing.T) {
 	// Reset counters

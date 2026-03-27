@@ -4,7 +4,7 @@ TDS is a task-to-IP registry built as a Final Year Project. Services register th
 
 Two operational modes are supported:
 
-- **Centralized** — a single authoritative server (UDP/TCP/TLS), interactive TUI, optional PostgreSQL persistence with LFU cache.
+- **Centralised** — a single authoritative server (UDP/TCP/TLS), interactive TUI, optional PostgreSQL persistence with LFU cache.
 - **P2P (DHT)** — a self-organising ring of peers using consistent hashing, no central server needed.
 
 An end-to-end transit simulation (`Simulation/`) uses TDS as its service registry, and a Kubernetes deployment (`k8s/`) wraps the whole thing in containers.
@@ -15,7 +15,7 @@ An end-to-end transit simulation (`Simulation/`) uses TDS as its service registr
 
 ```
 cmd/
-  server/               Centralized TDS server (TUI, UDP/TCP/TLS, optional Postgres)
+  server/               Centralised TDS server (TUI, UDP/TCP/TLS, optional Postgres)
   client_proxy/         Gateway: relays client requests to server or DHT network
   test_client/          (moved to test_scripts/test_client/)
   test_json_client/     (moved to test_scripts/test_json_client/)
@@ -32,7 +32,7 @@ pkg/
 Simulation/             End-to-end transit simulation (Gate, Station, CS, PCTRBO, PA)
 k8s/                    Kubernetes manifests + build/deploy scripts
 demos/
-  centralised/          Demo scripts + centralized-mode binaries
+  centralised/          Demo scripts + centralised-mode binaries
     tls_demo/           TLS smoke-test/demo binary
     cache_demo/         Interactive demo: in-memory cache vs DB-backed latency
   client/               Simple client smoke-test binary
@@ -45,13 +45,13 @@ test_scripts/           Go integration tests + PowerShell test harnesses
 
 ## Architecture
 
-### Centralized Mode
+### Centralised Mode
 
 ```
 Client
   │  UDP / TCP / TLS (JSON)
   ▼
-Client Proxy  ──────►  TDS Server
+  Client Proxy  ──────►  TDS Server
 (cmd/client_proxy)      (cmd/server)
                             │
                      ┌──────┴──────┐
@@ -70,7 +70,7 @@ Client Proxy  ──────►  TDS Server
 
 ```
 Client
-  │  UDP (text protocol)
+  │  UDP or TCP (JSON)
   ▼
 Client Proxy (+ DHT node)  ◄──TCP──►  Other DHT peers
 ```
@@ -86,11 +86,13 @@ Client Proxy (+ DHT node)  ◄──TCP──►  Other DHT peers
 
 ### Prerequisites
 
+- **Go** 1.24.0 or later
+
 ```bash
 go build ./...
 ```
 
-### Centralized — in-memory
+### Centralised — in-memory
 
 ```bash
 # Terminal 1
@@ -105,7 +107,7 @@ go run ./test_scripts/test_client QUERY my-api
 # → 10.0.0.5:8080
 ```
 
-### Centralized — firewall demo startup
+### Centralised — firewall demo startup
 
 Use this command when running the interactive demo in `demos/centralised` so the firewall step has matching rules:
 
@@ -115,7 +117,7 @@ go run ./cmd/server --tcp --firewall --firewall-rules demos/centralised/firewall
 
 Rules file location: `demos/centralised/firewall_demo.rules`
 
-### Centralized — with PostgreSQL
+### Centralised — with PostgreSQL
 
 ```bash
 go run ./cmd/server \
@@ -148,25 +150,25 @@ go run ./test_scripts/test_client -server localhost:5102 QUERY web-api
 
 ## Server Flags (`cmd/server`)
 
-| Flag | Default | Description |
-|---|---|---|
-| `--port` | `5000` | Listen port |
-| `--tcp` / `--udp` / `--tls` | — | Transport (default: prompted interactively) |
-| `--tls-cert` | `certs/server.crt` | TLS certificate |
-| `--tls-key` | `certs/server.key` | TLS private key |
-| `--tls-client-ca` | `certs/ca.crt` | CA cert for mutual TLS |
-| `--heartbeat-timeout` | `1m` | Remove entries silent for longer than this |
-| `--cleanup-interval` | `10s` | Frequency of stale-entry scans |
-| `--max-udp-handlers` | `1000` | Concurrent UDP goroutine cap |
-| `--max-tcp-connections` | `5000` | Concurrent TCP connection cap |
-| `--store-url` | — | PostgreSQL URL (also reads `DATABASE_URL`) |
-| `--cache-max-size` | `0` | LFU cache size in tasks (0 = unlimited) |
-| `--firewall` | — | Enable firewall-aware routing |
-| `--no-firewall` | — | Disable firewall routing (overrides `--firewall-rules`) |
-| `--firewall-rules` | — | Path to firewall rules file |
-| `--log-dir` | `logs` | Directory for log files |
-| `--no-ui` / `--no-tui` | — | Headless mode |
-| `--force-ui` / `--ui` | — | Always start TUI without prompting |
+| Flag                        | Default           | Description                                              |
+| --------------------------- | ----------------- | -------------------------------------------------------- |
+| `--port`                    | `5000`            | Listen port                                              |
+| `--tcp` / `--udp` / `--tls` | —                 | Transport (default: prompted interactively)              |
+| `--tls-cert`                | `certs/server.crt`| TLS certificate                                          |
+| `--tls-key`                 | `certs/server.key`| TLS private key                                          |
+| `--tls-client-ca`           | `certs/ca.crt`    | CA cert for mutual TLS                                   |
+| `--heartbeat-timeout`       | `1m`              | Remove entries silent for longer than this               |
+| `--cleanup-interval`        | `10s`             | Frequency of stale-entry scans                           |
+| `--max-udp-handlers`        | `1000`            | Concurrent UDP goroutine cap                             |
+| `--max-tcp-connections`     | `5000`            | Concurrent TCP connection cap                            |
+| `--store-url`               | —                 | PostgreSQL URL (also reads `DATABASE_URL`)               |
+| `--cache-max-size`          | `0`               | LFU cache size in tasks (0 = unlimited)                  |
+| `--firewall`                | —                 | Enable firewall-aware routing                            |
+| `--no-firewall`             | —                 | Disable firewall routing (overrides `--firewall-rules`)  |
+| `--firewall-rules`          | —                 | Path to firewall rules file                              |
+| `--log-dir`                 | `logs`            | Directory for log files                                  |
+| `--no-ui` / `--no-tui`      | —                 | Headless mode                                            |
+| `--force-ui` / `--ui`       | —                 | Always start TUI without prompting                       |
 
 ---
 
@@ -210,7 +212,7 @@ Enable with `--firewall --firewall-rules <file>`. Format:
 192.168.1.0/24       10.0.0.0/24
 ```
 
-A query from `requestorIP` only returns addresses that satisfy at least one rule. For the centralized demo, see `demos/centralised/firewall_demo.rules`.
+A query from `requestorIP` only returns addresses that satisfy at least one rule. For the centralised demo, see `demos/centralised/firewall_demo.rules`.
 
 ---
 
@@ -231,7 +233,15 @@ err  = c.Heartbeat("api-service", "10.0.0.5:8080")
 Demonstrates in-memory cache hits vs Postgres fallback latency. Requires the server running with `--store-url` and `--cache-max-size`.
 
 ```powershell
-.\demos\cache\run_cache_demo.ps1
+.\demos\centralised\cache_demo\run_cache_demo.ps1
+```
+
+## Quick Cache Miss Demo (`demos/centralised/quick_cache_miss_demo`)
+
+Demonstrates a quick cache miss scenario with a simple test.
+
+```powershell
+.\demos\centralised\quick_cache_miss_demo\run_quick_cache_miss_demo.ps1
 ```
 
 ---
@@ -240,15 +250,15 @@ Demonstrates in-memory cache hits vs Postgres fallback latency. Requires the ser
 
 A transit payment simulation that uses TDS as its service registry:
 
-| Component | Role |
-|---|---|
-| **Gate** | Card reader; contacts CS (OY) or PA (PCTR) to authorise taps |
-| **Station Computer** | Batches tap events and forwards to CS / PCTRBO |
-| **CS** | OY card ledger; constructs journeys every 5 minutes |
-| **PCTRBO** | Token-based transaction ledger |
-| **PA** | PCTR private key holder; generates restitution files |
-| **Ticket Distributor** | Issues PCTR tokens |
-| **Card DB** | Shared card data store |
+| Component            | Role                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| **Gate**             | Card reader; contacts CS (OY) or PA (PCTR) to authorise taps    |
+| **Station Computer** | Batches tap events and forwards to CS / PCTRBO                  |
+| **CS**               | OY card ledger; constructs journeys every 5 minutes             |
+| **PCTRBO**           | Token-based transaction ledger                                  |
+| **PA**               | PCTR private key holder; generates restitution files            |
+| **Ticket Distributor** | Issues PCTR tokens                                            |
+| **Card DB**          | Shared card data store                                          |
 
 Quick start (single machine):
 
@@ -287,14 +297,22 @@ go test ./pkg/registry ./pkg/transport ./pkg/firewall ./pkg/client -cover
 go test -race ./...
 ```
 
-Current coverage (core packages):
+Current coverage:
 
-| Package | Coverage |
-|---|---|
-| `pkg/client` | ~75% |
-| `pkg/transport` | ~64% |
-| `pkg/firewall` | ~54% |
-| `pkg/registry` | ~38% |
+- Overall: `33.0%` of statements
+- Tests: `364` passed, `0` failed
+
+| Package              | Coverage |
+| -------------------- | -------- |
+| `cmd/client_proxy`   | `69.5%`  |
+| `cmd/server`         | `34.4%`  |
+| `pkg/client`         | `79.6%`  |
+| `pkg/dht`            | `84.8%`  |
+| `pkg/firewall`       | `95.7%`  |
+| `pkg/netutil`        | `82.4%`  |
+| `pkg/registry`       | `91.0%`  |
+| `pkg/store/postgres` | `87.8%`  |
+| `pkg/transport`      | `80.4%`  |
 
 ---
 
@@ -312,8 +330,8 @@ go build -o bin/test_client.exe  ./test_scripts/test_client
 
 ## Environment Variables
 
-| Variable | Used by | Description |
-|---|---|---|
-| `DATABASE_URL` | `cmd/server` | PostgreSQL URL (fallback if `--store-url` not set) |
-| `TDS_SERVER_ADDR` | `cmd/client_proxy` | Centralized server address (default `127.0.0.1:5000`) |
-| `TDS_PROXY_LISTEN` | `cmd/client_proxy` | Proxy listen address (default `:5100`) |
+| Variable           | Used by            | Description                                                                                              |
+| ------------------ | ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`     | `cmd/server`       | PostgreSQL URL (fallback if `--store-url` not set)                                                       |
+| `TDS_SERVER_ADDR`  | `cmd/client_proxy` | Centralised server address (default `127.0.0.1:5000`)                                                    |
+| `TDS_PROXY_LISTEN` | `cmd/client_proxy` | Proxy listen address (default `:5100`); set to override (e.g. `:5101` for multiple proxies)              |
