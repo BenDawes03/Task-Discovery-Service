@@ -1245,6 +1245,23 @@ func initializeServer(runtimeTUI bool) {
 	fw := configureFirewall(runtimeTUI, firewallEnabled)
 
 	reg = initializeRegistry(runtimeTUI, fw)
+
+	// If using a store-backed registry, periodically warm/sync cache to ensure
+	// in-memory query counts are flushed to the persistent store. This helps
+	// the web dashboard and other servers observe recent query activity.
+	if sbr, ok := reg.(*registry.StoreBackedRegistry); ok {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := sbr.WarmCacheFromDB(ctx); err != nil {
+					logEvent(fmt.Sprintf("[STORE] periodic warm cache failed: %v", err))
+				}
+				cancel()
+			}
+		}()
+	}
 }
 
 func runServer(runtimeTransportMode string, runtimeTUI bool) {

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TDS — Landing</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .hero { text-align:center; padding:40px }
+    .links { display:flex; gap:12px; justify-content:center; margin-top:20px }
+    .hero h1 { margin:0 0 8px }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="hero">
+      <h1>Task Discovery Service (TDS)</h1>
+      <p>Centralised mode dashboard and API for inspecting registered services.</p>
+      <div class="links">
+        <a class="btn" href="/dashboard">Open Dashboard</a>
+        <a class="btn" href="/static/index.html">Raw Dashboard HTML</a>
+        <a class="btn" href="/api/services">API: List Services (JSON)</a>
+      </div>
+    </div>
+
+    <section>
+      <h2>Quick Start</h2>
+      <ol>
+        <li>Ensure the TDS server is running (see demos/centralised)</li>
+        <li>Build and run this web UI: <code>go run ./pkg/web</code></li>
+        <li>Open this page and click "Open Dashboard" to view services</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Notes</h2>
+      <p>This UI queries the server-side store for registered services every 5s.</p>
+    </section>
+  </div>
+</body>
+</html>

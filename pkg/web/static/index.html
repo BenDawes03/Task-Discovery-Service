@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TDS Centralised Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+ </head>
+<body>
+  <div class="container">
+    <header class="dash-header">
+      <h1>TDS Centralised Dashboard</h1>
+      <p class="muted">Simplified view of tasks and runtime metrics</p>
+    </header>
+
+    <section class="metrics-grid" id="metrics">
+      <!-- cards injected by JS -->
+    </section>
+
+    <section>
+      <div class="services-tile">
+        <div class="tile-header"><h2>Tasks</h2></div>
+        <div id="services" class="tasks-list tile-body"></div>
+      </div>
+    </section>
+  </div>
+  <script src="/static/main.js"></script>
+</body>
+</html>

@@ -38,7 +38,7 @@ func New() (*App, error) {
 	}
 
 	app := &App{
-		router: loadRoutes(),
+		router: loadRoutes(ps),
 		Store:  ps,
 	}
 
@@ -50,12 +50,22 @@ func (a *App) Start(ctx context.Context) error {
 		Addr:    ":8080",
 		Handler: a.router,
 	}
+	errCh := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("failed to start server: %w", err)
+		}
+		close(errCh)
+	}()
 
-	if err := server.ListenAndServe(); err != nil {
-		return fmt.Errorf("failed to listen to server: %w", err)
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
 	}
-
-	return nil
 }
 
 // Close releases resources held by the app (e.g., database connections).
